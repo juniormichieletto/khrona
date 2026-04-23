@@ -1,5 +1,9 @@
+plugins {
+    `java-library`
+}
+
 dependencies {
-    implementation(project(":khrona-core"))
+    api(project(":khrona-core"))
     implementation(libs.ktor.server.core)
     
     testImplementation(project(":khrona-store-memory"))

@@ -1,3 +1,7 @@
+plugins {
+    `java-library`
+}
+
 dependencies {
     api(libs.kotlinx.coroutines.core)
     implementation(libs.slf4j.api)
