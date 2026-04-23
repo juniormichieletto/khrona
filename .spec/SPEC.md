@@ -335,12 +335,16 @@ The DSL must be explicit and readable.
 
 ```kotlin
 install(Scheduler) {
-    store = PostgresJobStore(dataSource)
+    // For single-instance or testing
+    store = MemoryJobStore() 
+
+    // OR for persistent production
+    // store = PostgresJobStore(dataSource)
 
     workers {
         poolSize = 8
     }
-
+...
     shutdown {
         gracefulTimeout = 30.seconds
         cancelOnTimeout = true
@@ -1059,7 +1063,7 @@ khrona-testkit
 ## 25. Operational Modes
 
 ### 25.1 In-Memory Mode
-For development and tests only.
+For development, tests, or single-instance applications where persistence across restarts is not required. Logic is stored in memory and lost on process termination.
 
 ### 25.2 Persistent Single-Node Mode
 Durable scheduling with one active executor.
@@ -1073,7 +1077,6 @@ Shared persistence, multi-worker, multi-node coordination.
 
 Khrona guarantees:
 
-- exactly-once execution
 - at-least-once execution
 - persistent recovery where configured
 - retry and dead-letter handling
@@ -1125,21 +1128,29 @@ Khrona does **not** guarantee:
 
 ---
 
-## 28. Summary
+## 29. Future Considerations & Open Questions
 
-Khrona is a coroutine-native background execution runtime for Ktor.
+The following items are identified for future discussion and refinement:
 
-It is designed to provide:
+### 29.1 Payload Serialization & Evolution
+- **Pluggability:** Support for JSON (Kotlinx Serialization, Jackson) or Protobuf.
+- **Versioning:** Strategy for handling schema changes in payloads for long-lived or queued jobs.
 
-- explicit and safe trigger semantics
-- persistent and recoverable scheduling
-- distributed correctness
-- operational visibility
-- schedule changes without code changes
-- strong lifecycle integration with Ktor
+### 29.2 Dependency Injection
+- Formalize integration with Ktor's DI ecosystem (Koin, Kodein, etc.) to allow job handlers to access application services safely.
 
-Khrona should be positioned as:
+### 29.3 Advanced Locking & Scoping
+- **Dynamic Lock Keys:** Ability to derive `lockKey` from job payloads (e.g., lock per `userId`).
+- **Lock Scoping:** Clarification on whether locks are global or scoped to specific `jobId`s.
 
-> A production-grade job scheduling and execution runtime for Kotlin and Ktor.
+### 29.4 Error Classification
+- Distinguishing between transient failures (retryable) and fatal logic errors (immediate dead-letter) to optimize resource usage.
 
-Not a toy cron wrapper. Not a Quartz clone in Kotlin clothing. A real runtime.
+### 29.5 Backpressure & Rate Limiting
+- Strategies for global or per-job rate limiting to prevent database and worker exhaustion during spikes.
+
+### 29.6 Multi-tenancy
+- Context propagation for tenant-aware applications (e.g., `TenantId` in `CoroutineContext` or MDC).
+
+### 29.7 Admin API Security
+- Role-Based Access Control (RBAC) for the Admin API to distinguish between read-only monitoring and destructive operations (e.g., deleting dead-letter jobs).
