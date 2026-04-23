@@ -27,3 +27,5 @@ class KhronaPlugin(val scheduler: Scheduler) {
         }
     }
 }
+
+val Khrona = KhronaPlugin

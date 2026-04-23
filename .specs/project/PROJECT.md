@@ -1154,3 +1154,11 @@ The following items are identified for future discussion and refinement:
 
 ### 29.7 Admin API Security
 - Role-Based Access Control (RBAC) for the Admin API to distinguish between read-only monitoring and destructive operations (e.g., deleting dead-letter jobs).
+
+### 29.8 Memory Efficiency & History Pruning
+- **Execution History Growth:** Implement pruning or TTL (Time-To-Live) policies for `JobExecution` records in memory and persistent stores to prevent unbounded memory growth over time.
+- **Eviction Strategy:** Define strategies for archiving or deleting `SUCCESS` and `FAILED` executions to maintain optimal performance for long-running application instances.
+
+### 29.9 Job Isolation & Resilience
+- **Failure Impact:** Ensure strict isolation of job failures using structured concurrency and supervisor jobs so that individual job crashes never compromise the stability of the host Ktor application.
+- **Resource Limits:** Explore per-job memory or execution time limits to prevent rogue jobs from exhausting system resources.
