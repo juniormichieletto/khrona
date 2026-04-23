@@ -83,4 +83,15 @@ class Scheduler(
         job?.cancel()
         job = null
     }
+
+    fun registerJob(jobDef: JobDefinition) {
+        scope.launch {
+            store.saveJob(jobDef)
+            // Schedule the first execution if it's a recurring/deferred job
+            val next = jobDef.trigger.nextExecutionTime(Instant.now())
+            if (next != null) {
+                store.saveExecution(JobExecution(jobId = jobDef.id, scheduledAt = next))
+            }
+        }
+    }
 }
