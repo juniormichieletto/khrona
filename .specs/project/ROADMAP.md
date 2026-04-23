@@ -1,14 +1,14 @@
 # ROADMAP — Khrona
 
 ## v0.1: Core & In-Memory
-- [ ] Project Setup & Module Structure
-- [ ] Core Domain Models (JobDefinition, JobExecution, etc.)
-- [ ] Kotlin DSL for Job Definition
-- [ ] In-Memory Job Store (`MemoryJobStore`)
-- [ ] Basic Scheduler Runtime (Coroutine-native)
-- [ ] Interval & Cron Triggers (In-Memory)
-- [ ] Startup Trigger Support
-- [ ] Ktor Plugin Integration (Lifecycle)
+- [x] Project Setup & Module Structure
+- [x] Core Domain Models (JobDefinition, JobExecution, etc.)
+- [x] Kotlin DSL for Job Definition
+- [x] In-Memory Job Store (`MemoryJobStore`)
+- [x] Basic Scheduler Runtime (Coroutine-native)
+- [x] Interval & Cron Triggers (In-Memory)
+- [x] Startup Trigger Support (Basic implementation via initial scheduling)
+- [x] Ktor Plugin Integration (Lifecycle)
 
 ## v0.2: Persistence & Reliability
 - [ ] JDBC / Postgres Persistence
