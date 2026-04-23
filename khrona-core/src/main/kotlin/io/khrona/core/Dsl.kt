@@ -10,8 +10,15 @@ class JobBuilder(val id: String) {
     var lockKey: String? = null
     var timeout: Duration? = null
 
-    fun every(interval: Duration) {
+    fun every(interval: java.time.Duration) {
         this.trigger = IntervalTrigger(interval)
+    }
+
+    /**
+     * Extension to support kotlin.time.Duration in the DSL
+     */
+    fun every(interval: kotlin.time.Duration) {
+        every(java.time.Duration.ofMillis(interval.inWholeMilliseconds))
     }
 
     fun execute(block: JobHandler) {
