@@ -9,7 +9,7 @@ postgresql = "42.7.5"
 mysql = "9.2.0"
 oracle = "23.6.0.24.10"
 hikaricp = "6.2.1"
-testcontainers = "1.20.4"
+testcontainers = "1.21.4"
 h2 = "2.3.232"
 
 [libraries]
