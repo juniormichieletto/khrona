@@ -34,7 +34,19 @@ class JdbcJobStore(
                     // Split by semicolon but be careful with potential semicolons in strings/etc.
                     // For our simple schema, splitting by semicolon is fine.
                     sql.split(";").filter { it.trim().isNotEmpty() }.forEach { statement ->
-                        stmt.execute(statement)
+                        try {
+                            stmt.execute(statement)
+                        } catch (e: Exception) {
+                            val msg = e.message?.uppercase() ?: ""
+                            // ORA-00955: name is already used by an existing object
+                            // ORA-02260: table can have only one primary key (sometimes happens with IF NOT EXISTS logic)
+                            if (msg.contains("ORA-00955") || msg.contains("ORA-02260") ||
+                                statement.trim().uppercase().startsWith("CREATE INDEX")) {
+                                // Ignore duplicate object errors
+                            } else {
+                                throw e
+                            }
+                        }
                     }
                 }
                 conn.commit()

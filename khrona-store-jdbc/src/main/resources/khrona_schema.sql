@@ -20,7 +20,4 @@ CREATE TABLE IF NOT EXISTS khrona_executions (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Index creation can be tricky across DBs, using a simpler approach if possible
--- or just letting it fail if it already exists if the driver allows.
--- For MySQL 8.0.30+ and Postgres/H2 this works:
-CREATE INDEX IF NOT EXISTS idx_khrona_executions_status_scheduled ON khrona_executions(status, scheduled_at);
+CREATE INDEX idx_khrona_executions_status_scheduled ON khrona_executions(status, scheduled_at);

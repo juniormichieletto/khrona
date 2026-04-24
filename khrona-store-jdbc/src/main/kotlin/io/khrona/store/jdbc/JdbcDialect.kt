@@ -126,15 +126,12 @@ class OracleDialect : JdbcDialect {
     override fun claimExecutionSql(): String = """
         UPDATE khrona_executions
         SET status = 'CLAIMED', claimed_at = ?, claimed_by = ?
-        WHERE id = (
-            SELECT id FROM khrona_executions
-            WHERE id = ? AND status = 'PENDING'
-            FOR UPDATE SKIP LOCKED
-        )
+        WHERE id = ? AND status = 'PENDING'
     """.trimIndent()
 
     override fun listEligibleExecutionsSql(): String = 
         "SELECT * FROM khrona_executions WHERE status = 'PENDING' AND scheduled_at <= ? ORDER BY scheduled_at ASC"
 }
+
 
 
