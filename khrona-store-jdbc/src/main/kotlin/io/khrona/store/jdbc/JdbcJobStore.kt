@@ -19,12 +19,30 @@ class JdbcJobStore(
     private val json = Json { ignoreUnknownKeys = true }
 
     fun migrate() {
-        val sql = this::class.java.getResource("/khrona_schema.sql")?.readText()
+        var sql = this::class.java.getResource("/khrona_schema.sql")?.readText()
             ?: throw IllegalStateException("Schema file not found")
         
+        if (dialect is OracleDialect) {
+            sql = sql.replace("TEXT", "CLOB")
+                .replace("IF NOT EXISTS", "") // Oracle 23c supports it but older versions don't, and sometimes it's picky
+        }
+        
         dataSource.connection.use { conn ->
-            conn.createStatement().use { stmt ->
-                stmt.execute(sql)
+            conn.autoCommit = false
+            try {
+                conn.createStatement().use { stmt ->
+                    // Split by semicolon but be careful with potential semicolons in strings/etc.
+                    // For our simple schema, splitting by semicolon is fine.
+                    sql.split(";").filter { it.trim().isNotEmpty() }.forEach { statement ->
+                        stmt.execute(statement)
+                    }
+                }
+                conn.commit()
+            } catch (e: Exception) {
+                conn.rollback()
+                throw e
+            } finally {
+                conn.autoCommit = true
             }
         }
     }
@@ -83,7 +101,7 @@ class JdbcJobStore(
     override suspend fun saveExecution(execution: JobExecution) {
         dataSource.connection.use { conn ->
             conn.prepareStatement(dialect.upsertExecutionSql()).use { stmt ->
-                stmt.setObject(1, execution.id)
+                stmt.setString(1, execution.id.toString())
                 stmt.setString(2, execution.jobId)
                 stmt.setString(3, execution.status.name)
                 stmt.setTimestamp(4, Timestamp.from(execution.scheduledAt))
@@ -101,7 +119,7 @@ class JdbcJobStore(
                 stmt.setString(1, status.name)
                 stmt.setString(2, error)
                 stmt.setTimestamp(3, if (status == ExecutionStatus.SUCCESS || status == ExecutionStatus.FAILED || status == ExecutionStatus.DEAD_LETTERED) Timestamp.from(Instant.now()) else null)
-                stmt.setObject(4, id)
+                stmt.setString(4, id.toString())
                 stmt.executeUpdate()
             }
         }
@@ -111,7 +129,7 @@ class JdbcJobStore(
         dataSource.connection.use { conn ->
             val sql = "SELECT * FROM khrona_executions WHERE id = ?"
             conn.prepareStatement(sql).use { stmt ->
-                stmt.setObject(1, id)
+                stmt.setString(1, id.toString())
                 val rs = stmt.executeQuery()
                 if (rs.next()) {
                     return mapExecution(rs)
@@ -141,15 +159,16 @@ class JdbcJobStore(
                 val now = Instant.now()
                 stmt.setTimestamp(1, Timestamp.from(now))
                 stmt.setString(2, workerId)
-                stmt.setObject(3, id)
+                stmt.setString(3, id.toString())
                 return stmt.executeUpdate() > 0
             }
         }
     }
 
     private fun mapExecution(rs: ResultSet): JobExecution {
+        val idStr = rs.getString("id")
         return JobExecution(
-            id = rs.getObject("id") as UUID,
+            id = UUID.fromString(idStr),
             jobId = rs.getString("job_id"),
             status = ExecutionStatus.valueOf(rs.getString("status")),
             scheduledAt = rs.getTimestamp("scheduled_at").toInstant(),
@@ -167,6 +186,8 @@ class JdbcJobStore(
                 val name = conn.metaData.databaseProductName.lowercase()
                 when {
                     name.contains("postgresql") -> PostgresDialect()
+                    name.contains("mysql") || name.contains("mariadb") -> MySqlDialect()
+                    name.contains("oracle") -> OracleDialect()
                     name.contains("h2") -> H2Dialect()
                     else -> H2Dialect() // Fallback to generic
                 }

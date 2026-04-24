@@ -9,28 +9,27 @@ import org.junit.jupiter.api.Assertions.*
 import java.time.Duration
 import java.time.Instant
 import java.util.*
+import javax.sql.DataSource
 
-class JdbcJobStoreTest {
+abstract class AbstractJdbcJobStoreTest {
 
-    private lateinit var dataSource: HikariDataSource
-    private lateinit var store: JdbcJobStore
+    protected lateinit var dataSource: HikariDataSource
+    protected lateinit var store: JdbcJobStore
+
+    abstract fun createDataSource(): HikariDataSource
 
     @BeforeEach
     fun setup() {
-        val config = HikariConfig().apply {
-            jdbcUrl = "jdbc:h2:mem:khrona;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1"
-            username = "sa"
-            password = ""
-            driverClassName = "org.h2.Driver"
-        }
-        dataSource = HikariDataSource(config)
+        dataSource = createDataSource()
         store = JdbcJobStore(dataSource)
         store.migrate()
     }
 
     @AfterEach
     fun tearDown() {
-        dataSource.close()
+        if (::dataSource.isInitialized) {
+            dataSource.close()
+        }
     }
 
     @Test
@@ -94,13 +93,18 @@ class JdbcJobStoreTest {
         store.saveExecution(execution)
         
         // "Restart" by closing and reopening datasource
+        val jdbcUrl = dataSource.jdbcUrl
+        val username = dataSource.username
+        val password = dataSource.password
+        val driverClassName = dataSource.driverClassName
+        
         dataSource.close()
         
         val config = HikariConfig().apply {
-            jdbcUrl = "jdbc:h2:mem:khrona;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1"
-            username = "sa"
-            password = ""
-            driverClassName = "org.h2.Driver"
+            this.jdbcUrl = jdbcUrl
+            this.username = username
+            this.password = password
+            this.driverClassName = driverClassName
         }
         dataSource = HikariDataSource(config)
         store = JdbcJobStore(dataSource)
@@ -121,7 +125,7 @@ class JdbcJobStoreTest {
         
         val workers = 10
         val deferreds = (1..workers).map { i ->
-            async(kotlinx.coroutines.Dispatchers.IO) {
+            async(Dispatchers.IO) {
                 store.claimExecution(execution.id, "worker-$i", Duration.ofMinutes(5))
             }
         }

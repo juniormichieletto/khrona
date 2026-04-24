@@ -6,6 +6,8 @@ plugins {
 dependencies {
     api(project(":khrona-core"))
     implementation(libs.postgresql)
+    implementation(libs.mysql)
+    implementation(libs.oracle)
     implementation(libs.hikaricp)
     
     testImplementation(libs.junit.jupiter)
@@ -13,6 +15,8 @@ dependencies {
     testImplementation(libs.slf4j.simple)
     testImplementation(libs.h2)
     testImplementation(libs.testcontainers.postgresql)
+    testImplementation(libs.testcontainers.mysql)
+    testImplementation(libs.testcontainers.oracle)
     testImplementation(libs.testcontainers.junit)
     "testRuntimeOnly"("org.junit.platform:junit-platform-launcher")
 }
