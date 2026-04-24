@@ -2,13 +2,15 @@ package io.khrona.core
 
 import kotlinx.coroutines.*
 import org.slf4j.LoggerFactory
+import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 
 class Scheduler(
     private val config: KhronaConfig,
-    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob()),
+    private val clock: Clock = Clock.systemUTC()
 ) {
     private val log = LoggerFactory.getLogger(Scheduler::class.java)
     private val store = config.store ?: throw IllegalStateException("JobStore must be configured")
@@ -26,7 +28,7 @@ class Scheduler(
             // Basic initial scheduling: for each job, create its first execution if none exist
             // This is a simplification for v0.1
             config.jobs.forEach { jobDef ->
-                val next = jobDef.trigger.nextExecutionTime(Instant.now())
+                val next = jobDef.trigger.nextExecutionTime(Instant.now(clock))
                 if (next != null) {
                     store.saveExecution(JobExecution(jobId = jobDef.id, scheduledAt = next))
                 }
@@ -44,7 +46,7 @@ class Scheduler(
     }
 
     private suspend fun pollAndExecute() {
-        val now = Instant.now()
+        val now = Instant.now(clock)
         val eligible = store.listEligibleExecutions(now)
         
         eligible.forEach { execution ->
@@ -67,14 +69,33 @@ class Scheduler(
             store.updateExecutionStatus(execution.id, ExecutionStatus.SUCCESS)
             
             // Schedule next run
-            val next = jobDef.trigger.nextExecutionTime(Instant.now())
+            val next = jobDef.trigger.nextExecutionTime(Instant.now(clock))
             if (next != null) {
                 store.saveExecution(JobExecution(jobId = jobDef.id, scheduledAt = next))
             }
         } catch (e: Exception) {
             log.error("Job ${execution.jobId} failed", e)
-            store.updateExecutionStatus(execution.id, ExecutionStatus.FAILED, e.message)
-            // TODO: Handle retries in v0.2
+            val nextAttempt = execution.attempt + 1
+            if (nextAttempt < jobDef.retryPolicy.maxAttempts) {
+                val nextDelay = jobDef.retryPolicy.calculateDelay(nextAttempt)
+                val nextRun = Instant.now(clock).plus(nextDelay)
+                
+                store.updateExecutionStatus(execution.id, ExecutionStatus.FAILED, e.message)
+                
+                // Create a new execution for the retry
+                store.saveExecution(
+                    JobExecution(
+                        jobId = execution.jobId,
+                        scheduledAt = nextRun,
+                        attempt = nextAttempt,
+                        payload = execution.payload
+                    )
+                )
+                log.info("Scheduled retry for job ${execution.jobId} at $nextRun (attempt $nextAttempt)")
+            } else {
+                store.updateExecutionStatus(execution.id, ExecutionStatus.DEAD_LETTERED, e.message)
+                log.warn("Job ${execution.jobId} reached max attempts (${jobDef.retryPolicy.maxAttempts}) and is now DEAD_LETTERED")
+            }
         }
     }
 
@@ -88,7 +109,7 @@ class Scheduler(
         scope.launch {
             store.saveJob(jobDef)
             // Schedule the first execution if it's a recurring/deferred job
-            val next = jobDef.trigger.nextExecutionTime(Instant.now())
+            val next = jobDef.trigger.nextExecutionTime(Instant.now(clock))
             if (next != null) {
                 store.saveExecution(JobExecution(jobId = jobDef.id, scheduledAt = next))
             }

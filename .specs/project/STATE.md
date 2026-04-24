@@ -5,13 +5,16 @@
 - **Guarantee:** Explicitly settled on **at-least-once** execution; removed "exactly-once" to avoid distributed systems fallacies.
 - **Storage:** `MemoryJobStore` is a first-class citizen for single-instance/dev/test use cases.
 - **v0.1 Completion:** Implemented core engine, in-memory store, and Ktor integration.
+- **v0.2 Completion:** Implemented JDBC/Postgres store, retries, and durable scheduling.
 
 ## Blockers
 - None.
 
 ## Todos
-- [ ] Map existing codebase (if any) to `.specs/codebase/`.
-- [ ] Initialize the Gradle/Kotlin project structure.
+- [x] Map existing codebase (if any) to `.specs/codebase/`.
+- [x] Initialize the Gradle/Kotlin project structure.
+- [x] Implement JDBC/Postgres Store (v0.2)
+- [ ] Implement Multi-node Claiming (v0.3)
 
 ## Deferred Ideas
 - Payload versioning/evolution (tracked in Future Considerations).

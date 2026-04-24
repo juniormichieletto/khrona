@@ -10,6 +10,12 @@ class JobBuilder(val id: String) {
     var lockKey: String? = null
     var timeout: Duration? = null
 
+    fun retry(block: RetryPolicyBuilder.() -> Unit) {
+        val builder = RetryPolicyBuilder()
+        builder.block()
+        this.retryPolicy = builder.build()
+    }
+
     fun every(interval: java.time.Duration) {
         this.trigger = IntervalTrigger(interval)
     }
@@ -34,6 +40,24 @@ class JobBuilder(val id: String) {
             retryPolicy = retryPolicy,
             lockKey = lockKey,
             timeout = timeout
+        )
+    }
+}
+
+class RetryPolicyBuilder {
+    var maxAttempts: Int = 3
+    var initialDelay: java.time.Duration = java.time.Duration.ofSeconds(1)
+    var maxDelay: java.time.Duration = java.time.Duration.ofMinutes(5)
+    var factor: Double = 2.0
+    var jitter: Double = 0.1
+
+    fun build(): RetryPolicy {
+        return RetryPolicy(
+            maxAttempts = maxAttempts,
+            initialDelay = initialDelay,
+            maxDelay = maxDelay,
+            factor = factor,
+            jitter = jitter
         )
     }
 }

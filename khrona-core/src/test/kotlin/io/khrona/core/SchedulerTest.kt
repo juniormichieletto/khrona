@@ -4,12 +4,20 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.test.*
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
+import java.time.Clock
 import java.time.Duration
 import java.time.Instant
+import java.time.ZoneId
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 
 class SchedulerTest {
+
+    class TestClock(private val scheduler: TestCoroutineScheduler) : Clock() {
+        override fun getZone(): ZoneId = ZoneId.of("UTC")
+        override fun withZone(zone: ZoneId?): Clock = this
+        override fun instant(): Instant = Instant.ofEpochMilli(scheduler.currentTime)
+    }
 
     class MockJobStore : JobStore {
         val jobs = ConcurrentHashMap<String, JobDefinition>()
@@ -29,7 +37,7 @@ class SchedulerTest {
         }
 
         override suspend fun updateExecutionStatus(id: UUID, status: ExecutionStatus, error: String?) {
-            executions.computeIfPresent(id) { _, exec -> exec.copy(status = status) }
+            executions.computeIfPresent(id) { _, exec -> exec.copy(status = status, error = error) }
             updatedStatuses.add(id to status)
         }
 
@@ -66,10 +74,11 @@ class SchedulerTest {
             }
         }
         
-        val scheduler = Scheduler(config, this)
+        val clock = TestClock(testScheduler)
+        val scheduler = Scheduler(config, this, clock)
         
         // Setup an eligible execution
-        val execution = JobExecution(jobId = "test-job", scheduledAt = Instant.now().minusSeconds(10))
+        val execution = JobExecution(jobId = "test-job", scheduledAt = Instant.now(clock).minusSeconds(10))
         store.saveExecution(execution)
         store.saveJob(config.jobs.first())
 
@@ -103,9 +112,10 @@ class SchedulerTest {
             }
         }
         
-        val scheduler = Scheduler(config, this)
+        val clock = TestClock(testScheduler)
+        val scheduler = Scheduler(config, this, clock)
         
-        val execution = JobExecution(jobId = "fail-job", scheduledAt = Instant.now().minusSeconds(10))
+        val execution = JobExecution(jobId = "fail-job", scheduledAt = Instant.now(clock).minusSeconds(10))
         store.saveExecution(execution)
         store.saveJob(config.jobs.first())
 
@@ -115,6 +125,60 @@ class SchedulerTest {
         
         val updated = store.getExecution(execution.id)
         assertEquals(ExecutionStatus.FAILED, updated?.status)
+        
+        scheduler.stop()
+    }
+
+    @Test
+    fun `scheduler should retry failed jobs`() = runTest {
+        val store = MockJobStore()
+        val config = KhronaConfig().apply {
+            this.store = store
+            job("retry-job") {
+                every(Duration.ofMinutes(1))
+                retry {
+                    maxAttempts = 3
+                    initialDelay = Duration.ofMillis(100)
+                }
+                execute {
+                    throw RuntimeException("Temporary failure")
+                }
+            }
+        }
+        
+        val clock = TestClock(testScheduler)
+        val scheduler = Scheduler(config, this, clock)
+        
+        val execution = JobExecution(jobId = "retry-job", scheduledAt = Instant.now(clock).minusSeconds(10))
+        store.saveExecution(execution)
+        store.saveJob(config.jobs.first())
+
+        scheduler.start()
+        
+        // First execution fails
+        advanceTimeBy(1000)
+        yield()
+        
+        // Should have a new execution with attempt 1
+        val retryExec = store.executions.values.find { it.jobId == "retry-job" && it.attempt == 1 }
+        assertNotNull(retryExec, "Retry execution should be scheduled")
+        // It might be already CLAIMED if the scheduler loop ran again
+        
+        // Wait for retry to be eligible and executed
+        advanceTimeBy(2000)
+        yield()
+        
+        // Should have attempt 2
+        val retryExec2 = store.executions.values.find { it.jobId == "retry-job" && it.attempt == 2 }
+        assertNotNull(retryExec2, "Second retry execution should be scheduled")
+        
+        // Wait for second retry
+        advanceTimeBy(2000)
+        yield()
+        
+        // Should be DEAD_LETTERED now as maxAttempts = 3 (0, 1, 2 are 3 attempts)
+        val finalExec = store.executions.values.find { it.jobId == "retry-job" && it.attempt == 2 }
+        assertEquals(ExecutionStatus.DEAD_LETTERED, finalExec?.status)
         
         scheduler.stop()
     }

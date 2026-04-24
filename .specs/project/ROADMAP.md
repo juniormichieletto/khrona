@@ -11,11 +11,11 @@
 - [x] Ktor Plugin Integration (Lifecycle)
 
 ## v0.2: Persistence & Reliability
-- [ ] JDBC / Postgres Persistence
-- [ ] One-time Jobs (Persistent)
-- [ ] Transactional Enqueue
-- [ ] Retry Policies & Backoff
-- [ ] Dead-Letter Support
+- [x] JDBC / Postgres Persistence
+- [x] One-time Jobs (Persistent)
+- [x] Transactional Enqueue
+- [x] Retry Policies & Backoff
+- [x] Dead-Letter Support
 
 ## v0.3: Distributed & Coordination
 - [ ] Multi-node Claiming (Lease Model)
