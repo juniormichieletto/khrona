@@ -26,16 +26,24 @@ class Scheduler(
             config.jobs.forEach { store.saveJob(it) }
             
             // Basic initial scheduling: for each job, create its first execution if none exist
-            // This is a simplification for v0.1
             config.jobs.forEach { jobDef ->
                 val next = jobDef.trigger.nextExecutionTime(Instant.now(clock))
                 if (next != null) {
-                    store.saveExecution(JobExecution(jobId = jobDef.id, scheduledAt = next))
+                    store.saveExecution(JobExecution(jobId = jobDef.id, scheduledAt = next, lockKey = jobDef.lockKey))
                 }
             }
 
+            var lastRecovery = Instant.MIN
             while (isActive) {
                 try {
+                    val now = Instant.now(clock)
+                    // Periodic recovery of stale executions
+                    if (Duration.between(lastRecovery, now) > Duration.ofMinutes(1)) {
+                        val recovered = store.resetExpiredExecutions(now)
+                        if (recovered > 0) log.info("Recovered $recovered stale executions")
+                        lastRecovery = now
+                    }
+
                     pollAndExecute()
                 } catch (e: Exception) {
                     log.error("Error in scheduler loop", e)
@@ -45,21 +53,56 @@ class Scheduler(
         }
     }
 
-    private suspend fun pollAndExecute() {
+    internal suspend fun pollAndExecute() {
         val now = Instant.now(clock)
         val eligible = store.listEligibleExecutions(now)
         
         eligible.forEach { execution ->
-            if (store.claimExecution(execution.id, workerId, Duration.ofMinutes(5))) {
+            val jobDef = store.getJob(execution.jobId) ?: return@forEach
+            
+            // Check for distributed lock if policy is FORBID
+            if (jobDef.concurrencyPolicy == ConcurrencyPolicy.FORBID && jobDef.lockKey != null) {
+                if (store.isLockHeld(jobDef.lockKey)) {
+                    log.debug("Skipping execution ${execution.id} for job ${execution.jobId} because lock ${jobDef.lockKey} is held")
+                    return@forEach
+                }
+            }
+
+            // TODO: Configurable lease duration
+            val leaseDuration = Duration.ofMinutes(5)
+            if (store.claimExecution(execution.id, workerId, leaseDuration)) {
                 scope.launch {
-                    executeJob(execution)
+                    executeJobWithHeartbeat(execution, jobDef, leaseDuration)
                 }
             }
         }
     }
 
-    private suspend fun executeJob(execution: JobExecution) {
-        val jobDef = store.getJob(execution.jobId) ?: return
+    private suspend fun executeJobWithHeartbeat(execution: JobExecution, jobDef: JobDefinition, leaseDuration: Duration) {
+        coroutineScope {
+            val heartbeatJob = launch {
+                while (isActive) {
+                    delay(leaseDuration.toMillis() / 2)
+                    try {
+                        if (!store.heartbeat(execution.id, leaseDuration)) {
+                            log.warn("Failed to heartbeat for execution ${execution.id}, it might have been reclaimed")
+                            break
+                        }
+                    } catch (e: Exception) {
+                        log.error("Error during heartbeat for execution ${execution.id}", e)
+                    }
+                }
+            }
+
+            try {
+                executeJob(execution, jobDef)
+            } finally {
+                heartbeatJob.cancel()
+            }
+        }
+    }
+
+    private suspend fun executeJob(execution: JobExecution, jobDef: JobDefinition) {
         try {
             log.info("Executing job ${execution.jobId} (execution: ${execution.id})")
             store.updateExecutionStatus(execution.id, ExecutionStatus.RUNNING)
@@ -71,7 +114,7 @@ class Scheduler(
             // Schedule next run
             val next = jobDef.trigger.nextExecutionTime(Instant.now(clock))
             if (next != null) {
-                store.saveExecution(JobExecution(jobId = jobDef.id, scheduledAt = next))
+                store.saveExecution(JobExecution(jobId = jobDef.id, scheduledAt = next, lockKey = jobDef.lockKey))
             }
         } catch (e: Exception) {
             log.error("Job ${execution.jobId} failed", e)
@@ -88,7 +131,8 @@ class Scheduler(
                         jobId = execution.jobId,
                         scheduledAt = nextRun,
                         attempt = nextAttempt,
-                        payload = execution.payload
+                        payload = execution.payload,
+                        lockKey = jobDef.lockKey
                     )
                 )
                 log.info("Scheduled retry for job ${execution.jobId} at $nextRun (attempt $nextAttempt)")
@@ -111,7 +155,7 @@ class Scheduler(
             // Schedule the first execution if it's a recurring/deferred job
             val next = jobDef.trigger.nextExecutionTime(Instant.now(clock))
             if (next != null) {
-                store.saveExecution(JobExecution(jobId = jobDef.id, scheduledAt = next))
+                store.saveExecution(JobExecution(jobId = jobDef.id, scheduledAt = next, lockKey = jobDef.lockKey))
             }
         }
     }

@@ -24,25 +24,21 @@ class JdbcJobStore(
         
         if (dialect is OracleDialect) {
             sql = sql.replace("TEXT", "CLOB")
-                .replace("IF NOT EXISTS", "") // Oracle 23c supports it but older versions don't, and sometimes it's picky
+                .replace("IF NOT EXISTS", "") 
         }
         
         dataSource.connection.use { conn ->
             conn.autoCommit = false
             try {
                 conn.createStatement().use { stmt ->
-                    // Split by semicolon but be careful with potential semicolons in strings/etc.
-                    // For our simple schema, splitting by semicolon is fine.
                     sql.split(";").filter { it.trim().isNotEmpty() }.forEach { statement ->
                         try {
                             stmt.execute(statement)
                         } catch (e: Exception) {
                             val msg = e.message?.uppercase() ?: ""
-                            // ORA-00955: name is already used by an existing object
-                            // ORA-02260: table can have only one primary key (sometimes happens with IF NOT EXISTS logic)
                             if (msg.contains("ORA-00955") || msg.contains("ORA-02260") ||
                                 statement.trim().uppercase().startsWith("CREATE INDEX")) {
-                                // Ignore duplicate object errors
+                                // Ignore
                             } else {
                                 throw e
                             }
@@ -119,6 +115,7 @@ class JdbcJobStore(
                 stmt.setTimestamp(4, Timestamp.from(execution.scheduledAt))
                 stmt.setInt(5, execution.attempt)
                 stmt.setString(6, execution.payload?.toString())
+                stmt.setString(7, execution.lockKey)
                 stmt.executeUpdate()
             }
         }
@@ -156,6 +153,7 @@ class JdbcJobStore(
         dataSource.connection.use { conn ->
             conn.prepareStatement(dialect.listEligibleExecutionsSql()).use { stmt ->
                 stmt.setTimestamp(1, Timestamp.from(now))
+                stmt.setTimestamp(2, Timestamp.from(now))
                 val rs = stmt.executeQuery()
                 while (rs.next()) {
                     executions.add(mapExecution(rs))
@@ -169,10 +167,48 @@ class JdbcJobStore(
         dataSource.connection.use { conn ->
             conn.prepareStatement(dialect.claimExecutionSql()).use { stmt ->
                 val now = Instant.now()
+                val expiresAt = now.plus(leaseDuration)
                 stmt.setTimestamp(1, Timestamp.from(now))
                 stmt.setString(2, workerId)
-                stmt.setString(3, id.toString())
+                stmt.setTimestamp(3, Timestamp.from(expiresAt))
+                stmt.setTimestamp(4, Timestamp.from(now))
+                stmt.setString(5, id.toString())
+                stmt.setTimestamp(6, Timestamp.from(now))
                 return stmt.executeUpdate() > 0
+            }
+        }
+    }
+
+    override suspend fun heartbeat(id: UUID, leaseDuration: Duration): Boolean {
+        dataSource.connection.use { conn ->
+            conn.prepareStatement(dialect.heartbeatSql()).use { stmt ->
+                val expiresAt = Instant.now().plus(leaseDuration)
+                stmt.setTimestamp(1, Timestamp.from(expiresAt))
+                stmt.setString(2, id.toString())
+                return stmt.executeUpdate() > 0
+            }
+        }
+    }
+
+    override suspend fun isLockHeld(lockKey: String): Boolean {
+        dataSource.connection.use { conn ->
+            conn.prepareStatement(dialect.isLockHeldSql()).use { stmt ->
+                stmt.setString(1, lockKey)
+                stmt.setTimestamp(2, Timestamp.from(Instant.now()))
+                val rs = stmt.executeQuery()
+                if (rs.next()) {
+                    return rs.getInt(1) > 0
+                }
+            }
+        }
+        return false
+    }
+
+    override suspend fun resetExpiredExecutions(now: Instant): Int {
+        dataSource.connection.use { conn ->
+            conn.prepareStatement(dialect.resetExpiredExecutionsSql()).use { stmt ->
+                stmt.setTimestamp(1, Timestamp.from(now))
+                return stmt.executeUpdate()
             }
         }
     }
@@ -186,7 +222,10 @@ class JdbcJobStore(
             scheduledAt = rs.getTimestamp("scheduled_at").toInstant(),
             startedAt = rs.getTimestamp("started_at")?.toInstant(),
             completedAt = rs.getTimestamp("completed_at")?.toInstant(),
+            expiresAt = rs.getTimestamp("expires_at")?.toInstant(),
             attempt = rs.getInt("attempt"),
+            workerId = rs.getString("claimed_by"),
+            lockKey = rs.getString("lock_key"),
             error = rs.getString("error"),
             payload = rs.getString("payload_json")
         )
@@ -201,7 +240,7 @@ class JdbcJobStore(
                     name.contains("mysql") || name.contains("mariadb") -> MySqlDialect()
                     name.contains("oracle") -> OracleDialect()
                     name.contains("h2") -> H2Dialect()
-                    else -> H2Dialect() // Fallback to generic
+                    else -> H2Dialect() 
                 }
             }
         }

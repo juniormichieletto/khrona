@@ -10,8 +10,9 @@ interface JdbcDialect {
     fun upsertExecutionSql(): String
     fun claimExecutionSql(): String
     fun listEligibleExecutionsSql(): String
-    
-    // Optional: add methods for parameter binding if they differ significantly
+    fun heartbeatSql(): String
+    fun isLockHeldSql(): String
+    fun resetExpiredExecutionsSql(): String
 }
 
 class PostgresDialect : JdbcDialect {
@@ -24,27 +25,50 @@ class PostgresDialect : JdbcDialect {
     """.trimIndent()
 
     override fun upsertExecutionSql(): String = """
-        INSERT INTO khrona_executions (id, job_id, status, scheduled_at, attempt, payload_json)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO khrona_executions (id, job_id, status, scheduled_at, attempt, payload_json, lock_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (id) DO UPDATE SET
             status = EXCLUDED.status,
             scheduled_at = EXCLUDED.scheduled_at,
             attempt = EXCLUDED.attempt,
-            payload_json = EXCLUDED.payload_json
+            payload_json = EXCLUDED.payload_json,
+            lock_key = EXCLUDED.lock_key
     """.trimIndent()
 
     override fun claimExecutionSql(): String = """
         UPDATE khrona_executions
-        SET status = 'CLAIMED', claimed_at = ?, claimed_by = ?
+        SET status = 'CLAIMED', claimed_at = ?, claimed_by = ?, expires_at = ?, started_at = ?
         WHERE id = (
             SELECT id FROM khrona_executions
-            WHERE id = ? AND status = 'PENDING'
+            WHERE id = ? 
+            AND (status = 'PENDING' OR ((status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?))
             FOR UPDATE SKIP LOCKED
         )
     """.trimIndent()
 
-    override fun listEligibleExecutionsSql(): String = 
-        "SELECT * FROM khrona_executions WHERE status = 'PENDING' AND scheduled_at <= ? ORDER BY scheduled_at ASC"
+    override fun listEligibleExecutionsSql(): String = """
+        SELECT * FROM khrona_executions 
+        WHERE (status = 'PENDING' OR ((status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?))
+        AND scheduled_at <= ? 
+        ORDER BY scheduled_at ASC
+    """.trimIndent()
+
+    override fun heartbeatSql(): String = """
+        UPDATE khrona_executions SET expires_at = ? 
+        WHERE id = ? AND (status = 'CLAIMED' OR status = 'RUNNING')
+    """.trimIndent()
+
+    override fun isLockHeldSql(): String = """
+        SELECT COUNT(*) FROM khrona_executions 
+        WHERE lock_key = ? AND (status = 'CLAIMED' OR status = 'RUNNING') 
+        AND (expires_at IS NULL OR expires_at > ?)
+    """.trimIndent()
+
+    override fun resetExpiredExecutionsSql(): String = """
+        UPDATE khrona_executions 
+        SET status = 'PENDING', claimed_at = NULL, claimed_by = NULL, expires_at = NULL, started_at = NULL
+        WHERE (status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?
+    """.trimIndent()
 }
 
 class H2Dialect : JdbcDialect {
@@ -53,17 +77,38 @@ class H2Dialect : JdbcDialect {
     """.trimIndent()
 
     override fun upsertExecutionSql(): String = """
-        MERGE INTO khrona_executions (id, job_id, status, scheduled_at, attempt, payload_json) KEY (id) VALUES (?, ?, ?, ?, ?, ?)
+        MERGE INTO khrona_executions (id, job_id, status, scheduled_at, attempt, payload_json, lock_key) KEY (id) VALUES (?, ?, ?, ?, ?, ?, ?)
     """.trimIndent()
 
     override fun claimExecutionSql(): String = """
         UPDATE khrona_executions
-        SET status = 'CLAIMED', claimed_at = ?, claimed_by = ?
-        WHERE id = ? AND status = 'PENDING'
+        SET status = 'CLAIMED', claimed_at = ?, claimed_by = ?, expires_at = ?, started_at = ?
+        WHERE id = ? AND (status = 'PENDING' OR ((status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?))
     """.trimIndent()
 
-    override fun listEligibleExecutionsSql(): String = 
-        "SELECT * FROM khrona_executions WHERE status = 'PENDING' AND scheduled_at <= ? ORDER BY scheduled_at ASC"
+    override fun listEligibleExecutionsSql(): String = """
+        SELECT * FROM khrona_executions 
+        WHERE (status = 'PENDING' OR ((status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?))
+        AND scheduled_at <= ? 
+        ORDER BY scheduled_at ASC
+    """.trimIndent()
+
+    override fun heartbeatSql(): String = """
+        UPDATE khrona_executions SET expires_at = ? 
+        WHERE id = ? AND (status = 'CLAIMED' OR status = 'RUNNING')
+    """.trimIndent()
+
+    override fun isLockHeldSql(): String = """
+        SELECT COUNT(*) FROM khrona_executions 
+        WHERE lock_key = ? AND (status = 'CLAIMED' OR status = 'RUNNING') 
+        AND (expires_at IS NULL OR expires_at > ?)
+    """.trimIndent()
+
+    override fun resetExpiredExecutionsSql(): String = """
+        UPDATE khrona_executions 
+        SET status = 'PENDING', claimed_at = NULL, claimed_by = NULL, expires_at = NULL, started_at = NULL
+        WHERE (status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?
+    """.trimIndent()
 }
 
 class MySqlDialect : JdbcDialect {
@@ -76,29 +121,52 @@ class MySqlDialect : JdbcDialect {
     """.trimIndent()
 
     override fun upsertExecutionSql(): String = """
-        INSERT INTO khrona_executions (id, job_id, status, scheduled_at, attempt, payload_json)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO khrona_executions (id, job_id, status, scheduled_at, attempt, payload_json, lock_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON DUPLICATE KEY UPDATE
             status = VALUES(status),
             scheduled_at = VALUES(scheduled_at),
             attempt = VALUES(attempt),
-            payload_json = VALUES(payload_json)
+            payload_json = VALUES(payload_json),
+            lock_key = VALUES(lock_key)
     """.trimIndent()
 
     override fun claimExecutionSql(): String = """
         UPDATE khrona_executions
-        SET status = 'CLAIMED', claimed_at = ?, claimed_by = ?
+        SET status = 'CLAIMED', claimed_at = ?, claimed_by = ?, expires_at = ?, started_at = ?
         WHERE id = (
             SELECT id FROM (
                 SELECT id FROM khrona_executions
-                WHERE id = ? AND status = 'PENDING'
+                WHERE id = ? 
+                AND (status = 'PENDING' OR ((status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?))
                 FOR UPDATE SKIP LOCKED
             ) as t
         )
     """.trimIndent()
 
-    override fun listEligibleExecutionsSql(): String = 
-        "SELECT * FROM khrona_executions WHERE status = 'PENDING' AND scheduled_at <= ? ORDER BY scheduled_at ASC"
+    override fun listEligibleExecutionsSql(): String = """
+        SELECT * FROM khrona_executions 
+        WHERE (status = 'PENDING' OR ((status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?))
+        AND scheduled_at <= ? 
+        ORDER BY scheduled_at ASC
+    """.trimIndent()
+
+    override fun heartbeatSql(): String = """
+        UPDATE khrona_executions SET expires_at = ? 
+        WHERE id = ? AND (status = 'CLAIMED' OR status = 'RUNNING')
+    """.trimIndent()
+
+    override fun isLockHeldSql(): String = """
+        SELECT COUNT(*) FROM khrona_executions 
+        WHERE lock_key = ? AND (status = 'CLAIMED' OR status = 'RUNNING') 
+        AND (expires_at IS NULL OR expires_at > ?)
+    """.trimIndent()
+
+    override fun resetExpiredExecutionsSql(): String = """
+        UPDATE khrona_executions 
+        SET status = 'PENDING', claimed_at = NULL, claimed_by = NULL, expires_at = NULL, started_at = NULL
+        WHERE (status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?
+    """.trimIndent()
 }
 
 class OracleDialect : JdbcDialect {
@@ -114,23 +182,44 @@ class OracleDialect : JdbcDialect {
 
     override fun upsertExecutionSql(): String = """
         MERGE INTO khrona_executions t
-        USING (SELECT ? id, ? job_id, ? status, ? scheduled_at, ? attempt, ? payload_json FROM dual) s
+        USING (SELECT ? id, ? job_id, ? status, ? scheduled_at, ? attempt, ? payload_json, ? lock_key FROM dual) s
         ON (t.id = s.id)
         WHEN MATCHED THEN
-            UPDATE SET t.status = s.status, t.scheduled_at = s.scheduled_at, t.attempt = s.attempt, t.payload_json = s.payload_json
+            UPDATE SET t.status = s.status, t.scheduled_at = s.scheduled_at, t.attempt = s.attempt, t.payload_json = s.payload_json, t.lock_key = s.lock_key
         WHEN NOT MATCHED THEN
-            INSERT (id, job_id, status, scheduled_at, attempt, payload_json)
-            VALUES (s.id, s.job_id, s.status, s.scheduled_at, s.attempt, s.payload_json)
+            INSERT (id, job_id, status, scheduled_at, attempt, payload_json, lock_key)
+            VALUES (s.id, s.job_id, s.status, s.scheduled_at, s.attempt, s.payload_json, s.lock_key)
     """.trimIndent()
 
     override fun claimExecutionSql(): String = """
         UPDATE khrona_executions
-        SET status = 'CLAIMED', claimed_at = ?, claimed_by = ?
-        WHERE id = ? AND status = 'PENDING'
+        SET status = 'CLAIMED', claimed_at = ?, claimed_by = ?, expires_at = ?, started_at = ?
+        WHERE id = ? AND (status = 'PENDING' OR ((status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?))
     """.trimIndent()
 
-    override fun listEligibleExecutionsSql(): String = 
-        "SELECT * FROM khrona_executions WHERE status = 'PENDING' AND scheduled_at <= ? ORDER BY scheduled_at ASC"
+    override fun listEligibleExecutionsSql(): String = """
+        SELECT * FROM khrona_executions 
+        WHERE (status = 'PENDING' OR ((status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?))
+        AND scheduled_at <= ? 
+        ORDER BY scheduled_at ASC
+    """.trimIndent()
+
+    override fun heartbeatSql(): String = """
+        UPDATE khrona_executions SET expires_at = ? 
+        WHERE id = ? AND (status = 'CLAIMED' OR status = 'RUNNING')
+    """.trimIndent()
+
+    override fun isLockHeldSql(): String = """
+        SELECT COUNT(*) FROM khrona_executions 
+        WHERE lock_key = ? AND (status = 'CLAIMED' OR status = 'RUNNING') 
+        AND (expires_at IS NULL OR expires_at > ?)
+    """.trimIndent()
+
+    override fun resetExpiredExecutionsSql(): String = """
+        UPDATE khrona_executions 
+        SET status = 'PENDING', claimed_at = NULL, claimed_by = NULL, expires_at = NULL, started_at = NULL
+        WHERE (status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?
+    """.trimIndent()
 }
 
 

@@ -21,48 +21,6 @@ class SchedulerTest {
         override fun instant(): Instant = Instant.ofEpochMilli(scheduler.currentTime)
     }
 
-    class MockJobStore : JobStore {
-        val jobs = ConcurrentHashMap<String, JobDefinition>()
-        val executions = ConcurrentHashMap<UUID, JobExecution>()
-        val updatedStatuses = mutableListOf<Pair<UUID, ExecutionStatus>>()
-
-        override suspend fun saveJob(job: JobDefinition) {
-            jobs[job.id] = job
-        }
-
-        override suspend fun getJob(jobId: String): JobDefinition? = jobs[jobId]
-
-        override suspend fun listJobs(): List<JobDefinition> = jobs.values.toList()
-
-        override suspend fun saveExecution(execution: JobExecution) {
-            executions[execution.id] = execution
-        }
-
-        override suspend fun updateExecutionStatus(id: UUID, status: ExecutionStatus, error: String?) {
-            executions.computeIfPresent(id) { _, exec -> exec.copy(status = status, error = error) }
-            updatedStatuses.add(id to status)
-        }
-
-        override suspend fun getExecution(id: UUID): JobExecution? = executions[id]
-
-        override suspend fun listEligibleExecutions(now: Instant): List<JobExecution> {
-            return executions.values.filter { it.status == ExecutionStatus.PENDING && it.scheduledAt <= now }
-        }
-
-        override suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: Duration): Boolean {
-            var claimed = false
-            executions.computeIfPresent(id) { _, exec ->
-                if (exec.status == ExecutionStatus.PENDING) {
-                    claimed = true
-                    exec.copy(status = ExecutionStatus.CLAIMED)
-                } else {
-                    exec
-                }
-            }
-            return claimed
-        }
-    }
-
     @Test
     fun `scheduler should execute eligible jobs`() = runTest {
         val store = MockJobStore()

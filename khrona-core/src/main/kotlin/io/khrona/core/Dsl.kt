@@ -7,6 +7,7 @@ class JobBuilder(val id: String) {
     var trigger: Trigger? = null
     private var handler: JobHandler? = null
     var retryPolicy: RetryPolicy = RetryPolicy.DEFAULT
+    var concurrencyPolicy: ConcurrencyPolicy = ConcurrencyPolicy.ALLOW
     var lockKey: String? = null
     var timeout: Duration? = null
 
@@ -38,6 +39,7 @@ class JobBuilder(val id: String) {
             handler = handler ?: throw IllegalArgumentException("Handler must be defined for job $id"),
             trigger = trigger ?: throw IllegalArgumentException("Trigger must be defined for job $id"),
             retryPolicy = retryPolicy,
+            concurrencyPolicy = concurrencyPolicy,
             lockKey = lockKey,
             timeout = timeout
         )

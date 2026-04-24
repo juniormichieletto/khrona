@@ -18,9 +18,9 @@
 - [x] Dead-Letter Support
 
 ## v0.3: Distributed & Coordination
-- [ ] Multi-node Claiming (Lease Model)
-- [ ] Distributed Locking (`FORBID` policy)
-- [ ] Stale Worker Recovery
+- [x] Multi-node Claiming (Lease Model)
+- [x] Distributed Locking (`FORBID` policy)
+- [x] Stale Worker Recovery
 
 ## v0.4: Ops & Visibility
 - [ ] Admin API & Routes

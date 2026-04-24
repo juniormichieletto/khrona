@@ -24,12 +24,19 @@ object InstantSerializer : KSerializer<Instant> {
 
 typealias JobHandler = suspend (payload: Any?) -> Unit
 
+enum class ConcurrencyPolicy {
+    ALLOW,
+    FORBID,
+    REPLACE
+}
+
 data class JobDefinition(
     val id: String,
     val description: String? = null,
     val handler: JobHandler,
     val trigger: Trigger,
     val retryPolicy: RetryPolicy = RetryPolicy.DEFAULT,
+    val concurrencyPolicy: ConcurrencyPolicy = ConcurrencyPolicy.ALLOW,
     val lockKey: String? = null,
     val timeout: Duration? = null
 )

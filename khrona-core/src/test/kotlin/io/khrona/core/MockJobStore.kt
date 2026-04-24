@@ -1,17 +1,14 @@
-package io.khrona.store.memory
+package io.khrona.core
 
-import io.khrona.core.ExecutionStatus
-import io.khrona.core.JobDefinition
-import io.khrona.core.JobExecution
-import io.khrona.core.JobStore
 import java.time.Duration
 import java.time.Instant
-import java.util.UUID
+import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 
-class MemoryJobStore : JobStore {
-    private val jobs = ConcurrentHashMap<String, JobDefinition>()
-    private val executions = ConcurrentHashMap<UUID, JobExecution>()
+class MockJobStore : JobStore {
+    val jobs = ConcurrentHashMap<String, JobDefinition>()
+    val executions = ConcurrentHashMap<UUID, JobExecution>()
+    val updatedStatuses = mutableListOf<Pair<UUID, ExecutionStatus>>()
 
     override suspend fun saveJob(job: JobDefinition) {
         jobs[job.id] = job
@@ -26,13 +23,8 @@ class MemoryJobStore : JobStore {
     }
 
     override suspend fun updateExecutionStatus(id: UUID, status: ExecutionStatus, error: String?) {
-        executions.computeIfPresent(id) { _, exec ->
-            exec.copy(
-                status = status,
-                error = error,
-                completedAt = if (status == ExecutionStatus.SUCCESS || status == ExecutionStatus.FAILED || status == ExecutionStatus.DEAD_LETTERED) Instant.now() else exec.completedAt
-            )
-        }
+        executions.computeIfPresent(id) { _, exec -> exec.copy(status = status, error = error) }
+        updatedStatuses.add(id to status)
     }
 
     override suspend fun getExecution(id: UUID): JobExecution? = executions[id]

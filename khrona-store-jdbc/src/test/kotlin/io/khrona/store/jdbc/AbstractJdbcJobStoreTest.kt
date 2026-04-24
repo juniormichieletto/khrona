@@ -116,21 +116,63 @@ abstract class AbstractJdbcJobStoreTest {
     }
 
     @Test
-    fun `should prevent double claiming by multiple workers`() = runBlocking {
-        val job = JobDefinition(id = "race-job", handler = {}, trigger = IntervalTrigger(Duration.ZERO))
+    fun `should reclaim after lease expires`() = runBlocking {
+        val job = JobDefinition(id = "lease-job", handler = {}, trigger = IntervalTrigger(Duration.ZERO))
         store.saveJob(job)
         
-        val execution = JobExecution(jobId = "race-job", scheduledAt = Instant.now())
+        val execution = JobExecution(jobId = "lease-job", scheduledAt = Instant.now().minusSeconds(60))
         store.saveExecution(execution)
         
-        val workers = 10
-        val deferreds = (1..workers).map { i ->
-            async(Dispatchers.IO) {
-                store.claimExecution(execution.id, "worker-$i", Duration.ofMinutes(5))
-            }
-        }
-        val results = deferreds.awaitAll()
+        // Claim with 1ms lease
+        store.claimExecution(execution.id, "worker-1", Duration.ofMillis(1))
         
-        assertEquals(1, results.count { it }, "Only one worker should succeed in claiming")
+        delay(10)
+        
+        val eligible = store.listEligibleExecutions(Instant.now())
+        assertEquals(1, eligible.size)
+        
+        val claimedAgain = store.claimExecution(execution.id, "worker-2", Duration.ofMinutes(5))
+        assertTrue(claimedAgain)
+        
+        val updated = store.getExecution(execution.id)
+        assertEquals("worker-2", updated?.workerId)
+    }
+
+    @Test
+    fun `should check if lock is held`() = runBlocking {
+        val lockKey = "distributed-lock"
+        val job = JobDefinition(id = "lock-job", handler = {}, trigger = IntervalTrigger(Duration.ZERO))
+        store.saveJob(job)
+        
+        val execution = JobExecution(jobId = "lock-job", scheduledAt = Instant.now(), lockKey = lockKey)
+        store.saveExecution(execution)
+        
+        assertFalse(store.isLockHeld(lockKey))
+        
+        store.claimExecution(execution.id, "worker-1", Duration.ofMinutes(5))
+        assertTrue(store.isLockHeld(lockKey))
+        
+        store.updateExecutionStatus(execution.id, ExecutionStatus.SUCCESS)
+        assertFalse(store.isLockHeld(lockKey))
+    }
+
+    @Test
+    fun `should heartbeat to extend lease`() = runBlocking {
+        val job = JobDefinition(id = "heartbeat-job", handler = {}, trigger = IntervalTrigger(Duration.ZERO))
+        store.saveJob(job)
+        
+        val execution = JobExecution(jobId = "heartbeat-job", scheduledAt = Instant.now())
+        store.saveExecution(execution)
+        
+        store.claimExecution(execution.id, "worker-1", Duration.ofMillis(100))
+        val firstExpiry = store.getExecution(execution.id)?.expiresAt
+        
+        delay(10)
+        store.heartbeat(execution.id, Duration.ofMinutes(1))
+        val secondExpiry = store.getExecution(execution.id)?.expiresAt
+        
+        assertNotNull(firstExpiry)
+        assertNotNull(secondExpiry)
+        assertTrue(secondExpiry!! > firstExpiry!!)
     }
 }

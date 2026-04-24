@@ -6,6 +6,7 @@
 - **Storage:** `MemoryJobStore` is a first-class citizen for single-instance/dev/test use cases.
 - **v0.1 Completion:** Implemented core engine, in-memory store, and Ktor integration.
 - **v0.2 Completion:** Implemented JDBC/Postgres store, retries, and durable scheduling.
+- **v0.3 Completion:** Implemented lease-based claiming, distributed locking (FORBID), and stale worker recovery.
 
 ## Blockers
 - None.
@@ -14,7 +15,8 @@
 - [x] Map existing codebase (if any) to `.specs/codebase/`.
 - [x] Initialize the Gradle/Kotlin project structure.
 - [x] Implement JDBC/Postgres Store (v0.2)
-- [ ] Implement Multi-node Claiming (v0.3)
+- [x] Implement Multi-node Claiming (v0.3)
+- [ ] Implement Admin API & Visibility (v0.4)
 
 ## Deferred Ideas
 - Payload versioning/evolution (tracked in Future Considerations).

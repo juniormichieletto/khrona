@@ -9,6 +9,7 @@ data class JobExecution(
     val scheduledAt: Instant,
     val startedAt: Instant? = null,
     val completedAt: Instant? = null,
+    val expiresAt: Instant? = null,
     val status: ExecutionStatus = ExecutionStatus.PENDING,
     val attempt: Int = 0,
     val workerId: String? = null,
