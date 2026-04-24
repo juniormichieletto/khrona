@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalCoroutinesApi::class)
+
 package io.khrona.core
 
 import kotlinx.coroutines.*
