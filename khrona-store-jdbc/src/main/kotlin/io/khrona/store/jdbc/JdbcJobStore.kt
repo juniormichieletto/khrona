@@ -11,12 +11,12 @@ import java.time.Instant
 import java.util.*
 import javax.sql.DataSource
 
-class JdbcJobStore(private val dataSource: DataSource) : JobStore {
+class JdbcJobStore(
+    private val dataSource: DataSource,
+    private val dialect: JdbcDialect = resolveDialect(dataSource)
+) : JobStore {
 
     private val json = Json { ignoreUnknownKeys = true }
-    private val isPostgres: Boolean by lazy {
-        dataSource.connection.use { it.metaData.databaseProductName.contains("PostgreSQL", ignoreCase = true) }
-    }
 
     fun migrate() {
         val sql = this::class.java.getResource("/khrona_schema.sql")?.readText()
@@ -31,45 +31,11 @@ class JdbcJobStore(private val dataSource: DataSource) : JobStore {
 
     override suspend fun saveJob(job: JobDefinition) {
         dataSource.connection.use { conn ->
-            if (isPostgres) {
-                val sql = """
-                    INSERT INTO khrona_jobs (id, description, retry_policy_json)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT (id) DO UPDATE SET
-                        description = EXCLUDED.description,
-                        retry_policy_json = EXCLUDED.retry_policy_json
-                """.trimIndent()
-                conn.prepareStatement(sql).use { stmt ->
-                    stmt.setString(1, job.id)
-                    stmt.setString(2, job.description)
-                    stmt.setString(3, json.encodeToString(job.retryPolicy))
-                    stmt.executeUpdate()
-                }
-            } else {
-                // H2 / Generic compatible UPSERT
-                val existsSql = "SELECT 1 FROM khrona_jobs WHERE id = ?"
-                val exists = conn.prepareStatement(existsSql).use { stmt ->
-                    stmt.setString(1, job.id)
-                    stmt.executeQuery().next()
-                }
-                
-                if (exists) {
-                    val sql = "UPDATE khrona_jobs SET description = ?, retry_policy_json = ? WHERE id = ?"
-                    conn.prepareStatement(sql).use { stmt ->
-                        stmt.setString(1, job.description)
-                        stmt.setString(2, json.encodeToString(job.retryPolicy))
-                        stmt.setString(3, job.id)
-                        stmt.executeUpdate()
-                    }
-                } else {
-                    val sql = "INSERT INTO khrona_jobs (id, description, retry_policy_json) VALUES (?, ?, ?)"
-                    conn.prepareStatement(sql).use { stmt ->
-                        stmt.setString(1, job.id)
-                        stmt.setString(2, job.description)
-                        stmt.setString(3, json.encodeToString(job.retryPolicy))
-                        stmt.executeUpdate()
-                    }
-                }
+            conn.prepareStatement(dialect.upsertJobSql()).use { stmt ->
+                stmt.setString(1, job.id)
+                stmt.setString(2, job.description)
+                stmt.setString(3, json.encodeToString(job.retryPolicy))
+                stmt.executeUpdate()
             }
         }
     }
@@ -116,54 +82,14 @@ class JdbcJobStore(private val dataSource: DataSource) : JobStore {
 
     override suspend fun saveExecution(execution: JobExecution) {
         dataSource.connection.use { conn ->
-            if (isPostgres) {
-                val sql = """
-                    INSERT INTO khrona_executions (id, job_id, status, scheduled_at, attempt, payload_json)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT (id) DO UPDATE SET
-                        status = EXCLUDED.status,
-                        scheduled_at = EXCLUDED.scheduled_at,
-                        attempt = EXCLUDED.attempt,
-                        payload_json = EXCLUDED.payload_json
-                """.trimIndent()
-                conn.prepareStatement(sql).use { stmt ->
-                    stmt.setObject(1, execution.id)
-                    stmt.setString(2, execution.jobId)
-                    stmt.setString(3, execution.status.name)
-                    stmt.setTimestamp(4, Timestamp.from(execution.scheduledAt))
-                    stmt.setInt(5, execution.attempt)
-                    stmt.setString(6, execution.payload?.toString())
-                    stmt.executeUpdate()
-                }
-            } else {
-                val existsSql = "SELECT 1 FROM khrona_executions WHERE id = ?"
-                val exists = conn.prepareStatement(existsSql).use { stmt ->
-                    stmt.setObject(1, execution.id)
-                    stmt.executeQuery().next()
-                }
-                
-                if (exists) {
-                    val sql = "UPDATE khrona_executions SET status = ?, scheduled_at = ?, attempt = ?, payload_json = ? WHERE id = ?"
-                    conn.prepareStatement(sql).use { stmt ->
-                        stmt.setString(1, execution.status.name)
-                        stmt.setTimestamp(2, Timestamp.from(execution.scheduledAt))
-                        stmt.setInt(3, execution.attempt)
-                        stmt.setString(4, execution.payload?.toString())
-                        stmt.setObject(5, execution.id)
-                        stmt.executeUpdate()
-                    }
-                } else {
-                    val sql = "INSERT INTO khrona_executions (id, job_id, status, scheduled_at, attempt, payload_json) VALUES (?, ?, ?, ?, ?, ?)"
-                    conn.prepareStatement(sql).use { stmt ->
-                        stmt.setObject(1, execution.id)
-                        stmt.setString(2, execution.jobId)
-                        stmt.setString(3, execution.status.name)
-                        stmt.setTimestamp(4, Timestamp.from(execution.scheduledAt))
-                        stmt.setInt(5, execution.attempt)
-                        stmt.setString(6, execution.payload?.toString())
-                        stmt.executeUpdate()
-                    }
-                }
+            conn.prepareStatement(dialect.upsertExecutionSql()).use { stmt ->
+                stmt.setObject(1, execution.id)
+                stmt.setString(2, execution.jobId)
+                stmt.setString(3, execution.status.name)
+                stmt.setTimestamp(4, Timestamp.from(execution.scheduledAt))
+                stmt.setInt(5, execution.attempt)
+                stmt.setString(6, execution.payload?.toString())
+                stmt.executeUpdate()
             }
         }
     }
@@ -198,8 +124,7 @@ class JdbcJobStore(private val dataSource: DataSource) : JobStore {
     override suspend fun listEligibleExecutions(now: Instant): List<JobExecution> {
         val executions = mutableListOf<JobExecution>()
         dataSource.connection.use { conn ->
-            val sql = "SELECT * FROM khrona_executions WHERE status = 'PENDING' AND scheduled_at <= ? ORDER BY scheduled_at ASC"
-            conn.prepareStatement(sql).use { stmt ->
+            conn.prepareStatement(dialect.listEligibleExecutionsSql()).use { stmt ->
                 stmt.setTimestamp(1, Timestamp.from(now))
                 val rs = stmt.executeQuery()
                 while (rs.next()) {
@@ -212,12 +137,7 @@ class JdbcJobStore(private val dataSource: DataSource) : JobStore {
 
     override suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: Duration): Boolean {
         dataSource.connection.use { conn ->
-            val sql = """
-                UPDATE khrona_executions
-                SET status = 'CLAIMED', claimed_at = ?, claimed_by = ?
-                WHERE id = ? AND status = 'PENDING'
-            """.trimIndent()
-            conn.prepareStatement(sql).use { stmt ->
+            conn.prepareStatement(dialect.claimExecutionSql()).use { stmt ->
                 val now = Instant.now()
                 stmt.setTimestamp(1, Timestamp.from(now))
                 stmt.setString(2, workerId)
@@ -239,5 +159,18 @@ class JdbcJobStore(private val dataSource: DataSource) : JobStore {
             error = rs.getString("error"),
             payload = rs.getString("payload_json")
         )
+    }
+
+    companion object {
+        fun resolveDialect(dataSource: DataSource): JdbcDialect {
+            return dataSource.connection.use { conn ->
+                val name = conn.metaData.databaseProductName.lowercase()
+                when {
+                    name.contains("postgresql") -> PostgresDialect()
+                    name.contains("h2") -> H2Dialect()
+                    else -> H2Dialect() // Fallback to generic
+                }
+            }
+        }
     }
 }

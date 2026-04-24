@@ -3,6 +3,7 @@
 ## Component Overview
 - **Core:** Job definitions, triggers, execution engine.
 - **Store SPI:** Pluggable storage layer (`MemoryJobStore`, `JdbcJobStore`).
+- **JdbcDialect:** Abstraction for database-specific SQL (PostgreSQL, H2, etc.).
 - **Worker:** Coroutine-based executor polling and heartbeating.
 - **Ktor Plugin:** Integration bridge for Ktor lifecycle and routing.
 - **Admin API:** Management interface for jobs and executions.
