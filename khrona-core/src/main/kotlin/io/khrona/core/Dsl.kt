@@ -7,7 +7,7 @@ class JobBuilder(val id: String) {
     var trigger: Trigger? = null
     private var handler: JobHandler? = null
     var retryPolicy: RetryPolicy = RetryPolicy.DEFAULT
-    var concurrencyPolicy: ConcurrencyPolicy = ConcurrencyPolicy.ALLOW
+    var concurrencyPolicy: ConcurrencyPolicy = ConcurrencyPolicy.FORBID
     var lockKey: String? = null
     var timeout: Duration? = null
 

@@ -36,7 +36,7 @@ data class JobDefinition(
     val handler: JobHandler,
     val trigger: Trigger,
     val retryPolicy: RetryPolicy = RetryPolicy.DEFAULT,
-    val concurrencyPolicy: ConcurrencyPolicy = ConcurrencyPolicy.ALLOW,
+    val concurrencyPolicy: ConcurrencyPolicy = ConcurrencyPolicy.FORBID,
     val lockKey: String? = null,
     val timeout: Duration? = null
 )
