@@ -30,9 +30,12 @@ class Scheduler(
             
             // Basic initial scheduling: for each job, create its first execution if none exist
             config.jobs.forEach { jobDef ->
-                val next = jobDef.trigger.nextExecutionTime(Instant.now(clock))
+                // Truncate to millis to ensure deterministic UUID matching later
+                val next = jobDef.trigger.nextExecutionTime(Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.MILLIS))
                 if (next != null) {
-                    store.saveExecution(JobExecution(jobId = jobDef.id, scheduledAt = next, lockKey = jobDef.lockKey))
+                    // Use a deterministic UUID for the first execution to avoid duplicates when multiple nodes start
+                    val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:${next.toEpochMilli()}".toByteArray())
+                    store.saveExecution(JobExecution(id = deterministicId, jobId = jobDef.id, scheduledAt = next, lockKey = jobDef.lockKey))
                 }
             }
 
@@ -88,6 +91,7 @@ class Scheduler(
         val eligible = store.listEligibleExecutions(now)
         
         eligible.forEach { execution ->
+            // Re-fetch job def in case it changed or for fresh state
             val jobDef = store.getJob(execution.jobId) ?: return@forEach
             
             // Check for misfire
@@ -111,11 +115,29 @@ class Scheduler(
             // TODO: Configurable lease duration
             val leaseDuration = Duration.ofMinutes(5)
             if (store.claimExecution(execution.id, workerId, leaseDuration)) {
+                // Double-check lock AFTER claiming but before launching
+                // This handles the race where two executions for the same lock were claimed 
+                // by different nodes (if duplicate executions existed) or by the same node.
+                if (jobDef.concurrencyPolicy == ConcurrencyPolicy.FORBID && jobDef.lockKey != null) {
+                    // We need to be careful here: isLockHeld will see OURSELVES if we just claimed it.
+                    // But isLockHeld currently checks if ANY execution for that key is CLAIMED/RUNNING.
+                    // To be safe, we should check if any OTHER execution is holding the lock.
+                    if (isAnyOtherExecutionHoldingLock(execution.id, jobDef.lockKey)) {
+                        log.warn("[${execution.jobId}] Release claim for ${execution.id} because another execution already holds the lock ${jobDef.lockKey}")
+                        store.updateExecutionStatus(execution.id, ExecutionStatus.PENDING) // Release it
+                        return@forEach
+                    }
+                }
+
                 scope.launch {
                     executeJobWithHeartbeat(execution, jobDef, leaseDuration)
                 }
             }
         }
+    }
+
+    private suspend fun isAnyOtherExecutionHoldingLock(currentExecutionId: UUID, lockKey: String): Boolean {
+        return store.isLockHeld(lockKey, excludeExecutionId = currentExecutionId)
     }
 
     private suspend fun handleMisfire(execution: JobExecution, jobDef: JobDefinition) {
@@ -163,9 +185,10 @@ class Scheduler(
             store.updateExecutionStatus(execution.id, ExecutionStatus.SUCCESS)
             
             // Schedule next run
-            val next = jobDef.trigger.nextExecutionTime(Instant.now(clock))
+            val next = jobDef.trigger.nextExecutionTime(execution.scheduledAt)
             if (next != null) {
-                store.saveExecution(JobExecution(jobId = jobDef.id, scheduledAt = next, lockKey = jobDef.lockKey))
+                val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:${next.toEpochMilli()}".toByteArray())
+                store.saveExecution(JobExecution(id = deterministicId, jobId = jobDef.id, scheduledAt = next, lockKey = jobDef.lockKey))
             }
         } catch (e: Exception) {
             log.error("[${execution.jobId}] Job failed", e)
@@ -205,9 +228,11 @@ class Scheduler(
         scope.launch {
             store.saveJob(jobDef)
             // Schedule the first execution if it's a recurring/deferred job
-            val next = jobDef.trigger.nextExecutionTime(Instant.now(clock))
+            // Truncate to millis to ensure deterministic UUID matching later
+            val next = jobDef.trigger.nextExecutionTime(Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.MILLIS))
             if (next != null) {
-                store.saveExecution(JobExecution(jobId = jobDef.id, scheduledAt = next, lockKey = jobDef.lockKey))
+                val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:${next.toEpochMilli()}".toByteArray())
+                store.saveExecution(JobExecution(id = deterministicId, jobId = jobDef.id, scheduledAt = next, lockKey = jobDef.lockKey))
             }
         }
     }

@@ -192,11 +192,14 @@ class JdbcJobStore(
         }
     }
 
-    override suspend fun isLockHeld(lockKey: String): Boolean {
+    override suspend fun isLockHeld(lockKey: String, excludeExecutionId: UUID?): Boolean {
         dataSource.connection.use { conn ->
-            conn.prepareStatement(dialect.isLockHeldSql()).use { stmt ->
+            conn.prepareStatement(dialect.isLockHeldSql(excludeExecutionId != null)).use { stmt ->
                 stmt.setString(1, lockKey)
                 stmt.setTimestamp(2, Timestamp.from(Instant.now()))
+                if (excludeExecutionId != null) {
+                    stmt.setString(3, excludeExecutionId.toString())
+                }
                 val rs = stmt.executeQuery()
                 if (rs.next()) {
                     return rs.getInt(1) > 0

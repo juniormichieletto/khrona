@@ -11,7 +11,7 @@ interface JdbcDialect {
     fun claimExecutionSql(): String
     fun listEligibleExecutionsSql(): String
     fun heartbeatSql(): String
-    fun isLockHeldSql(): String
+    fun isLockHeldSql(excludeId: Boolean = false): String
     fun resetExpiredExecutionsSql(): String
 }
 
@@ -57,10 +57,11 @@ class PostgresDialect : JdbcDialect {
         WHERE id = ? AND (status = 'CLAIMED' OR status = 'RUNNING')
     """.trimIndent()
 
-    override fun isLockHeldSql(): String = """
+    override fun isLockHeldSql(excludeId: Boolean): String = """
         SELECT COUNT(*) FROM khrona_executions 
         WHERE lock_key = ? AND (status = 'CLAIMED' OR status = 'RUNNING') 
         AND (expires_at IS NULL OR expires_at > ?)
+        ${if (excludeId) "AND id != ?" else ""}
     """.trimIndent()
 
     override fun resetExpiredExecutionsSql(): String = """
@@ -97,10 +98,11 @@ class H2Dialect : JdbcDialect {
         WHERE id = ? AND (status = 'CLAIMED' OR status = 'RUNNING')
     """.trimIndent()
 
-    override fun isLockHeldSql(): String = """
+    override fun isLockHeldSql(excludeId: Boolean): String = """
         SELECT COUNT(*) FROM khrona_executions 
         WHERE lock_key = ? AND (status = 'CLAIMED' OR status = 'RUNNING') 
         AND (expires_at IS NULL OR expires_at > ?)
+        ${if (excludeId) "AND id != ?" else ""}
     """.trimIndent()
 
     override fun resetExpiredExecutionsSql(): String = """
@@ -154,10 +156,11 @@ class MySqlDialect : JdbcDialect {
         WHERE id = ? AND (status = 'CLAIMED' OR status = 'RUNNING')
     """.trimIndent()
 
-    override fun isLockHeldSql(): String = """
+    override fun isLockHeldSql(excludeId: Boolean): String = """
         SELECT COUNT(*) FROM khrona_executions 
         WHERE lock_key = ? AND (status = 'CLAIMED' OR status = 'RUNNING') 
         AND (expires_at IS NULL OR expires_at > ?)
+        ${if (excludeId) "AND id != ?" else ""}
     """.trimIndent()
 
     override fun resetExpiredExecutionsSql(): String = """
@@ -207,10 +210,11 @@ class OracleDialect : JdbcDialect {
         WHERE id = ? AND (status = 'CLAIMED' OR status = 'RUNNING')
     """.trimIndent()
 
-    override fun isLockHeldSql(): String = """
+    override fun isLockHeldSql(excludeId: Boolean): String = """
         SELECT COUNT(*) FROM khrona_executions 
         WHERE lock_key = ? AND (status = 'CLAIMED' OR status = 'RUNNING') 
         AND (expires_at IS NULL OR expires_at > ?)
+        ${if (excludeId) "AND id != ?" else ""}
     """.trimIndent()
 
     override fun resetExpiredExecutionsSql(): String = """

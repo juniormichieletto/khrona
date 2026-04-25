@@ -71,11 +71,11 @@ class MockJobStore : JobStore {
         return updated
     }
 
-    override suspend fun isLockHeld(lockKey: String): Boolean {
+    override suspend fun isLockHeld(lockKey: String, excludeExecutionId: UUID?): Boolean {
         val now = Instant.now()
         return executions.values.any { it ->
             val expiresAt = it.expiresAt
-            it.lockKey == lockKey && (it.status == ExecutionStatus.CLAIMED || it.status == ExecutionStatus.RUNNING) && (expiresAt == null || expiresAt > now)
+            it.id != excludeExecutionId && it.lockKey == lockKey && (it.status == ExecutionStatus.CLAIMED || it.status == ExecutionStatus.RUNNING) && (expiresAt == null || expiresAt > now)
         }
     }
 

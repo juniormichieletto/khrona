@@ -112,6 +112,51 @@ install(Khrona) {
 }
 ```
 
+## MySQL 8 & Multi-Node Testing
+
+Khrona is designed to scale across multiple instances. Use a persistent store like MySQL 8 to coordinate work.
+
+### MySQL 8 Configuration
+```kotlin
+val dataSource = HikariDataSource(HikariConfig().apply {
+    jdbcUrl = "jdbc:mysql://localhost:3306/khrona_db"
+    username = "khrona_user"
+    password = "khrona_password"
+    driverClassName = "com.mysql.cj.jdbc.Driver"
+})
+
+install(Khrona) {
+    store = JdbcJobStore(dataSource, MySqlDialect()).apply { migrate() }
+}
+```
+
+### Local Multi-Instance Setup
+To test distributed locking and claiming locally, start a MySQL container:
+
+```bash
+docker run -d --name khrona-mysql \
+  -e MYSQL_DATABASE=khrona_db \
+  -e MYSQL_USER=khrona_user \
+  -e MYSQL_PASSWORD=khrona_password \
+  -e MYSQL_ROOT_PASSWORD=root \
+  -p 3306:3306 mysql:8.0
+```
+
+To stop and clean up:
+```bash
+docker stop khrona-mysql && docker rm khrona-mysql
+```
+
+Run two instances of your app in different terminals:
+```bash
+# Terminal 1
+NODE_NAME=node-1 ./gradlew run
+
+# Terminal 2
+NODE_NAME=node-2 ./gradlew run
+```
+Only one node will claim and execute the job at a time if `concurrencyPolicy = ConcurrencyPolicy.FORBID` is used.
+
 ## Manual Control
 You can also run Khrona outside of Ktor:
 
