@@ -4,7 +4,7 @@
 
 It provides a reliable, idiomatic, and production-capable platform for background tasks, ranging from simple recurring jobs to distributed-safe persistent executions.
 
-> **Etymology:** The name **Khrona** is derived from *Chronos* (Ancient Greek for "Time"), reflecting the project's focus on precise scheduling and temporal coordination.
+> **Etymology:** The name **Khrona** is inspired by **Chronos** (Ancient Greek: χρόνος, “time”), the personification of time and the root of modern terms like “chronology.” The stylized spelling reflects a modern, system-oriented interpretation of temporal control and scheduling.
 
 ## Features
 
