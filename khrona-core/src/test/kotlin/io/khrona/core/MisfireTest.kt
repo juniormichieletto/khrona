@@ -79,4 +79,40 @@ class MisfireTest {
         val updated = store.getExecution(execution.id)
         assertEquals(ExecutionStatus.CLAIMED, updated?.status)
     }
+
+    @Test
+    fun `should work with CronTrigger misfire`() = runTest {
+        val store = MockJobStore()
+        val clock = SchedulerTest.TestClock(testScheduler)
+        val now = Instant.now(clock) // Test clock usually starts at a fixed epoch
+        
+        val config = KhronaConfig().apply {
+            this.store = store
+            this.misfireThreshold = Duration.ofSeconds(30)
+            job("misfire-cron") {
+                cron("0 * * * *") // Every hour
+                misfirePolicy = MisfirePolicy.IGNORE
+                execute {}
+            }
+        }
+
+        val scheduler = Scheduler(config, this, clock)
+        
+        // Misfire an hour ago
+        val misfiredAt = now.minus(Duration.ofHours(1))
+        val execution = JobExecution(jobId = "misfire-cron", scheduledAt = misfiredAt)
+        store.saveExecution(execution)
+        store.saveJob(config.jobs.first())
+
+        scheduler.pollAndExecute()
+        
+        assertEquals(ExecutionStatus.MISFIRED, store.getExecution(execution.id)?.status)
+        
+        // Check next scheduled
+        val nextExec = store.executions.values.find { it.jobId == "misfire-cron" && it.status == ExecutionStatus.PENDING }
+        // CronTrigger "0 * * * *" should schedule the next hour after 'now'
+        val trigger = CronTrigger("0 * * * *")
+        val expectedNext = trigger.nextExecutionTime(now)
+        assertEquals(expectedNext, nextExec?.scheduledAt)
+    }
 }
