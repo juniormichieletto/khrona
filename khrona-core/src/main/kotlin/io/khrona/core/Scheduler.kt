@@ -61,9 +61,24 @@ class Scheduler(
 
     private fun validateJob(jobDef: JobDefinition) {
         val trigger = jobDef.trigger
-        if (trigger is IntervalTrigger) {
-            if (trigger.interval < config.pollingInterval) {
-                throw IllegalArgumentException("Job ${jobDef.id} has a trigger interval (${trigger.interval}) smaller than the scheduler polling interval (${config.pollingInterval})")
+        val now = Instant.now(clock)
+        
+        when (trigger) {
+            is IntervalTrigger -> {
+                if (trigger.interval < config.pollingInterval) {
+                    throw IllegalArgumentException("Job ${jobDef.id} has a trigger interval (${trigger.interval}) smaller than the scheduler polling interval (${config.pollingInterval})")
+                }
+            }
+            is CronTrigger -> {
+                val next = trigger.nextExecutionTime(now)
+                val following = next?.let { trigger.nextExecutionTime(it.plusMillis(1)) }
+                
+                if (next != null && following != null) {
+                    val gap = Duration.between(next, following)
+                    if (gap < config.pollingInterval) {
+                        throw IllegalArgumentException("Job ${jobDef.id} has a cron frequency ($gap) smaller than the scheduler polling interval (${config.pollingInterval})")
+                    }
+                }
             }
         }
     }

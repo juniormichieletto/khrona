@@ -144,6 +144,24 @@ class SchedulerTest {
     }
 
     @Test
+    fun `scheduler should fail to start if cron frequency is smaller than polling interval`() = runTest {
+        val store = MockJobStore()
+        val config = KhronaConfig().apply {
+            this.store = store
+            this.pollingInterval = Duration.ofMinutes(5)
+            job("invalid-cron-job") {
+                cron("* * * * *") // 1m < 5m
+                execute {}
+            }
+        }
+        
+        val scheduler = Scheduler(config, this)
+        assertThrows(IllegalArgumentException::class.java) {
+            scheduler.start()
+        }
+    }
+
+    @Test
     fun `scheduler should fail to start if job interval is smaller than polling interval`() = runTest {
         val store = MockJobStore()
         val config = KhronaConfig().apply {
