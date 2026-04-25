@@ -31,6 +31,12 @@ enum class ConcurrencyPolicy {
 }
 
 @Serializable
+enum class MisfirePolicy {
+    FIRE_NOW,
+    IGNORE
+}
+
+@Serializable
 data class JobDefinition(
     val id: String,
     val description: String? = null,
@@ -39,6 +45,7 @@ data class JobDefinition(
     val trigger: Trigger,
     val retryPolicy: RetryPolicy = RetryPolicy.DEFAULT,
     val concurrencyPolicy: ConcurrencyPolicy = ConcurrencyPolicy.FORBID,
+    val misfirePolicy: MisfirePolicy = MisfirePolicy.FIRE_NOW,
     val lockKey: String? = null,
     @Serializable(with = DurationSerializer::class)
     val timeout: Duration? = null

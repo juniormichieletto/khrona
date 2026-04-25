@@ -10,5 +10,6 @@ enum class ExecutionStatus {
     SUCCESS,
     FAILED,
     CANCELLED,
-    DEAD_LETTERED
+    DEAD_LETTERED,
+    MISFIRED
 }

@@ -90,6 +90,16 @@ class Scheduler(
         eligible.forEach { execution ->
             val jobDef = store.getJob(execution.jobId) ?: return@forEach
             
+            // Check for misfire
+            if (Duration.between(execution.scheduledAt, now) > config.misfireThreshold) {
+                if (jobDef.misfirePolicy == MisfirePolicy.IGNORE) {
+                    handleMisfire(execution, jobDef)
+                    return@forEach
+                } else {
+                    log.info("[${execution.jobId}] Misfire detected (scheduled at ${execution.scheduledAt}), firing now due to FIRE_NOW policy")
+                }
+            }
+
             // Check for distributed lock if policy is FORBID
             if (jobDef.concurrencyPolicy == ConcurrencyPolicy.FORBID && jobDef.lockKey != null) {
                 if (store.isLockHeld(jobDef.lockKey)) {
@@ -105,6 +115,17 @@ class Scheduler(
                     executeJobWithHeartbeat(execution, jobDef, leaseDuration)
                 }
             }
+        }
+    }
+
+    private suspend fun handleMisfire(execution: JobExecution, jobDef: JobDefinition) {
+        log.info("[${execution.jobId}] Misfire detected (scheduled at ${execution.scheduledAt}), ignoring due to IGNORE policy")
+        store.updateExecutionStatus(execution.id, ExecutionStatus.MISFIRED, "Misfire threshold exceeded")
+        
+        // Schedule next run
+        val next = jobDef.trigger.nextExecutionTime(Instant.now(clock))
+        if (next != null) {
+            store.saveExecution(JobExecution(jobId = jobDef.id, scheduledAt = next, lockKey = jobDef.lockKey))
         }
     }
 

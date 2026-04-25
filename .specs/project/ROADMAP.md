@@ -25,7 +25,7 @@
 ## v0.4: Ops & Visibility
 - [ ] Admin API & Routes
 - [ ] Metrics & Tracing (Micrometer/OpenTelemetry)
-- [ ] Misfire Policies
+- [x] Misfire Policies
 - [ ] Lock Inspection
 
 ## v0.5: Hardening

@@ -125,7 +125,11 @@ class JdbcJobStore(
             conn.prepareStatement(sql).use { stmt ->
                 stmt.setString(1, status.name)
                 stmt.setString(2, error)
-                stmt.setTimestamp(3, if (status == ExecutionStatus.SUCCESS || status == ExecutionStatus.FAILED || status == ExecutionStatus.DEAD_LETTERED) Timestamp.from(Instant.now()) else null)
+                val isTerminal = status == ExecutionStatus.SUCCESS || 
+                                status == ExecutionStatus.FAILED || 
+                                status == ExecutionStatus.DEAD_LETTERED || 
+                                status == ExecutionStatus.MISFIRED
+                stmt.setTimestamp(3, if (isTerminal) Timestamp.from(Instant.now()) else null)
                 stmt.setString(4, id.toString())
                 stmt.executeUpdate()
             }

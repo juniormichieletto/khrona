@@ -54,7 +54,7 @@ fun Application.module() {
         }
 
         job("daily-report") {
-            cron("0 0 * * *") // Every day at midnight (Unix format)
+            cron("0 0 * * *") // Every day at midnight UTC (Unix format)
             execute {
                 println("Generating daily report...")
             }
@@ -135,9 +135,12 @@ scheduler.stop()
 
 ### Cron Trigger (Unix Format)
 Khrona uses the standard **Unix 5-field format**: `min hour dom month dow`.
+
+> **Note:** All cron expressions are evaluated in **UTC** time.
+
 - `* * * * *` : Every minute
 - `0 * * * *` : Every hour
-- `30 5 * * 1` : Every Monday at 05:30
+- `30 5 * * 1` : Every Monday at 05:30 UTC
 
 ### Interval Trigger
 Use Kotlin's `Duration` for human-readable intervals:

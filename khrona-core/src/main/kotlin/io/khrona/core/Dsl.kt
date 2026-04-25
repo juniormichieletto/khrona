@@ -8,6 +8,7 @@ class JobBuilder(val id: String) {
     private var handler: JobHandler? = null
     var retryPolicy: RetryPolicy = RetryPolicy.DEFAULT
     var concurrencyPolicy: ConcurrencyPolicy = ConcurrencyPolicy.FORBID
+    var misfirePolicy: MisfirePolicy = MisfirePolicy.FIRE_NOW
     var lockKey: String? = null
     var timeout: Duration? = null
 
@@ -52,6 +53,7 @@ class JobBuilder(val id: String) {
             trigger = trigger ?: throw IllegalArgumentException("Trigger must be defined for job $id"),
             retryPolicy = retryPolicy,
             concurrencyPolicy = concurrencyPolicy,
+            misfirePolicy = misfirePolicy,
             lockKey = finalLockKey,
             timeout = timeout
         )
@@ -79,10 +81,15 @@ class RetryPolicyBuilder {
 class KhronaConfig {
     var store: JobStore? = null
     var pollingInterval: java.time.Duration = java.time.Duration.ofMillis(1000)
+    var misfireThreshold: java.time.Duration = java.time.Duration.ofSeconds(60)
     val jobs = mutableListOf<JobDefinition>()
 
     fun pollingInterval(interval: kotlin.time.Duration) {
         this.pollingInterval = java.time.Duration.ofMillis(interval.inWholeMilliseconds)
+    }
+
+    fun misfireThreshold(interval: kotlin.time.Duration) {
+        this.misfireThreshold = java.time.Duration.ofMillis(interval.inWholeMilliseconds)
     }
 
     fun job(id: String, block: JobBuilder.() -> Unit) {
