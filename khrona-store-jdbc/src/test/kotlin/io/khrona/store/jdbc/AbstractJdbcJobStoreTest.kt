@@ -57,7 +57,7 @@ abstract class AbstractJdbcJobStoreTest {
         val job = JobDefinition(
             id = "cron-job",
             handler = { },
-            trigger = CronTrigger("0 0 * * * ?")
+            trigger = CronTrigger("0 * * * *")
         )
         
         store.saveJob(job)
@@ -65,7 +65,7 @@ abstract class AbstractJdbcJobStoreTest {
         
         assertNotNull(saved)
         assertTrue(saved?.trigger is CronTrigger)
-        assertEquals("0 0 * * * ?", (saved?.trigger as CronTrigger).expression)
+        assertEquals("0 * * * *", (saved?.trigger as CronTrigger).expression)
     }
 
     @Test

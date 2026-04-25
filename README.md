@@ -52,7 +52,7 @@ fun Application.module() {
         }
 
         job("daily-report") {
-            cron("0 0 0 * * ?") // Every day at midnight
+            cron("0 0 * * *") // Every day at midnight
             execute {
                 println("Generating daily report...")
             }

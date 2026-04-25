@@ -204,7 +204,7 @@ class SchedulerTest {
         assertThrows(IllegalStateException::class.java) {
             KhronaConfig().job("multi-trigger") {
                 every(Duration.ofMinutes(1))
-                cron("0 * * * * ?")
+                cron("0 * * * *")
                 execute {}
             }
         }
@@ -212,7 +212,7 @@ class SchedulerTest {
 
     @Test
     fun `cron trigger should calculate next execution time correctly`() {
-        val trigger = CronTrigger("0 0 * * * ?") // Every hour on the hour
+        val trigger = CronTrigger("0 * * * *") // Every hour on the hour
         val now = Instant.parse("2026-04-25T10:15:00Z")
         val next = trigger.nextExecutionTime(now)
         assertEquals(Instant.parse("2026-04-25T11:00:00Z"), next)

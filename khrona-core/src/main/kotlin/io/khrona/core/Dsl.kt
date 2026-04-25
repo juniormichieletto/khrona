@@ -30,13 +30,9 @@ class JobBuilder(val id: String) {
     }
 
     /**
-     * Defines a cron trigger.
-     * Supports both Unix format (5 fields: min, hour, dom, month, dow)
-     * and Quartz format (6-7 fields: sec, min, hour, dom, month, dow, [year]).
+     * Defines a cron trigger using Unix format (5 fields: min, hour, dom, month, dow).
      *
-     * Example for every minute:
-     * - "0 * * * * ?" (Quartz)
-     * - "* * * * *" (Unix)
+     * Example for every minute: "* * * * *"
      */
     fun cron(expression: String) {
         if (this.trigger != null) throw IllegalStateException("Trigger already defined for job $id")

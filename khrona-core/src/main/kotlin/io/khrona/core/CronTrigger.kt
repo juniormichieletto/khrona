@@ -14,15 +14,17 @@ import java.time.ZonedDateTime
 @Serializable
 @SerialName("cron")
 class CronTrigger(val expression: String) : Trigger {
-    @Transient
-    private val cronDefinition = lazy {
-        val parts = expression.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
-        when (parts.size) {
-            5 -> CronDefinitionBuilder.instanceDefinitionFor(CronType.UNIX)
-            6, 7 -> CronDefinitionBuilder.instanceDefinitionFor(CronType.QUARTZ)
-            else -> CronDefinitionBuilder.instanceDefinitionFor(CronType.QUARTZ)
+    init {
+        // Fast-fail: Validate the expression immediately
+        try {
+            CronParser(CronDefinitionBuilder.instanceDefinitionFor(CronType.UNIX)).parse(expression)
+        } catch (e: Exception) {
+            throw IllegalArgumentException("Invalid Unix cron expression '$expression': ${e.message}", e)
         }
     }
+
+    @Transient
+    private val cronDefinition = lazy { CronDefinitionBuilder.instanceDefinitionFor(CronType.UNIX) }
     @Transient
     private val parser = lazy { CronParser(cronDefinition.value) }
     @Transient
@@ -32,12 +34,8 @@ class CronTrigger(val expression: String) : Trigger {
 
     override fun nextExecutionTime(after: Instant): Instant? {
         val zdt = ZonedDateTime.ofInstant(after, ZoneId.of("UTC"))
-        return try {
-            executionTime.value.nextExecution(zdt)
-                .map { it.toInstant() }
-                .orElse(null)
-        } catch (e: Exception) {
-            null
-        }
+        return executionTime.value.nextExecution(zdt)
+            .map { it.toInstant() }
+            .orElse(null)
     }
 }

@@ -15,28 +15,25 @@ class CronTriggerTest {
     }
 
     @Test
-    fun `should support Quartz cron format (6 fields)`() {
-        val trigger = CronTrigger("0 0 * * * ?") // Every hour
-        val now = Instant.parse("2026-04-25T10:15:00Z")
-        
-        val next = trigger.nextExecutionTime(now)
-        assertEquals(Instant.parse("2026-04-25T11:00:00Z"), next)
-    }
-
-    @Test
-    fun `Quartz cron with star in first field should trigger every second`() {
-        val trigger = CronTrigger("* * * * * ?")
+    fun `every minute cron should trigger at the next minute`() {
+        val trigger = CronTrigger("* * * * *")
         val now = Instant.parse("2026-04-25T10:00:00Z")
         
         val next = trigger.nextExecutionTime(now)
-        assertEquals(Instant.parse("2026-04-25T10:00:01Z"), next)
+        assertEquals(Instant.parse("2026-04-25T10:01:00Z"), next)
     }
 
     @Test
-    fun `should handle invalid cron expressions gracefully`() {
-        val trigger = CronTrigger("invalid cron")
-        val now = Instant.now()
-        
-        assertNull(trigger.nextExecutionTime(now))
+    fun `should fail during construction for Quartz format (6 fields)`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            CronTrigger("0 0 * * * ?")
+        }
+    }
+
+    @Test
+    fun `should fail during construction for invalid cron expressions`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            CronTrigger("invalid cron")
+        }
     }
 }

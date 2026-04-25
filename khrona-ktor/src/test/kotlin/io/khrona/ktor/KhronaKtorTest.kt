@@ -45,7 +45,7 @@ class KhronaKtorTest {
             
             scheduler {
                 job("cron-job") {
-                    cron("0 0 0 * * ?")
+                    cron("0 0 * * *")
                     execute {}
                 }
             }
