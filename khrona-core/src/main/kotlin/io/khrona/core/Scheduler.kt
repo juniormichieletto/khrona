@@ -51,6 +51,9 @@ class Scheduler(
                 } catch (e: Exception) {
                     log.error("Error in scheduler loop", e)
                 }
+                // TODO: Consider Adaptive Delay in the future. 
+                // Currently using fixed polling to ensure discovery of jobs added by other nodes 
+                // without needing a distributed wake-up signal (e.g. Postgres NOTIFY).
                 delay(config.pollingInterval.toMillis())
             }
         }
