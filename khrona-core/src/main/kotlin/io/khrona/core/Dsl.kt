@@ -18,6 +18,7 @@ class JobBuilder(val id: String) {
     }
 
     fun every(interval: java.time.Duration) {
+        if (this.trigger != null) throw IllegalStateException("Trigger already defined for job $id")
         this.trigger = IntervalTrigger(interval)
     }
 
@@ -26,6 +27,20 @@ class JobBuilder(val id: String) {
      */
     fun every(interval: kotlin.time.Duration) {
         every(java.time.Duration.ofMillis(interval.inWholeMilliseconds))
+    }
+
+    /**
+     * Defines a cron trigger.
+     * Supports both Unix format (5 fields: min, hour, dom, month, dow)
+     * and Quartz format (6-7 fields: sec, min, hour, dom, month, dow, [year]).
+     *
+     * Example for every minute:
+     * - "0 * * * * ?" (Quartz)
+     * - "* * * * *" (Unix)
+     */
+    fun cron(expression: String) {
+        if (this.trigger != null) throw IllegalStateException("Trigger already defined for job $id")
+        this.trigger = CronTrigger(expression)
     }
 
     fun execute(block: JobHandler) {

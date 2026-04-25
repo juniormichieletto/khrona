@@ -50,6 +50,13 @@ fun Application.module() {
                 println("Cleaning up...")
             }
         }
+
+        job("daily-report") {
+            cron("0 0 0 * * ?") // Every day at midnight
+            execute {
+                println("Generating daily report...")
+            }
+        }
     }
 }
 ```

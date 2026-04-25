@@ -30,18 +30,22 @@ enum class ConcurrencyPolicy {
     REPLACE
 }
 
+@Serializable
 data class JobDefinition(
     val id: String,
     val description: String? = null,
-    val handler: JobHandler,
+    @kotlinx.serialization.Transient
+    val handler: JobHandler = { },
     val trigger: Trigger,
     val retryPolicy: RetryPolicy = RetryPolicy.DEFAULT,
     val concurrencyPolicy: ConcurrencyPolicy = ConcurrencyPolicy.FORBID,
     val lockKey: String? = null,
+    @Serializable(with = DurationSerializer::class)
     val timeout: Duration? = null
 )
 
-interface Trigger {
+@Serializable
+sealed interface Trigger {
     fun nextExecutionTime(after: Instant): Instant?
 }
 

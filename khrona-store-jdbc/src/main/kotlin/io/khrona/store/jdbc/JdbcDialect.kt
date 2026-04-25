@@ -17,11 +17,10 @@ interface JdbcDialect {
 
 class PostgresDialect : JdbcDialect {
     override fun upsertJobSql(): String = """
-        INSERT INTO khrona_jobs (id, description, retry_policy_json)
-        VALUES (?, ?, ?)
+        INSERT INTO khrona_jobs (id, definition_json)
+        VALUES (?, ?)
         ON CONFLICT (id) DO UPDATE SET
-            description = EXCLUDED.description,
-            retry_policy_json = EXCLUDED.retry_policy_json
+            definition_json = EXCLUDED.definition_json
     """.trimIndent()
 
     override fun upsertExecutionSql(): String = """
@@ -73,7 +72,7 @@ class PostgresDialect : JdbcDialect {
 
 class H2Dialect : JdbcDialect {
     override fun upsertJobSql(): String = """
-        MERGE INTO khrona_jobs (id, description, retry_policy_json) KEY (id) VALUES (?, ?, ?)
+        MERGE INTO khrona_jobs (id, definition_json) KEY (id) VALUES (?, ?)
     """.trimIndent()
 
     override fun upsertExecutionSql(): String = """
@@ -113,11 +112,10 @@ class H2Dialect : JdbcDialect {
 
 class MySqlDialect : JdbcDialect {
     override fun upsertJobSql(): String = """
-        INSERT INTO khrona_jobs (id, description, retry_policy_json)
-        VALUES (?, ?, ?)
+        INSERT INTO khrona_jobs (id, definition_json)
+        VALUES (?, ?)
         ON DUPLICATE KEY UPDATE
-            description = VALUES(description),
-            retry_policy_json = VALUES(retry_policy_json)
+            definition_json = VALUES(definition_json)
     """.trimIndent()
 
     override fun upsertExecutionSql(): String = """
@@ -172,12 +170,12 @@ class MySqlDialect : JdbcDialect {
 class OracleDialect : JdbcDialect {
     override fun upsertJobSql(): String = """
         MERGE INTO khrona_jobs t
-        USING (SELECT ? id, ? description, ? retry_policy_json FROM dual) s
+        USING (SELECT ? id, ? definition_json FROM dual) s
         ON (t.id = s.id)
         WHEN MATCHED THEN
-            UPDATE SET t.description = s.description, t.retry_policy_json = s.retry_policy_json
+            UPDATE SET t.definition_json = s.definition_json
         WHEN NOT MATCHED THEN
-            INSERT (id, description, retry_policy_json) VALUES (s.id, s.description, s.retry_policy_json)
+            INSERT (id, definition_json) VALUES (s.id, s.definition_json)
     """.trimIndent()
 
     override fun upsertExecutionSql(): String = """

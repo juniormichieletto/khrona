@@ -49,6 +49,23 @@ abstract class AbstractJdbcJobStoreTest {
         assertEquals(job.id, saved?.id)
         assertEquals(job.description, saved?.description)
         assertEquals(job.retryPolicy.maxAttempts, saved?.retryPolicy?.maxAttempts)
+        assertTrue(saved?.trigger is IntervalTrigger)
+    }
+
+    @Test
+    fun `should save and get job with cron trigger`() = runBlocking {
+        val job = JobDefinition(
+            id = "cron-job",
+            handler = { },
+            trigger = CronTrigger("0 0 * * * ?")
+        )
+        
+        store.saveJob(job)
+        val saved = store.getJob("cron-job")
+        
+        assertNotNull(saved)
+        assertTrue(saved?.trigger is CronTrigger)
+        assertEquals("0 0 * * * ?", (saved?.trigger as CronTrigger).expression)
     }
 
     @Test

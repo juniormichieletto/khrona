@@ -1,7 +1,6 @@
 CREATE TABLE IF NOT EXISTS khrona_jobs (
     id VARCHAR(255) PRIMARY KEY,
-    description TEXT,
-    retry_policy_json TEXT,
+    definition_json TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

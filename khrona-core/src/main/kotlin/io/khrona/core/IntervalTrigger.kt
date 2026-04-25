@@ -1,10 +1,16 @@
 package io.khrona.core
 
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 import java.time.Duration
 import java.time.Instant
 
+@Serializable
+@SerialName("interval")
 class IntervalTrigger(
+    @Serializable(with = DurationSerializer::class)
     val interval: Duration,
+    @Serializable(with = DurationSerializer::class)
     val initialDelay: Duration = Duration.ZERO
 ) : Trigger {
     override fun nextExecutionTime(after: Instant): Instant? {

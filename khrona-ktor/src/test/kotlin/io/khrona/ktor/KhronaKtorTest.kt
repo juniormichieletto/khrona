@@ -1,6 +1,8 @@
 package io.khrona.ktor
 
+import io.khrona.core.*
 import io.khrona.store.memory.MemoryJobStore
+import kotlinx.coroutines.runBlocking
 import io.ktor.server.application.*
 import io.ktor.server.testing.*
 import org.junit.jupiter.api.Test
@@ -30,6 +32,28 @@ class KhronaKtorTest {
 
             val plugin = plugin(Khrona)
             assertEquals(Duration.ofMillis(1), plugin.scheduler.config.pollingInterval)
+        }
+    }
+
+    @Test
+    fun `scheduler extension should support cron`() = testApplication {
+        application {
+            val store = MemoryJobStore()
+            install(Khrona) {
+                this.store = store
+            }
+            
+            scheduler {
+                job("cron-job") {
+                    cron("0 0 0 * * ?")
+                    execute {}
+                }
+            }
+
+            val plugin = plugin(Khrona)
+            val job = runBlocking { plugin.scheduler.config.store?.getJob("cron-job") }
+            assertNotNull(job)
+            assertTrue(job?.trigger is CronTrigger)
         }
     }
 

@@ -4,6 +4,9 @@ import io.khrona.core.*
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.modules.SerializersModule
+import kotlinx.serialization.modules.polymorphic
+import kotlinx.serialization.modules.subclass
 import java.sql.ResultSet
 import java.sql.Timestamp
 import java.time.Duration
@@ -16,7 +19,15 @@ class JdbcJobStore(
     private val dialect: JdbcDialect = resolveDialect(dataSource)
 ) : JobStore {
 
-    private val json = Json { ignoreUnknownKeys = true }
+    private val json = Json { 
+        ignoreUnknownKeys = true 
+        serializersModule = SerializersModule {
+            polymorphic(Trigger::class) {
+                subclass(IntervalTrigger::class)
+                subclass(CronTrigger::class)
+            }
+        }
+    }
 
     fun migrate() {
         var sql = this::class.java.getResource("/khrona_schema.sql")?.readText()
@@ -59,8 +70,7 @@ class JdbcJobStore(
         dataSource.connection.use { conn ->
             conn.prepareStatement(dialect.upsertJobSql()).use { stmt ->
                 stmt.setString(1, job.id)
-                stmt.setString(2, job.description)
-                stmt.setString(3, json.encodeToString(job.retryPolicy))
+                stmt.setString(2, json.encodeToString(job))
                 stmt.executeUpdate()
             }
         }
@@ -73,13 +83,7 @@ class JdbcJobStore(
                 stmt.setString(1, jobId)
                 val rs = stmt.executeQuery()
                 if (rs.next()) {
-                    return JobDefinition(
-                        id = rs.getString("id"),
-                        description = rs.getString("description"),
-                        handler = { },
-                        trigger = IntervalTrigger(Duration.ZERO),
-                        retryPolicy = json.decodeFromString(rs.getString("retry_policy_json"))
-                    )
+                    return json.decodeFromString<JobDefinition>(rs.getString("definition_json"))
                 }
             }
         }
@@ -93,13 +97,7 @@ class JdbcJobStore(
             conn.prepareStatement(sql).use { stmt ->
                 val rs = stmt.executeQuery()
                 while (rs.next()) {
-                    jobs.add(JobDefinition(
-                        id = rs.getString("id"),
-                        description = rs.getString("description"),
-                        handler = { },
-                        trigger = IntervalTrigger(Duration.ZERO),
-                        retryPolicy = json.decodeFromString(rs.getString("retry_policy_json"))
-                    ))
+                    jobs.add(json.decodeFromString<JobDefinition>(rs.getString("definition_json")))
                 }
             }
         }

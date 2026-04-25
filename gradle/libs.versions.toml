@@ -11,6 +11,7 @@ oracle = "23.6.0.24.10"
 hikaricp = "6.2.1"
 testcontainers = "1.21.4"
 h2 = "2.3.232"
+cron-utils = "9.2.1"
 
 [libraries]
 kotlin-stdlib = { group = "org.jetbrains.kotlin", name = "kotlin-stdlib", version.ref = "kotlin" }
@@ -26,6 +27,7 @@ postgresql = { group = "org.postgresql", name = "postgresql", version.ref = "pos
 mysql = { group = "com.mysql", name = "mysql-connector-j", version.ref = "mysql" }
 oracle = { group = "com.oracle.database.jdbc", name = "ojdbc11", version.ref = "oracle" }
 h2 = { group = "com.h2database", name = "h2", version.ref = "h2" }
+cron-utils = { group = "com.cronutils", name = "cron-utils", version.ref = "cron-utils" }
 hikaricp = { group = "com.zaxxer", name = "HikariCP", version.ref = "hikaricp" }
 testcontainers-postgresql = { group = "org.testcontainers", name = "postgresql", version.ref = "testcontainers" }
 testcontainers-mysql = { group = "org.testcontainers", name = "mysql", version.ref = "testcontainers" }
