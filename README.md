@@ -21,6 +21,39 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
 - **🌐 Distributed Ready:** Multi-node deployment support with deterministic IDs and distributed locking.
 - **🔌 Ktor Integration:** First-class Ktor plugin with seamless lifecycle management.
 
+## Architecture at a Glance
+
+```mermaid
+graph TD
+    subgraph "Client Layer"
+        DSL[Kotlin DSL] --> Ktor[Ktor Plugin]
+    end
+
+    subgraph "Core Engine"
+        Sch[Scheduler] --> Workers[Execution Coroutines]
+        Workers --> Heartbeat[Heartbeat Manager]
+    end
+
+    subgraph "Storage Layer (SPI)"
+        Store[JobStore Interface]
+        Memory[MemoryJobStore] --- Store
+        JDBC[JdbcJobStore] --- Store
+        
+        subgraph "JDBC Dialects"
+            JDBC --- Postgres[PostgreSQL]
+            JDBC --- MySql[MySQL 8]
+            JDBC --- Oracle[Oracle]
+            JDBC --- H2[H2]
+        end
+    end
+
+    DSL --> Sch
+    Sch <--> Store
+    Workers <--> Store
+```
+
+> For a detailed breakdown of the execution flow and sequence diagrams, see the [Full Architecture Document](.specs/codebase/ARCHITECTURE.md).
+
 ## Installation
 
 ```kotlin
