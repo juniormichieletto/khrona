@@ -14,121 +14,67 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
 - **🛡️ Reliability & Resilience:**
   - **Retry Policies:** Configurable exponential backoff with jitter.
   - **Concurrency Control:** Manage overlapping executions with `FORBID` or `REPLACE` policies.
-  - **Timeouts:** Ensure jobs don't run longer than expected.
+  - **Misfire Policies:** Handle delayed executions (FIRE_NOW or IGNORE).
 - **💾 Persistence Support:** Durable job storage using JDBC (PostgreSQL, MySQL, Oracle, H2).
-- **🌐 Distributed Ready:** Multi-node deployment support with lease-based claiming and distributed locking.
+- **🌐 Distributed Ready:** Multi-node deployment support with deterministic IDs and distributed locking.
 - **🔌 Ktor Integration:** First-class Ktor plugin with seamless lifecycle management.
 
-## Getting Started
-
-### Installation
+## Installation
 
 ```kotlin
 // build.gradle.kts
 dependencies {
     implementation("io.khrona:khrona-ktor:0.3.0")
-    implementation("io.khrona:khrona-store-jdbc:0.3.0") // For persistent storage
+    
+    // Choose your storage:
+    implementation("io.khrona:khrona-store-memory:0.3.0") // For dev/testing
+    implementation("io.khrona:khrona-store-jdbc:0.3.0")   // For production
 }
 ```
 
-### Basic Usage with Ktor
+## Quick Start (In-Memory)
+
+The fastest way to get started with Ktor using ephemeral in-memory storage.
 
 ```kotlin
 import io.khrona.ktor.*
-import io.khrona.store.jdbc.JdbcJobStore
+import io.khrona.store.memory.MemoryJobStore
 import kotlin.time.Duration.Companion.minutes
 
 fun Application.module() {
     install(Khrona) {
-        // Use JDBC for persistent jobs across restarts
-        store = JdbcJobStore(dataSource)
+        store = MemoryJobStore()
     }
 
     scheduler {
-        job("cleanup-temp-files") {
-            description = "Deletes temporary upload files every 10 minutes"
-            every(10.minutes)
+        job("heartbeat") {
+            every(1.minutes)
             execute {
-                println("Cleaning up...")
-            }
-        }
-
-        job("daily-report") {
-            cron("0 0 * * *") // Every day at midnight UTC (Unix format)
-            execute {
-                println("Generating daily report...")
+                println("Khrona is alive!")
             }
         }
     }
 }
 ```
 
-## Advanced Configuration
+## Persistent Storage (JDBC)
 
-### Retry Policies
-Handle failures gracefully with configurable exponential backoff.
-
-```kotlin
-job("payment-sync") {
-    every(1.hours)
-    retry {
-        maxAttempts = 5
-        initialDelay = 10.seconds
-        maxDelay = 1.hours
-        factor = 2.0 // Exponential growth
-        jitter = 0.1 // 10% randomization
-    }
-    execute {
-        // Sync logic that might fail
-    }
-}
-```
-
-### Concurrency & Locking
-Prevent a job from running if a previous execution is still active, even across different nodes.
+For production use, jobs should persist across application restarts.
 
 ```kotlin
-job("heavy-task") {
-    every(5.minutes)
-    concurrencyPolicy = ConcurrencyPolicy.FORBID
-    lockKey = "global-heavy-task-lock" // Distributed lock key
-    timeout = Duration.ofMinutes(15)   // Max execution time
-    
-    execute {
-        // Only one instance of this job runs at a time globally
-    }
-}
-```
+import io.khrona.store.jdbc.JdbcJobStore
+import io.khrona.store.jdbc.PostgresDialect // Or MySqlDialect, H2Dialect, etc.
 
-### Persistence (JDBC)
-Khrona supports multiple databases via `JdbcJobStore`. It handles automatic schema migration and worker claiming.
-
-```kotlin
-val store = JdbcJobStore(dataSource).apply { migrate() }
+val store = JdbcJobStore(dataSource, PostgresDialect()).apply { migrate() }
 
 install(Khrona) {
     this.store = store
-    this.pollingInterval = 5.seconds.toJavaDuration() // How often to check for jobs
 }
 ```
 
 ## MySQL 8 & Multi-Node Testing
 
-Khrona is designed to scale across multiple instances. Use a persistent store like MySQL 8 to coordinate work.
-
-### MySQL 8 Configuration
-```kotlin
-val dataSource = HikariDataSource(HikariConfig().apply {
-    jdbcUrl = "jdbc:mysql://localhost:3306/khrona_db"
-    username = "khrona_user"
-    password = "khrona_password"
-    driverClassName = "com.mysql.cj.jdbc.Driver"
-})
-
-install(Khrona) {
-    store = JdbcJobStore(dataSource, MySqlDialect()).apply { migrate() }
-}
-```
+Khrona is designed to scale across multiple instances. Use a persistent store to coordinate work.
 
 ### Local Multi-Instance Setup
 To test distributed locking and claiming locally, start a MySQL container:
@@ -157,20 +103,67 @@ NODE_NAME=node-2 ./gradlew run
 ```
 Only one node will claim and execute the job at a time if `concurrencyPolicy = ConcurrencyPolicy.FORBID` is used.
 
-## Manual Control
+## Advanced Configuration
+
+### Retry Policies
+Handle failures gracefully with configurable exponential backoff.
+
+```kotlin
+job("payment-sync") {
+    every(1.hours)
+    retry {
+        maxAttempts = 5
+        initialDelay = 10.seconds
+        maxDelay = 1.hours
+        factor = 2.0 // Exponential growth
+        jitter = 0.1 // 10% randomization
+    }
+    execute {
+        // Sync logic that might fail
+    }
+}
+```
+
+### Concurrency & Locking
+Prevent a job from running if a previous execution is still active globally. `lockKey` defaults to the job ID.
+
+```kotlin
+job("heavy-task") {
+    every(5.minutes)
+    concurrencyPolicy = ConcurrencyPolicy.FORBID
+    timeout = Duration.ofMinutes(15)   // Max execution time coroutine
+    execute {
+        // Only one instance of this job runs at a time globally
+    }
+}
+```
+
+### Misfire Policies
+Define what happens if a job misses its scheduled time (e.g., due to downtime).
+
+```kotlin
+job("report") {
+    cron("0 0 * * *")
+    misfirePolicy = MisfirePolicy.IGNORE // Skip if more than 60s late
+    execute { ... }
+}
+```
+
+## Manual Control (Standalone)
+
 You can also run Khrona outside of Ktor:
 
 ```kotlin
 val config = Khrona {
     store = MemoryJobStore()
-    pollingInterval = 1.seconds.toJavaDuration()
+    pollingInterval(5.seconds)
 }
 
 val scheduler = Scheduler(config)
 scheduler.start()
 
 // Register jobs dynamically
-scheduler.registerJob(myJobDefinition)
+scheduler.registerJob(JobDefinition(...))
 
 // Stop cleanly
 scheduler.stop()
