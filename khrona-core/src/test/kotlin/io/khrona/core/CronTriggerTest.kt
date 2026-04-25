@@ -36,4 +36,12 @@ class CronTriggerTest {
             CronTrigger("invalid cron")
         }
     }
+
+    @Test
+    fun `should include job id in error message when provided`() {
+        val exception = assertThrows(IllegalArgumentException::class.java) {
+            CronTrigger("invalid", "my-test-job")
+        }
+        assertTrue(exception.message!!.contains("Job 'my-test-job'"))
+    }
 }

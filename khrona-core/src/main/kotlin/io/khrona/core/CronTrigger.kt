@@ -13,13 +13,14 @@ import java.time.ZonedDateTime
 
 @Serializable
 @SerialName("cron")
-class CronTrigger(val expression: String) : Trigger {
+class CronTrigger(val expression: String, val context: String? = null) : Trigger {
     init {
         // Fast-fail: Validate the expression immediately
         try {
             CronParser(CronDefinitionBuilder.instanceDefinitionFor(CronType.UNIX)).parse(expression)
         } catch (e: Exception) {
-            throw IllegalArgumentException("Invalid Unix cron expression '$expression': ${e.message}", e)
+            val prefix = if (context != null) "Job '$context' has an invalid" else "Invalid"
+            throw IllegalArgumentException("$prefix Unix cron expression '$expression': ${e.message}", e)
         }
     }
 

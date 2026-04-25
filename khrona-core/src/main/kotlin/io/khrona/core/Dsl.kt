@@ -36,7 +36,7 @@ class JobBuilder(val id: String) {
      */
     fun cron(expression: String) {
         if (this.trigger != null) throw IllegalStateException("Trigger already defined for job $id")
-        this.trigger = CronTrigger(expression)
+        this.trigger = CronTrigger(expression, id)
     }
 
     fun execute(block: JobHandler) {
