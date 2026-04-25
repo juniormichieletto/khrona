@@ -44,6 +44,7 @@ class JobBuilder(val id: String) {
     }
 
     fun build(): JobDefinition {
+        val finalLockKey = lockKey ?: if (concurrencyPolicy != ConcurrencyPolicy.ALLOW) id else null
         return JobDefinition(
             id = id,
             description = description,
@@ -51,7 +52,7 @@ class JobBuilder(val id: String) {
             trigger = trigger ?: throw IllegalArgumentException("Trigger must be defined for job $id"),
             retryPolicy = retryPolicy,
             concurrencyPolicy = concurrencyPolicy,
-            lockKey = lockKey,
+            lockKey = finalLockKey,
             timeout = timeout
         )
     }
