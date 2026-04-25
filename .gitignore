@@ -37,3 +37,4 @@ out/
 .Trashes
 ehthumbs.db
 Thumbs.db
+.kotlin/

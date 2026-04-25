@@ -142,4 +142,60 @@ class SchedulerTest {
         
         scheduler.stop()
     }
+
+    @Test
+    fun `scheduler should fail to start if job interval is smaller than polling interval`() = runTest {
+        val store = MockJobStore()
+        val config = KhronaConfig().apply {
+            this.store = store
+            this.pollingInterval = Duration.ofSeconds(5)
+            job("invalid-job") {
+                every(Duration.ofSeconds(1)) // 1s < 5s
+                execute {}
+            }
+        }
+        
+        val scheduler = Scheduler(config, this)
+        assertThrows(IllegalArgumentException::class.java) {
+            scheduler.start()
+        }
+    }
+
+    @Test
+    fun `scheduler should start if job interval is greater than or equal to polling interval`() = runTest {
+        val store = MockJobStore()
+        val config = KhronaConfig().apply {
+            this.store = store
+            this.pollingInterval = Duration.ofMillis(10)
+            job("valid-job") {
+                every(Duration.ofMillis(100))
+                execute {}
+            }
+        }
+        
+        val scheduler = Scheduler(config, this)
+        assertDoesNotThrow {
+            scheduler.start()
+        }
+        scheduler.stop()
+    }
+
+    @Test
+    fun `registerJob should fail if job interval is smaller than polling interval`() = runTest {
+        val store = MockJobStore()
+        val config = KhronaConfig().apply {
+            this.store = store
+            this.pollingInterval = Duration.ofSeconds(5)
+        }
+        
+        val scheduler = Scheduler(config, this)
+        val jobDef = JobBuilder("invalid-job").apply {
+            every(Duration.ofSeconds(1))
+            execute {}
+        }.build()
+
+        assertThrows(IllegalArgumentException::class.java) {
+            scheduler.registerJob(jobDef)
+        }
+    }
 }

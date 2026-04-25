@@ -66,7 +66,12 @@ class RetryPolicyBuilder {
 
 class KhronaConfig {
     var store: JobStore? = null
+    var pollingInterval: java.time.Duration = java.time.Duration.ofMillis(1000)
     val jobs = mutableListOf<JobDefinition>()
+
+    fun pollingInterval(interval: kotlin.time.Duration) {
+        this.pollingInterval = java.time.Duration.ofMillis(interval.inWholeMilliseconds)
+    }
 
     fun job(id: String, block: JobBuilder.() -> Unit) {
         val builder = JobBuilder(id)

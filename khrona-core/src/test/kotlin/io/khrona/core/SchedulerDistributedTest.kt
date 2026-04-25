@@ -16,6 +16,7 @@ class SchedulerDistributedTest {
         val store = MockJobStore()
         val config = KhronaConfig().apply {
             this.store = store
+            this.pollingInterval = Duration.ofMillis(10)
         }
         
         val counter = AtomicInteger(0)

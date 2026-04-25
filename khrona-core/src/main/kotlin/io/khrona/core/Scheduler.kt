@@ -8,7 +8,7 @@ import java.time.Instant
 import java.util.UUID
 
 class Scheduler(
-    private val config: KhronaConfig,
+    val config: KhronaConfig,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob()),
     private val clock: Clock = Clock.systemUTC()
 ) {
@@ -19,7 +19,10 @@ class Scheduler(
 
     fun start() {
         if (job != null) return
-        log.info("Starting Khrona Scheduler (workerId: $workerId)")
+        log.info("Starting Khrona Scheduler (workerId: $workerId, pollingInterval: ${config.pollingInterval})")
+
+        // Validate jobs from config
+        config.jobs.forEach { validateJob(it) }
         
         job = scope.launch {
             // Register jobs from config into store
@@ -48,7 +51,16 @@ class Scheduler(
                 } catch (e: Exception) {
                     log.error("Error in scheduler loop", e)
                 }
-                delay(1000) // Poll every second
+                delay(config.pollingInterval.toMillis())
+            }
+        }
+    }
+
+    private fun validateJob(jobDef: JobDefinition) {
+        val trigger = jobDef.trigger
+        if (trigger is IntervalTrigger) {
+            if (trigger.interval < config.pollingInterval) {
+                throw IllegalArgumentException("Job ${jobDef.id} has a trigger interval (${trigger.interval}) smaller than the scheduler polling interval (${config.pollingInterval})")
             }
         }
     }
@@ -150,6 +162,7 @@ class Scheduler(
     }
 
     fun registerJob(jobDef: JobDefinition) {
+        validateJob(jobDef)
         scope.launch {
             store.saveJob(jobDef)
             // Schedule the first execution if it's a recurring/deferred job
