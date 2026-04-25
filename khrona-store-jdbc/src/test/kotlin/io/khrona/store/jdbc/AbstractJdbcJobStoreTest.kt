@@ -140,10 +140,8 @@ abstract class AbstractJdbcJobStoreTest {
         val execution = JobExecution(jobId = "lease-job", scheduledAt = Instant.now().minusSeconds(60))
         store.saveExecution(execution)
         
-        // Claim with 1ms lease
-        store.claimExecution(execution.id, "worker-1", Duration.ofMillis(1))
-        
-        delay(10)
+        // Claim with an already expired lease (negative duration)
+        store.claimExecution(execution.id, "worker-1", Duration.ofSeconds(-10))
         
         val eligible = store.listEligibleExecutions(Instant.now())
         assertEquals(1, eligible.size)

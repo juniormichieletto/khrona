@@ -30,8 +30,8 @@ class Scheduler(
             
             // Basic initial scheduling: for each job, create its first execution if none exist
             config.jobs.forEach { jobDef ->
-                // Truncate to millis to ensure deterministic UUID matching later
-                val next = jobDef.trigger.nextExecutionTime(Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.MILLIS))
+                // Truncate to seconds to ensure deterministic UUID matching across nodes
+                val next = jobDef.trigger.nextExecutionTime(Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS))
                 if (next != null) {
                     // Use a deterministic UUID for the first execution to avoid duplicates when multiple nodes start
                     val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:${next.toEpochMilli()}".toByteArray())
@@ -185,7 +185,7 @@ class Scheduler(
             store.updateExecutionStatus(execution.id, ExecutionStatus.SUCCESS)
             
             // Schedule next run
-            val next = jobDef.trigger.nextExecutionTime(execution.scheduledAt)
+            val next = jobDef.trigger.nextExecutionTime(execution.scheduledAt)?.truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
             if (next != null) {
                 val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:${next.toEpochMilli()}".toByteArray())
                 store.saveExecution(JobExecution(id = deterministicId, jobId = jobDef.id, scheduledAt = next, lockKey = jobDef.lockKey))
@@ -228,8 +228,8 @@ class Scheduler(
         scope.launch {
             store.saveJob(jobDef)
             // Schedule the first execution if it's a recurring/deferred job
-            // Truncate to millis to ensure deterministic UUID matching later
-            val next = jobDef.trigger.nextExecutionTime(Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.MILLIS))
+            // Truncate to seconds to ensure deterministic UUID matching across nodes
+            val next = jobDef.trigger.nextExecutionTime(Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS))
             if (next != null) {
                 val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:${next.toEpochMilli()}".toByteArray())
                 store.saveExecution(JobExecution(id = deterministicId, jobId = jobDef.id, scheduledAt = next, lockKey = jobDef.lockKey))
