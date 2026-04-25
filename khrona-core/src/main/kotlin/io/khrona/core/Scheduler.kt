@@ -93,7 +93,7 @@ class Scheduler(
             // Check for distributed lock if policy is FORBID
             if (jobDef.concurrencyPolicy == ConcurrencyPolicy.FORBID && jobDef.lockKey != null) {
                 if (store.isLockHeld(jobDef.lockKey)) {
-                    log.debug("Skipping execution ${execution.id} for job ${execution.jobId} because lock ${jobDef.lockKey} is held")
+                    log.debug("[${execution.jobId}] Skipping execution ${execution.id} because lock ${jobDef.lockKey} is held")
                     return@forEach
                 }
             }
@@ -115,11 +115,11 @@ class Scheduler(
                     delay(leaseDuration.toMillis() / 2)
                     try {
                         if (!store.heartbeat(execution.id, leaseDuration)) {
-                            log.warn("Failed to heartbeat for execution ${execution.id}, it might have been reclaimed")
+                            log.warn("[${execution.jobId}] Failed to heartbeat for execution ${execution.id}, it might have been reclaimed")
                             break
                         }
                     } catch (e: Exception) {
-                        log.error("Error during heartbeat for execution ${execution.id}", e)
+                        log.error("[${execution.jobId}] Error during heartbeat for execution ${execution.id}", e)
                     }
                 }
             }
@@ -134,7 +134,7 @@ class Scheduler(
 
     private suspend fun executeJob(execution: JobExecution, jobDef: JobDefinition) {
         try {
-            log.info("Executing job ${execution.jobId} (execution: ${execution.id})")
+            log.info("[${execution.jobId}] Executing job (execution: ${execution.id})")
             store.updateExecutionStatus(execution.id, ExecutionStatus.RUNNING)
             
             jobDef.handler(execution.payload)
@@ -147,7 +147,7 @@ class Scheduler(
                 store.saveExecution(JobExecution(jobId = jobDef.id, scheduledAt = next, lockKey = jobDef.lockKey))
             }
         } catch (e: Exception) {
-            log.error("Job ${execution.jobId} failed", e)
+            log.error("[${execution.jobId}] Job failed", e)
             val nextAttempt = execution.attempt + 1
             if (nextAttempt < jobDef.retryPolicy.maxAttempts) {
                 val nextDelay = jobDef.retryPolicy.calculateDelay(nextAttempt)
@@ -165,10 +165,10 @@ class Scheduler(
                         lockKey = jobDef.lockKey
                     )
                 )
-                log.info("Scheduled retry for job ${execution.jobId} at $nextRun (attempt $nextAttempt)")
+                log.info("[${execution.jobId}] Scheduled retry at $nextRun (attempt $nextAttempt)")
             } else {
                 store.updateExecutionStatus(execution.id, ExecutionStatus.DEAD_LETTERED, e.message)
-                log.warn("Job ${execution.jobId} reached max attempts (${jobDef.retryPolicy.maxAttempts}) and is now DEAD_LETTERED")
+                log.warn("[${execution.jobId}] Reached max attempts (${jobDef.retryPolicy.maxAttempts}) and is now DEAD_LETTERED")
             }
         }
     }
