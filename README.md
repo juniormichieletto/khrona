@@ -4,6 +4,8 @@
 
 It provides a reliable, idiomatic, and production-capable platform for background tasks, ranging from simple recurring jobs to distributed-safe persistent executions.
 
+> **Etymology:** The name **Khrona** is derived from *Chronos* (Ancient Greek for "Time"), reflecting the project's focus on precise scheduling and temporal coordination.
+
 ## Features
 
 - **🚀 Coroutine-native:** Built on Kotlin coroutines for efficient, non-blocking execution.
