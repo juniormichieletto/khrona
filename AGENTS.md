@@ -8,6 +8,7 @@
     - Implement the minimal code changes required to make the test pass.
     - Refactor as necessary while keeping the test suite green.
 - **Verification:** Always execute the full test suite after making changes to ensure the project remains functional and no regressions were introduced.
+- **Source Control:** NEVER commit changes automatically. Always wait for explicit user confirmation or a "commit" directive after you have presented your changes for review.
 
 ```bash
 ./gradlew clean test
