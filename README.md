@@ -85,7 +85,7 @@ fun Application.module() {
         job("heartbeat") {
             every(1.minutes)
             execute {
-                println("Khrona is alive!")
+                log.info("Khrona is alive!")
             }
         }
     }
