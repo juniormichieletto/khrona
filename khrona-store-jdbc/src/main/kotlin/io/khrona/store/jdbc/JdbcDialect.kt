@@ -19,14 +19,15 @@ class PostgresDialect : JdbcDialect {
     """.trimIndent()
 
     override fun upsertExecutionSql(): String = """
-        INSERT INTO khrona_executions (id, job_id, status, scheduled_at, attempt, payload_json, lock_key)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO khrona_executions (id, job_id, status, scheduled_at, attempt, payload_json, lock_key, correlation_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (id) DO UPDATE SET
             status = EXCLUDED.status,
             scheduled_at = EXCLUDED.scheduled_at,
             attempt = EXCLUDED.attempt,
             payload_json = EXCLUDED.payload_json,
-            lock_key = EXCLUDED.lock_key
+            lock_key = EXCLUDED.lock_key,
+            correlation_id = EXCLUDED.correlation_id
     """.trimIndent()
 
     override fun claimExecutionSql(): String = """
@@ -72,7 +73,7 @@ class H2Dialect : JdbcDialect {
     """.trimIndent()
 
     override fun upsertExecutionSql(): String = """
-        MERGE INTO khrona_executions (id, job_id, status, scheduled_at, attempt, payload_json, lock_key) KEY (id) VALUES (?, ?, ?, ?, ?, ?, ?)
+        MERGE INTO khrona_executions (id, job_id, status, scheduled_at, attempt, payload_json, lock_key, correlation_id) KEY (id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """.trimIndent()
 
     override fun claimExecutionSql(): String = """
@@ -116,14 +117,15 @@ class MySqlDialect : JdbcDialect {
     """.trimIndent()
 
     override fun upsertExecutionSql(): String = """
-        INSERT INTO khrona_executions (id, job_id, status, scheduled_at, attempt, payload_json, lock_key)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO khrona_executions (id, job_id, status, scheduled_at, attempt, payload_json, lock_key, correlation_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON DUPLICATE KEY UPDATE
             status = VALUES(status),
             scheduled_at = VALUES(scheduled_at),
             attempt = VALUES(attempt),
             payload_json = VALUES(payload_json),
-            lock_key = VALUES(lock_key)
+            lock_key = VALUES(lock_key),
+            correlation_id = VALUES(correlation_id)
     """.trimIndent()
 
     override fun claimExecutionSql(): String = """
@@ -178,13 +180,13 @@ class OracleDialect : JdbcDialect {
 
     override fun upsertExecutionSql(): String = """
         MERGE INTO khrona_executions t
-        USING (SELECT ? id, ? job_id, ? status, ? scheduled_at, ? attempt, ? payload_json, ? lock_key FROM dual) s
+        USING (SELECT ? id, ? job_id, ? status, ? scheduled_at, ? attempt, ? payload_json, ? lock_key, ? correlation_id FROM dual) s
         ON (t.id = s.id)
         WHEN MATCHED THEN
-            UPDATE SET t.status = s.status, t.scheduled_at = s.scheduled_at, t.attempt = s.attempt, t.payload_json = s.payload_json, t.lock_key = s.lock_key
+            UPDATE SET t.status = s.status, t.scheduled_at = s.scheduled_at, t.attempt = s.attempt, t.payload_json = s.payload_json, t.lock_key = s.lock_key, t.correlation_id = s.correlation_id
         WHEN NOT MATCHED THEN
-            INSERT (id, job_id, status, scheduled_at, attempt, payload_json, lock_key)
-            VALUES (s.id, s.job_id, s.status, s.scheduled_at, s.attempt, s.payload_json, s.lock_key)
+            INSERT (id, job_id, status, scheduled_at, attempt, payload_json, lock_key, correlation_id)
+            VALUES (s.id, s.job_id, s.status, s.scheduled_at, s.attempt, s.payload_json, s.lock_key, s.correlation_id)
     """.trimIndent()
 
     override fun claimExecutionSql(): String = """
@@ -218,6 +220,3 @@ class OracleDialect : JdbcDialect {
         WHERE (status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?
     """.trimIndent()
 }
-
-
-

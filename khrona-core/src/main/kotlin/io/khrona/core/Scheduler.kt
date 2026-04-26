@@ -1,7 +1,9 @@
 package io.khrona.core
 
 import kotlinx.coroutines.*
+import kotlinx.coroutines.slf4j.MDCContext
 import org.slf4j.LoggerFactory
+import org.slf4j.MDC
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -21,6 +23,8 @@ class Scheduler(
         if (job != null) return
         log.info("Starting Khrona Scheduler (workerId: $workerId, pollingInterval: ${config.pollingInterval})")
 
+        val correlationId = MDC.get("correlationId")
+
         // Validate jobs from config
         config.jobs.forEach { validateJob(it) }
         
@@ -37,7 +41,15 @@ class Scheduler(
                     // Use a deterministic UUID for the first execution to avoid duplicates when multiple nodes start.
                     val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
                     if (store.getExecution(deterministicId) == null) {
-                        store.saveExecution(JobExecution(id = deterministicId, jobId = jobDef.id, scheduledAt = next, lockKey = jobDef.lockKey))
+                        store.saveExecution(
+                            JobExecution(
+                                id = deterministicId,
+                                jobId = jobDef.id,
+                                scheduledAt = next,
+                                lockKey = jobDef.lockKey,
+                                correlationId = correlationId ?: deterministicId.toString()
+                            )
+                        )
                     }
                 }
             }
@@ -153,7 +165,14 @@ class Scheduler(
         // Schedule next run
         val next = jobDef.trigger.nextExecutionTime(Instant.now(clock))
         if (next != null) {
-            store.saveExecution(JobExecution(jobId = jobDef.id, scheduledAt = next, lockKey = jobDef.lockKey))
+            store.saveExecution(
+                JobExecution(
+                    jobId = jobDef.id,
+                    scheduledAt = next,
+                    lockKey = jobDef.lockKey,
+                    correlationId = execution.correlationId
+                )
+            )
         }
     }
 
@@ -182,47 +201,61 @@ class Scheduler(
     }
 
     private suspend fun executeJob(execution: JobExecution, jobDef: JobDefinition) {
-        try {
-            log.info("[${execution.jobId}] Executing job (execution: ${execution.id})")
-            store.updateExecutionStatus(execution.id, ExecutionStatus.RUNNING)
-            
-            jobDef.handler(execution.payload)
-            
-            store.updateExecutionStatus(execution.id, ExecutionStatus.SUCCESS)
-            
-            // Schedule next run
-            // Use plusMillis(1) to ensure we look for the NEXT execution after this one,
-            // which is important for inclusive triggers like OneTimeTrigger.
-            val next = jobDef.trigger.nextExecutionTime(execution.scheduledAt.plusMillis(1))?.truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
-            if (next != null) {
-                val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
-                if (store.getExecution(deterministicId) == null) {
-                    store.saveExecution(JobExecution(id = deterministicId, jobId = jobDef.id, scheduledAt = next, lockKey = jobDef.lockKey))
+        val correlationId = execution.correlationId ?: execution.id.toString()
+        withContext(MDCContext(mapOf("correlationId" to correlationId))) {
+            try {
+                log.info("[${execution.jobId}] [$correlationId] Executing job (execution: ${execution.id})")
+                store.updateExecutionStatus(execution.id, ExecutionStatus.RUNNING)
+
+                jobDef.handler(execution.payload)
+
+                store.updateExecutionStatus(execution.id, ExecutionStatus.SUCCESS)
+                log.info("[${execution.jobId}] [$correlationId] Job finished successfully")
+
+                // Schedule next run
+                // Use plusMillis(1) to ensure we look for the NEXT execution after this one,
+                // which is important for inclusive triggers like OneTimeTrigger.
+                val next = jobDef.trigger.nextExecutionTime(execution.scheduledAt.plusMillis(1))
+                    ?.truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+                if (next != null) {
+                    val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
+                    if (store.getExecution(deterministicId) == null) {
+                        store.saveExecution(
+                            JobExecution(
+                                id = deterministicId,
+                                jobId = jobDef.id,
+                                scheduledAt = next,
+                                lockKey = jobDef.lockKey,
+                                correlationId = correlationId
+                            )
+                        )
+                    }
                 }
-            }
-        } catch (e: Exception) {
-            log.error("[${execution.jobId}] Job failed", e)
-            val nextAttempt = execution.attempt + 1
-            if (nextAttempt < jobDef.retryPolicy.maxAttempts) {
-                val nextDelay = jobDef.retryPolicy.calculateDelay(nextAttempt)
-                val nextRun = Instant.now(clock).plus(nextDelay)
-                
-                store.updateExecutionStatus(execution.id, ExecutionStatus.FAILED, e.message)
-                
-                // Create a new execution for the retry
-                store.saveExecution(
-                    JobExecution(
-                        jobId = execution.jobId,
-                        scheduledAt = nextRun,
-                        attempt = nextAttempt,
-                        payload = execution.payload,
-                        lockKey = jobDef.lockKey
+            } catch (e: Exception) {
+                log.error("[${execution.jobId}] [$correlationId] Job failed", e)
+                val nextAttempt = execution.attempt + 1
+                if (nextAttempt < jobDef.retryPolicy.maxAttempts) {
+                    val nextDelay = jobDef.retryPolicy.calculateDelay(nextAttempt)
+                    val nextRun = Instant.now(clock).plus(nextDelay)
+
+                    store.updateExecutionStatus(execution.id, ExecutionStatus.FAILED, e.message)
+
+                    // Create a new execution for the retry
+                    store.saveExecution(
+                        JobExecution(
+                            jobId = execution.jobId,
+                            scheduledAt = nextRun,
+                            attempt = nextAttempt,
+                            payload = execution.payload,
+                            lockKey = jobDef.lockKey,
+                            correlationId = correlationId
+                        )
                     )
-                )
-                log.info("[${execution.jobId}] Scheduled retry at $nextRun (attempt $nextAttempt)")
-            } else {
-                store.updateExecutionStatus(execution.id, ExecutionStatus.DEAD_LETTERED, e.message)
-                log.warn("[${execution.jobId}] Reached max attempts (${jobDef.retryPolicy.maxAttempts}) and is now DEAD_LETTERED")
+                    log.info("[${execution.jobId}] [$correlationId] Scheduled retry at $nextRun (attempt $nextAttempt)")
+                } else {
+                    store.updateExecutionStatus(execution.id, ExecutionStatus.DEAD_LETTERED, e.message)
+                    log.warn("[${execution.jobId}] [$correlationId] Reached max attempts (${jobDef.retryPolicy.maxAttempts}) and is now DEAD_LETTERED")
+                }
             }
         }
     }
@@ -235,6 +268,7 @@ class Scheduler(
 
     fun registerJob(jobDef: JobDefinition) {
         validateJob(jobDef)
+        val correlationId = MDC.get("correlationId")
         scope.launch {
             store.saveJob(jobDef)
             // Schedule the first execution if it's a recurring/deferred job
@@ -243,7 +277,15 @@ class Scheduler(
             if (next != null) {
                 val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
                 if (store.getExecution(deterministicId) == null) {
-                    store.saveExecution(JobExecution(id = deterministicId, jobId = jobDef.id, scheduledAt = next, lockKey = jobDef.lockKey))
+                    store.saveExecution(
+                        JobExecution(
+                            id = deterministicId,
+                            jobId = jobDef.id,
+                            scheduledAt = next,
+                            lockKey = jobDef.lockKey,
+                            correlationId = correlationId ?: deterministicId.toString()
+                        )
+                    )
                 }
             }
         }
@@ -254,15 +296,19 @@ class Scheduler(
      * The job must have been previously registered.
      */
     fun trigger(jobId: String, payload: Any? = null) {
+        val correlationId = MDC.get("correlationId")
         scope.launch {
             val jobDef = store.getJob(jobId) ?: throw IllegalArgumentException("Job $jobId not found")
             val now = Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+            val executionId = UUID.randomUUID()
             store.saveExecution(
                 JobExecution(
+                    id = executionId,
                     jobId = jobId,
                     scheduledAt = now,
                     payload = payload,
-                    lockKey = jobDef.lockKey
+                    lockKey = jobDef.lockKey,
+                    correlationId = correlationId ?: executionId.toString()
                 )
             )
         }

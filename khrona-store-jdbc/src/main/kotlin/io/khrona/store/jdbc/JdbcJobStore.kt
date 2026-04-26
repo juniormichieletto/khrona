@@ -114,6 +114,7 @@ class JdbcJobStore(
                 stmt.setInt(5, execution.attempt)
                 stmt.setString(6, execution.payload?.toString())
                 stmt.setString(7, execution.lockKey)
+                stmt.setString(8, execution.correlationId)
                 stmt.executeUpdate()
             }
         }
@@ -232,7 +233,8 @@ class JdbcJobStore(
             workerId = rs.getString("claimed_by"),
             lockKey = rs.getString("lock_key"),
             error = rs.getString("error"),
-            payload = rs.getString("payload_json")
+            payload = rs.getString("payload_json"),
+            correlationId = rs.getString("correlation_id")
         )
     }
 

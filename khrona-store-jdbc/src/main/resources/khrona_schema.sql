@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS khrona_executions (
     attempt INT DEFAULT 0,
     error TEXT,
     payload_json TEXT,
+    correlation_id VARCHAR(255),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

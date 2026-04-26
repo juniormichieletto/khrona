@@ -15,5 +15,6 @@ data class JobExecution(
     val workerId: String? = null,
     val lockKey: String? = null,
     val error: String? = null,
-    val payload: Any? = null
+    val payload: Any? = null,
+    val correlationId: String? = id.toString()
 )

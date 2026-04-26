@@ -6,6 +6,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.test.*
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
+import org.slf4j.MDC
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -280,6 +281,50 @@ class SchedulerTest {
         assertEquals(1, callCount, "Job should have been executed once due to manual trigger")
         
         scheduler.stop()
+    }
+
+    @Test
+    fun `scheduler should propagate correlationId`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
+        var capturedCorrelationId: String? = null
+        
+        val config = KhronaConfig().apply {
+            this.store = store
+            job("correlation-job") {
+                once()
+                execute {
+                    capturedCorrelationId = MDC.get("correlationId")
+                }
+            }
+        }
+        
+        val scheduler = Scheduler(config, backgroundScope, clock)
+        
+        // Manually set a correlationId in MDC before triggering
+        val originalCorrelationId = "test-correlation-id"
+        MDC.put("correlationId", originalCorrelationId)
+        try {
+            scheduler.start()
+            
+            // Wait for polling and execution
+            advanceTimeBy(5000)
+            
+            assertEquals(originalCorrelationId, capturedCorrelationId, "CorrelationId should be propagated from registration context")
+            
+            // Test trigger propagation
+            capturedCorrelationId = null
+            val triggerCorrelationId = "trigger-correlation-id"
+            MDC.put("correlationId", triggerCorrelationId)
+            
+            scheduler.trigger("correlation-job")
+            advanceTimeBy(5000)
+            
+            assertEquals(triggerCorrelationId, capturedCorrelationId, "CorrelationId should be propagated from trigger context")
+        } finally {
+            MDC.remove("correlationId")
+            scheduler.stop()
+        }
     }
 
     @Test
