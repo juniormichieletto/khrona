@@ -284,43 +284,49 @@ class SchedulerTest {
     }
 
     @Test
-    fun `scheduler should propagate correlationId`() = runTest {
+    fun `scheduler should propagate correlationId but keep it unique per recurring run`() = runTest {
         val clock = TestClock(testScheduler)
         val store = MockJobStore(clock)
-        var capturedCorrelationId: String? = null
+        val capturedIds = mutableListOf<String?>()
         
         val config = KhronaConfig().apply {
             this.store = store
             job("correlation-job") {
-                once()
+                every(Duration.ofSeconds(1))
                 execute {
-                    capturedCorrelationId = MDC.get("correlationId")
+                    capturedIds.add(MDC.get("correlationId"))
                 }
             }
         }
         
         val scheduler = Scheduler(config, backgroundScope, clock)
         
-        // Manually set a correlationId in MDC before triggering
-        val originalCorrelationId = "test-correlation-id"
+        // Manually set a correlationId in MDC before starting
+        val originalCorrelationId = "registration-id"
         MDC.put("correlationId", originalCorrelationId)
         try {
             scheduler.start()
             
-            // Wait for polling and execution
-            advanceTimeBy(5000)
+            // Wait for first execution (from start)
+            advanceTimeBy(1500) 
+            assertEquals(1, capturedIds.size)
+            assertEquals(originalCorrelationId, capturedIds[0], "First execution should have registration correlationId")
             
-            assertEquals(originalCorrelationId, capturedCorrelationId, "CorrelationId should be propagated from registration context")
+            // Wait for second recurring execution
+            advanceTimeBy(1000)
+            assertEquals(2, capturedIds.size)
+            assertNotEquals(originalCorrelationId, capturedIds[1], "Second recurring run should have a NEW unique correlationId")
             
             // Test trigger propagation
-            capturedCorrelationId = null
-            val triggerCorrelationId = "trigger-correlation-id"
+            val triggerCorrelationId = "trigger-id"
             MDC.put("correlationId", triggerCorrelationId)
             
             scheduler.trigger("correlation-job")
-            advanceTimeBy(5000)
+            advanceTimeBy(1000)
             
-            assertEquals(triggerCorrelationId, capturedCorrelationId, "CorrelationId should be propagated from trigger context")
+            assertEquals(3, capturedIds.size)
+            assertEquals(triggerCorrelationId, capturedIds[2], "Triggered execution should have the trigger correlationId")
+
         } finally {
             MDC.remove("correlationId")
             scheduler.stop()

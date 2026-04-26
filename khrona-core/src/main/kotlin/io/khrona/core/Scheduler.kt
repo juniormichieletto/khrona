@@ -169,8 +169,8 @@ class Scheduler(
                 JobExecution(
                     jobId = jobDef.id,
                     scheduledAt = next,
-                    lockKey = jobDef.lockKey,
-                    correlationId = execution.correlationId
+                    lockKey = jobDef.lockKey
+                    // Do NOT propagate correlationId to next recurring run
                 )
             )
         }
@@ -225,8 +225,8 @@ class Scheduler(
                                 id = deterministicId,
                                 jobId = jobDef.id,
                                 scheduledAt = next,
-                                lockKey = jobDef.lockKey,
-                                correlationId = correlationId
+                                lockKey = jobDef.lockKey
+                                // Do NOT propagate correlationId to next recurring run
                             )
                         )
                     }
@@ -248,7 +248,7 @@ class Scheduler(
                             attempt = nextAttempt,
                             payload = execution.payload,
                             lockKey = jobDef.lockKey,
-                            correlationId = correlationId
+                            correlationId = correlationId // Propagate correlationId to retries of the SAME execution
                         )
                     )
                     log.info("[${execution.jobId}] [$correlationId] Scheduled retry at $nextRun (attempt $nextAttempt)")

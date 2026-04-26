@@ -184,6 +184,19 @@ job("report") {
 }
 ```
 
+### Correlation ID & Observability
+Khrona automatically manages `correlationId` propagation via Slf4j MDC, making it easy to trace a specific job execution across your logs.
+
+- **Uniqueness**: Every new recurring run or manual trigger gets a unique `correlationId`.
+- **Retries**: Retries of a failing execution **share the same ID**, allowing you to trace the entire lifecycle of a specific attempt.
+- **Propagation**: If you register or trigger a job from a context that already has a `correlationId` in the MDC (like a Ktor request), Khrona will capture and use it.
+
+To show the ID in your logs, update your `logback.xml` pattern to include `%X{correlationId}`:
+
+```xml
+<pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger - [%X{correlationId}] %msg%n</pattern>
+```
+
 ## Manual Control (Standalone)
 
 You can also run Khrona outside of Ktor:
