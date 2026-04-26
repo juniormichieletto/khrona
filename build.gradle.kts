@@ -71,7 +71,7 @@ subprojects {
 
     configure<SigningExtension> {
         // Use providers to safely read environment variables
-        val signingKeyBase64 = providers.environmentVariable("GCP_PRIVATE_KEY").getOrNull()
+        val signingKeyBase64 = providers.environmentVariable("GPG_PRIVATE_KEY").getOrNull()
         val signingPassword = providers.environmentVariable("GPG_PASSPHRASE").getOrNull()
 
         if (!signingKeyBase64.isNullOrBlank()) {
@@ -79,8 +79,12 @@ subprojects {
             useInMemoryPgpKeys(signingKey, signingPassword)
             sign(extensions.getByType<PublishingExtension>().publications["mavenJava"])
         } else {
-            // Print a loud warning so you know immediately if the key wasn't picked up
-            logger.warn("⚠️ GPG_PRIVATE_KEY is missing! Artifacts will NOT be signed and Sonatype will reject them.")
+            val isPublishing = gradle.startParameter.taskNames.any { it.contains("publish", ignoreCase = true) }
+            
+            // Only warn if we are specifically trying to publish and the key is missing
+            if (isPublishing) {
+                logger.warn("⚠️ GPG_PRIVATE_KEY is missing! Artifacts will NOT be signed and Sonatype will reject them.")
+            }
         }
     }
 }

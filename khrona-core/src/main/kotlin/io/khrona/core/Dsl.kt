@@ -31,6 +31,22 @@ class JobBuilder(val id: String) {
     }
 
     /**
+     * Schedules the job to run once as soon as the scheduler starts.
+     */
+    fun once() {
+        if (this.trigger != null) throw IllegalStateException("Trigger already defined for job $id")
+        this.trigger = OneTimeTrigger(java.time.Instant.EPOCH)
+    }
+
+    /**
+     * Schedules the job to run once at the specified [time].
+     */
+    fun at(time: java.time.Instant) {
+        if (this.trigger != null) throw IllegalStateException("Trigger already defined for job $id")
+        this.trigger = OneTimeTrigger(time)
+    }
+
+    /**
      * Defines a cron trigger using Unix format (5 fields: min, hour, dom, month, dow).
      *
      * Example for every minute: "* * * * *"

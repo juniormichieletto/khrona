@@ -23,7 +23,8 @@ class SchedulerTest {
 
     @Test
     fun `scheduler should execute eligible jobs`() = runTest {
-        val store = MockJobStore()
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
         val config = KhronaConfig().apply {
             this.store = store
             job("test-job") {
@@ -34,8 +35,7 @@ class SchedulerTest {
             }
         }
         
-        val clock = TestClock(testScheduler)
-        val scheduler = Scheduler(config, this, clock)
+        val scheduler = Scheduler(config, backgroundScope, clock)
         
         // Setup an eligible execution
         val execution = JobExecution(jobId = "test-job", scheduledAt = Instant.now(clock).minusSeconds(10))
@@ -45,13 +45,7 @@ class SchedulerTest {
         scheduler.start()
         
         // Wait for polling and execution
-        advanceTimeBy(2000)
-        
-        // Check if status reached SUCCESS
-        // We might need a bit of real delay or more advanceTime if things are launched in other scopes
-        // But since we pass 'this' as scope, it should be controlled by runTest
-        
-        yield() // Allow other coroutines to run
+        advanceTimeBy(5000)
         
         val updated = store.getExecution(execution.id)
         assertEquals(ExecutionStatus.SUCCESS, updated?.status)
@@ -61,7 +55,8 @@ class SchedulerTest {
 
     @Test
     fun `scheduler should handle job failure`() = runTest {
-        val store = MockJobStore()
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
         val config = KhronaConfig().apply {
             this.store = store
             job("fail-job") {
@@ -72,16 +67,14 @@ class SchedulerTest {
             }
         }
         
-        val clock = TestClock(testScheduler)
-        val scheduler = Scheduler(config, this, clock)
+        val scheduler = Scheduler(config, backgroundScope, clock)
         
         val execution = JobExecution(jobId = "fail-job", scheduledAt = Instant.now(clock).minusSeconds(10))
         store.saveExecution(execution)
         store.saveJob(config.jobs.first())
 
         scheduler.start()
-        advanceTimeBy(2000)
-        yield()
+        advanceTimeBy(5000)
         
         val updated = store.getExecution(execution.id)
         assertEquals(ExecutionStatus.FAILED, updated?.status)
@@ -91,7 +84,8 @@ class SchedulerTest {
 
     @Test
     fun `scheduler should retry failed jobs`() = runTest {
-        val store = MockJobStore()
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
         val config = KhronaConfig().apply {
             this.store = store
             job("retry-job") {
@@ -106,8 +100,7 @@ class SchedulerTest {
             }
         }
         
-        val clock = TestClock(testScheduler)
-        val scheduler = Scheduler(config, this, clock)
+        val scheduler = Scheduler(config, backgroundScope, clock)
         
         val execution = JobExecution(jobId = "retry-job", scheduledAt = Instant.now(clock).minusSeconds(10))
         store.saveExecution(execution)
@@ -116,25 +109,21 @@ class SchedulerTest {
         scheduler.start()
         
         // First execution fails
-        advanceTimeBy(1000)
-        yield()
+        advanceTimeBy(5000)
         
         // Should have a new execution with attempt 1
         val retryExec = store.executions.values.find { it.jobId == "retry-job" && it.attempt == 1 }
         assertNotNull(retryExec, "Retry execution should be scheduled")
-        // It might be already CLAIMED if the scheduler loop ran again
         
         // Wait for retry to be eligible and executed
-        advanceTimeBy(2000)
-        yield()
+        advanceTimeBy(5000)
         
         // Should have attempt 2
         val retryExec2 = store.executions.values.find { it.jobId == "retry-job" && it.attempt == 2 }
         assertNotNull(retryExec2, "Second retry execution should be scheduled")
         
         // Wait for second retry
-        advanceTimeBy(2000)
-        yield()
+        advanceTimeBy(5000)
         
         // Should be DEAD_LETTERED now as maxAttempts = 3 (0, 1, 2 are 3 attempts)
         val finalExec = store.executions.values.find { it.jobId == "retry-job" && it.attempt == 2 }
@@ -145,7 +134,8 @@ class SchedulerTest {
 
     @Test
     fun `scheduler should fail to start if cron frequency is smaller than polling interval`() = runTest {
-        val store = MockJobStore()
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
         val config = KhronaConfig().apply {
             this.store = store
             this.pollingInterval = Duration.ofMinutes(5)
@@ -155,7 +145,7 @@ class SchedulerTest {
             }
         }
         
-        val scheduler = Scheduler(config, this)
+        val scheduler = Scheduler(config, this, clock)
         assertThrows(IllegalArgumentException::class.java) {
             scheduler.start()
         }
@@ -163,7 +153,8 @@ class SchedulerTest {
 
     @Test
     fun `scheduler should fail to start if job interval is smaller than polling interval`() = runTest {
-        val store = MockJobStore()
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
         val config = KhronaConfig().apply {
             this.store = store
             this.pollingInterval = Duration.ofSeconds(5)
@@ -173,7 +164,7 @@ class SchedulerTest {
             }
         }
         
-        val scheduler = Scheduler(config, this)
+        val scheduler = Scheduler(config, this, clock)
         assertThrows(IllegalArgumentException::class.java) {
             scheduler.start()
         }
@@ -181,7 +172,8 @@ class SchedulerTest {
 
     @Test
     fun `scheduler should start if job interval is greater than or equal to polling interval`() = runTest {
-        val store = MockJobStore()
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
         val config = KhronaConfig().apply {
             this.store = store
             this.pollingInterval = Duration.ofMillis(10)
@@ -191,7 +183,7 @@ class SchedulerTest {
             }
         }
         
-        val scheduler = Scheduler(config, this)
+        val scheduler = Scheduler(config, this, clock)
         assertDoesNotThrow {
             scheduler.start()
         }
@@ -200,13 +192,14 @@ class SchedulerTest {
 
     @Test
     fun `registerJob should fail if job interval is smaller than polling interval`() = runTest {
-        val store = MockJobStore()
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
         val config = KhronaConfig().apply {
             this.store = store
             this.pollingInterval = Duration.ofSeconds(5)
         }
         
-        val scheduler = Scheduler(config, this)
+        val scheduler = Scheduler(config, this, clock)
         val jobDef = JobBuilder("invalid-job").apply {
             every(Duration.ofSeconds(1))
             execute {}
@@ -226,6 +219,67 @@ class SchedulerTest {
                 execute {}
             }
         }
+    }
+
+    @Test
+    fun `scheduler should execute one-time jobs`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
+        var executed = false
+        val config = KhronaConfig().apply {
+            this.store = store
+            job("one-time-job") {
+                once()
+                execute {
+                    executed = true
+                }
+            }
+        }
+        
+        val scheduler = Scheduler(config, backgroundScope, clock)
+        
+        scheduler.start()
+        
+        // Wait for polling and execution
+        advanceTimeBy(5000)
+        
+        assertTrue(executed, "Job should have been executed")
+        
+        // Check if no more executions are scheduled
+        val executions = store.executions.values.filter { it.jobId == "one-time-job" }
+        assertEquals(1, executions.size, "Should only have one execution")
+        assertEquals(ExecutionStatus.SUCCESS, executions[0].status)
+        
+        scheduler.stop()
+    }
+
+    @Test
+    fun `scheduler should support manual trigger`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
+        var callCount = 0
+        val config = KhronaConfig().apply {
+            this.store = store
+            job("manual-job") {
+                at(Instant.now(clock).plus(Duration.ofDays(365 * 100))) // Never run automatically
+                execute {
+                    callCount++
+                }
+            }
+        }
+        
+        val scheduler = Scheduler(config, backgroundScope, clock)
+        
+        scheduler.start()
+        
+        // Manually trigger
+        scheduler.trigger("manual-job")
+        
+        advanceTimeBy(5000)
+        
+        assertEquals(1, callCount, "Job should have been executed once due to manual trigger")
+        
+        scheduler.stop()
     }
 
     @Test

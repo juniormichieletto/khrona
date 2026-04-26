@@ -1,10 +1,5 @@
 package io.khrona.store.jdbc
 
-import io.khrona.core.JobExecution
-import java.sql.Connection
-import java.time.Instant
-import java.util.*
-
 interface JdbcDialect {
     fun upsertJobSql(): String
     fun upsertExecutionSql(): String

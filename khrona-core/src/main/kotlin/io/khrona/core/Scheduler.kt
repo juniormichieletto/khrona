@@ -31,11 +31,14 @@ class Scheduler(
             // Basic initial scheduling: for each job, create its first execution if none exist
             config.jobs.forEach { jobDef ->
                 // Truncate to seconds to ensure deterministic UUID matching across nodes
-                val next = jobDef.trigger.nextExecutionTime(Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS))
+                val now = Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+                val next = jobDef.trigger.nextExecutionTime(now)
                 if (next != null) {
-                    // Use a deterministic UUID for the first execution to avoid duplicates when multiple nodes start
-                    val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:${next.toEpochMilli()}".toByteArray())
-                    store.saveExecution(JobExecution(id = deterministicId, jobId = jobDef.id, scheduledAt = next, lockKey = jobDef.lockKey))
+                    // Use a deterministic UUID for the first execution to avoid duplicates when multiple nodes start.
+                    val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
+                    if (store.getExecution(deterministicId) == null) {
+                        store.saveExecution(JobExecution(id = deterministicId, jobId = jobDef.id, scheduledAt = next, lockKey = jobDef.lockKey))
+                    }
                 }
             }
 
@@ -82,6 +85,9 @@ class Scheduler(
                         throw IllegalArgumentException("Job ${jobDef.id} has a cron frequency ($gap) smaller than the scheduler polling interval (${config.pollingInterval})")
                     }
                 }
+            }
+            is OneTimeTrigger -> {
+                // One-time triggers don't have frequency constraints
             }
         }
     }
@@ -185,10 +191,14 @@ class Scheduler(
             store.updateExecutionStatus(execution.id, ExecutionStatus.SUCCESS)
             
             // Schedule next run
-            val next = jobDef.trigger.nextExecutionTime(execution.scheduledAt)?.truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+            // Use plusMillis(1) to ensure we look for the NEXT execution after this one,
+            // which is important for inclusive triggers like OneTimeTrigger.
+            val next = jobDef.trigger.nextExecutionTime(execution.scheduledAt.plusMillis(1))?.truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
             if (next != null) {
-                val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:${next.toEpochMilli()}".toByteArray())
-                store.saveExecution(JobExecution(id = deterministicId, jobId = jobDef.id, scheduledAt = next, lockKey = jobDef.lockKey))
+                val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
+                if (store.getExecution(deterministicId) == null) {
+                    store.saveExecution(JobExecution(id = deterministicId, jobId = jobDef.id, scheduledAt = next, lockKey = jobDef.lockKey))
+                }
             }
         } catch (e: Exception) {
             log.error("[${execution.jobId}] Job failed", e)
@@ -228,12 +238,33 @@ class Scheduler(
         scope.launch {
             store.saveJob(jobDef)
             // Schedule the first execution if it's a recurring/deferred job
-            // Truncate to seconds to ensure deterministic UUID matching across nodes
-            val next = jobDef.trigger.nextExecutionTime(Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS))
+            val now = Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+            val next = jobDef.trigger.nextExecutionTime(now)
             if (next != null) {
-                val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:${next.toEpochMilli()}".toByteArray())
-                store.saveExecution(JobExecution(id = deterministicId, jobId = jobDef.id, scheduledAt = next, lockKey = jobDef.lockKey))
+                val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
+                if (store.getExecution(deterministicId) == null) {
+                    store.saveExecution(JobExecution(id = deterministicId, jobId = jobDef.id, scheduledAt = next, lockKey = jobDef.lockKey))
+                }
             }
+        }
+    }
+
+    /**
+     * Manually triggers a job for immediate execution.
+     * The job must have been previously registered.
+     */
+    fun trigger(jobId: String, payload: Any? = null) {
+        scope.launch {
+            val jobDef = store.getJob(jobId) ?: throw IllegalArgumentException("Job $jobId not found")
+            val now = Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+            store.saveExecution(
+                JobExecution(
+                    jobId = jobId,
+                    scheduledAt = now,
+                    payload = payload,
+                    lockKey = jobDef.lockKey
+                )
+            )
         }
     }
 }

@@ -5,7 +5,7 @@ import java.time.Instant
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 
-class MockJobStore : JobStore {
+class MockJobStore(private val clock: java.time.Clock = java.time.Clock.systemUTC()) : JobStore {
     val jobs = ConcurrentHashMap<String, JobDefinition>()
     val executions = ConcurrentHashMap<UUID, JobExecution>()
     val updatedStatuses = mutableListOf<Pair<UUID, ExecutionStatus>>()
@@ -30,7 +30,7 @@ class MockJobStore : JobStore {
     override suspend fun getExecution(id: UUID): JobExecution? = executions[id]
 
     override suspend fun listEligibleExecutions(now: Instant): List<JobExecution> {
-        return executions.values.filter { it ->
+        return executions.values.filter {
             val expiresAt = it.expiresAt
             (it.status == ExecutionStatus.PENDING || ((it.status == ExecutionStatus.CLAIMED || it.status == ExecutionStatus.RUNNING) && expiresAt != null && expiresAt <= now))
             && it.scheduledAt <= now 
@@ -39,7 +39,7 @@ class MockJobStore : JobStore {
 
     override suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: Duration): Boolean {
         var claimed = false
-        val now = Instant.now()
+        val now = Instant.now(clock)
         executions.computeIfPresent(id) { _, exec ->
             val expiresAt = exec.expiresAt
             val isExpired = (exec.status == ExecutionStatus.CLAIMED || exec.status == ExecutionStatus.RUNNING) && expiresAt != null && expiresAt <= now
@@ -60,10 +60,11 @@ class MockJobStore : JobStore {
 
     override suspend fun heartbeat(id: UUID, leaseDuration: Duration): Boolean {
         var updated = false
+        val now = Instant.now(clock)
         executions.computeIfPresent(id) { _, exec ->
             if (exec.status == ExecutionStatus.CLAIMED || exec.status == ExecutionStatus.RUNNING) {
                 updated = true
-                exec.copy(expiresAt = Instant.now().plus(leaseDuration))
+                exec.copy(expiresAt = now.plus(leaseDuration))
             } else {
                 exec
             }
@@ -72,7 +73,7 @@ class MockJobStore : JobStore {
     }
 
     override suspend fun isLockHeld(lockKey: String, excludeExecutionId: UUID?): Boolean {
-        val now = Instant.now()
+        val now = Instant.now(clock)
         return executions.values.any { it ->
             val expiresAt = it.expiresAt
             it.id != excludeExecutionId && it.lockKey == lockKey && (it.status == ExecutionStatus.CLAIMED || it.status == ExecutionStatus.RUNNING) && (expiresAt == null || expiresAt > now)

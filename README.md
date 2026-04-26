@@ -200,6 +200,25 @@ scheduler.start()
 // Register jobs dynamically
 scheduler.registerJob(JobDefinition(...))
 
+// Run a job once immediately
+scheduler.registerJob(job("one-time-task") {
+    once()
+    execute {
+        println("Running once!")
+    }
+})
+
+// Schedule a job for a specific time
+scheduler.registerJob(job("delayed-task") {
+    at(Instant.now().plus(Duration.ofHours(1)))
+    execute {
+        println("Running after 1 hour")
+    }
+})
+
+// Manually trigger an existing job with a custom payload
+scheduler.trigger("my-job-id", payload = "Ad-hoc trigger data")
+
 // Stop cleanly
 scheduler.stop()
 ```
