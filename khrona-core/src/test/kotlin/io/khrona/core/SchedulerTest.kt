@@ -307,12 +307,12 @@ class SchedulerTest {
         try {
             scheduler.start()
             
-            // Wait for first execution (from start)
+            // Wait for first execution (scheduled at T=1 because baseline is EPOCH and interval is 1s)
             advanceTimeBy(1500) 
             assertEquals(1, capturedIds.size)
             assertEquals(originalCorrelationId, capturedIds[0], "First execution should have registration correlationId")
             
-            // Wait for second recurring execution
+            // Wait for second recurring execution (scheduled at T=2)
             advanceTimeBy(1000)
             assertEquals(2, capturedIds.size)
             assertNotEquals(originalCorrelationId, capturedIds[1], "Second recurring run should have a NEW unique correlationId")
@@ -322,7 +322,7 @@ class SchedulerTest {
             MDC.put("correlationId", triggerCorrelationId)
             
             scheduler.trigger("correlation-job")
-            advanceTimeBy(1000)
+            advanceTimeBy(1000) // Scheduled at now (T=2.5) and picked up at T=3
             
             assertEquals(3, capturedIds.size)
             assertEquals(triggerCorrelationId, capturedIds[2], "Triggered execution should have the trigger correlationId")

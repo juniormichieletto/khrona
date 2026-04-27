@@ -34,9 +34,8 @@ class Scheduler(
             
             // Basic initial scheduling: for each job, create its first execution if none exist
             config.jobs.forEach { jobDef ->
-                // Truncate to seconds to ensure deterministic UUID matching across nodes
-                val now = Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
-                val next = jobDef.trigger.nextExecutionTime(now)
+                // Use EPOCH as baseline to pick up the first execution, ensuring past triggers (like once()) are scheduled.
+                val next = jobDef.trigger.nextExecutionTime(Instant.EPOCH)
                 if (next != null) {
                     // Use a deterministic UUID for the first execution to avoid duplicates when multiple nodes start.
                     val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
@@ -272,8 +271,7 @@ class Scheduler(
         scope.launch {
             store.saveJob(jobDef)
             // Schedule the first execution if it's a recurring/deferred job
-            val now = Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
-            val next = jobDef.trigger.nextExecutionTime(now)
+            val next = jobDef.trigger.nextExecutionTime(Instant.EPOCH)
             if (next != null) {
                 val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
                 if (store.getExecution(deterministicId) == null) {
