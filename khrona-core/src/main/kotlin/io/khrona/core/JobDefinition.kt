@@ -9,6 +9,7 @@ import kotlinx.serialization.encoding.Encoder
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
+import java.util.UUID
 
 object DurationSerializer : KSerializer<Duration> {
     override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor("Duration", PrimitiveKind.STRING)
@@ -20,6 +21,12 @@ object InstantSerializer : KSerializer<Instant> {
     override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor("Instant", PrimitiveKind.STRING)
     override fun serialize(encoder: Encoder, value: Instant) = encoder.encodeString(value.toString())
     override fun deserialize(decoder: Decoder): Instant = Instant.parse(decoder.decodeString())
+}
+
+object UUIDSerializer : KSerializer<UUID> {
+    override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor("UUID", PrimitiveKind.STRING)
+    override fun serialize(encoder: Encoder, value: UUID) = encoder.encodeString(value.toString())
+    override fun deserialize(decoder: Decoder): UUID = UUID.fromString(decoder.decodeString())
 }
 
 typealias JobHandler = suspend (payload: Any?) -> Unit

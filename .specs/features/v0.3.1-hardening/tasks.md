@@ -8,8 +8,8 @@
 
 ## Phase 2: API & Concurrency
 - [x] **Task 2.1:** Change `registerJob` and `trigger` to `suspend fun` and handle storage errors.
-- [ ] **Task 2.2:** Implement `ConcurrencyPolicy.REPLACE` logic (cancel existing execution if possible).
-- [ ] **Task 2.3:** Add unit tests for `REPLACE` and `FORBID` concurrency policies.
+- [x] **Task 2.2:** Implement `ConcurrencyPolicy.REPLACE` logic (cancel existing execution if possible).
+- [x] **Task 2.3:** Add unit tests for `REPLACE` and `FORBID` concurrency policies.
 
 ## Phase 3: JDBC Improvements
 - [ ] **Task 3.1:** Update `JdbcJobStore` to use `kotlinx.serialization` for JSON payloads instead of `toString()`.

@@ -7,6 +7,7 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.modules.SerializersModule
 import kotlinx.serialization.modules.polymorphic
 import kotlinx.serialization.modules.subclass
+import org.slf4j.LoggerFactory
 import java.sql.ResultSet
 import java.sql.Timestamp
 import java.time.Duration
@@ -18,6 +19,7 @@ class JdbcJobStore(
     private val dataSource: DataSource,
     private val dialect: JdbcDialect = resolveDialect(dataSource)
 ) : JobStore {
+    private val log = LoggerFactory.getLogger(JdbcJobStore::class.java)
 
     private val json = Json { 
         ignoreUnknownKeys = true 
@@ -37,31 +39,27 @@ class JdbcJobStore(
             sql = sql.replace("TEXT", "CLOB")
                 .replace("IF NOT EXISTS", "") 
         }
+
+        if (dialect is MySqlDialect) {
+            // MySQL doesn't support IF NOT EXISTS for indexes in a simple way
+            sql = sql.replace("CREATE INDEX IF NOT EXISTS", "CREATE INDEX")
+        }
         
         dataSource.connection.use { conn ->
-            conn.autoCommit = false
-            try {
-                conn.createStatement().use { stmt ->
-                    sql.split(";").filter { it.trim().isNotEmpty() }.forEach { statement ->
+            conn.createStatement().use { stmt ->
+                sql.split(";").forEach { part ->
+                    if (part.trim().isNotEmpty()) {
                         try {
-                            stmt.execute(statement)
+                            stmt.execute(part)
                         } catch (e: Exception) {
-                            val msg = e.message?.uppercase() ?: ""
-                            if (msg.contains("ORA-00955") || msg.contains("ORA-02260") ||
-                                statement.trim().uppercase().startsWith("CREATE INDEX")) {
-                                // Ignore
+                            if (part.contains("CREATE INDEX") && (e.message?.contains("already exists", ignoreCase = true) == true || e.message?.contains("Duplicate key name", ignoreCase = true) == true)) {
+                                log.debug("Index already exists, skipping: {}", part)
                             } else {
-                                throw e
+                                log.warn("Migration step failed: {}", part, e)
                             }
                         }
                     }
                 }
-                conn.commit()
-            } catch (e: Exception) {
-                conn.rollback()
-                throw e
-            } finally {
-                conn.autoCommit = true
             }
         }
     }
@@ -78,7 +76,7 @@ class JdbcJobStore(
 
     override suspend fun getJob(jobId: String): JobDefinition? {
         dataSource.connection.use { conn ->
-            val sql = "SELECT * FROM khrona_jobs WHERE id = ?"
+            val sql = "SELECT definition_json FROM khrona_jobs WHERE id = ?"
             conn.prepareStatement(sql).use { stmt ->
                 stmt.setString(1, jobId)
                 val rs = stmt.executeQuery()
@@ -93,7 +91,7 @@ class JdbcJobStore(
     override suspend fun listJobs(): List<JobDefinition> {
         val jobs = mutableListOf<JobDefinition>()
         dataSource.connection.use { conn ->
-            val sql = "SELECT * FROM khrona_jobs"
+            val sql = "SELECT definition_json FROM khrona_jobs"
             conn.prepareStatement(sql).use { stmt ->
                 val rs = stmt.executeQuery()
                 while (rs.next()) {
@@ -112,7 +110,27 @@ class JdbcJobStore(
                 stmt.setString(3, execution.status.name)
                 stmt.setTimestamp(4, Timestamp.from(execution.scheduledAt))
                 stmt.setInt(5, execution.attempt)
-                stmt.setString(6, execution.payload?.toString())
+                
+                val payloadJson = execution.payload?.let { 
+                    try {
+                        when (it) {
+                            is String -> "\"$it\""
+                            is Number, is Boolean -> it.toString()
+                            is Map<*, *> -> {
+                                val map = it.map { e -> e.key.toString() to e.value.toJsonElement() }.toMap()
+                                json.encodeToString(kotlinx.serialization.json.JsonObject(map))
+                            }
+                            is Iterable<*> -> {
+                                val list = it.map { e -> e.toJsonElement() }
+                                json.encodeToString(kotlinx.serialization.json.JsonArray(list))
+                            }
+                            else -> json.encodeToString(it)
+                        }
+                    } catch (e: Exception) {
+                        it.toString()
+                    }
+                }
+                stmt.setString(6, payloadJson)
                 stmt.setString(7, execution.lockKey)
                 stmt.setString(8, execution.correlationId)
                 stmt.executeUpdate()
@@ -129,7 +147,8 @@ class JdbcJobStore(
                 val isTerminal = status == ExecutionStatus.SUCCESS || 
                                 status == ExecutionStatus.FAILED || 
                                 status == ExecutionStatus.DEAD_LETTERED || 
-                                status == ExecutionStatus.MISFIRED
+                                status == ExecutionStatus.MISFIRED ||
+                                status == ExecutionStatus.SUPERSEDED
                 stmt.setTimestamp(3, if (isTerminal) Timestamp.from(Instant.now()) else null)
                 stmt.setString(4, id.toString())
                 stmt.executeUpdate()
@@ -195,19 +214,17 @@ class JdbcJobStore(
 
     override suspend fun isLockHeld(lockKey: String, excludeExecutionId: UUID?): Boolean {
         dataSource.connection.use { conn ->
-            conn.prepareStatement(dialect.isLockHeldSql(excludeExecutionId != null)).use { stmt ->
+            val sql = dialect.isLockHeldSql(excludeExecutionId != null)
+            conn.prepareStatement(sql).use { stmt ->
                 stmt.setString(1, lockKey)
                 stmt.setTimestamp(2, Timestamp.from(Instant.now()))
                 if (excludeExecutionId != null) {
                     stmt.setString(3, excludeExecutionId.toString())
                 }
                 val rs = stmt.executeQuery()
-                if (rs.next()) {
-                    return rs.getInt(1) > 0
-                }
+                return rs.next() && rs.getInt(1) > 0
             }
         }
-        return false
     }
 
     override suspend fun resetExpiredExecutions(now: Instant): Int {
@@ -243,8 +260,49 @@ class JdbcJobStore(
         return superseded
     }
 
+    private fun Any?.toJsonElement(): kotlinx.serialization.json.JsonElement {
+        return when (this) {
+            null -> kotlinx.serialization.json.JsonNull
+            is Number -> kotlinx.serialization.json.JsonPrimitive(this)
+            is Boolean -> kotlinx.serialization.json.JsonPrimitive(this)
+            is String -> kotlinx.serialization.json.JsonPrimitive(this)
+            is Map<*, *> -> {
+                val map = this.map { it.key.toString() to it.value.toJsonElement() }.toMap()
+                kotlinx.serialization.json.JsonObject(map)
+            }
+            is Iterable<*> -> {
+                val list = this.map { it.toJsonElement() }
+                kotlinx.serialization.json.JsonArray(list)
+            }
+            else -> kotlinx.serialization.json.JsonPrimitive(this.toString())
+        }
+    }
+
+    private fun kotlinx.serialization.json.JsonElement.toAny(): Any? {
+        return when (this) {
+            is kotlinx.serialization.json.JsonNull -> null
+            is kotlinx.serialization.json.JsonPrimitive -> {
+                if (isString) content
+                else if (content == "true" || content == "false") content.toBoolean()
+                else content.toLongOrNull() ?: content.toDoubleOrNull() ?: content
+            }
+            is kotlinx.serialization.json.JsonObject -> mapValues { it.value.toAny() }
+            is kotlinx.serialization.json.JsonArray -> map { it.toAny() }
+        }
+    }
+
     private fun mapExecution(rs: ResultSet): JobExecution {
         val idStr = rs.getString("id")
+        val payloadJson = rs.getString("payload_json")
+        val payload = payloadJson?.let {
+            try {
+                val element = json.parseToJsonElement(it)
+                element.toAny()
+            } catch (e: Exception) {
+                it // Fallback to raw string
+            }
+        }
+        
         return JobExecution(
             id = UUID.fromString(idStr),
             jobId = rs.getString("job_id"),
@@ -257,7 +315,7 @@ class JdbcJobStore(
             workerId = rs.getString("claimed_by"),
             lockKey = rs.getString("lock_key"),
             error = rs.getString("error"),
-            payload = rs.getString("payload_json"),
+            payload = payload,
             correlationId = rs.getString("correlation_id")
         )
     }
