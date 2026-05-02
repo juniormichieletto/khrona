@@ -8,6 +8,7 @@ import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 class Scheduler(
     val config: KhronaConfig,
@@ -17,6 +18,7 @@ class Scheduler(
     private val log = LoggerFactory.getLogger(Scheduler::class.java)
     private val store = config.store ?: throw IllegalStateException("JobStore must be configured")
     private val handlerRegistry = HandlerRegistry()
+    private val activeJobs = ConcurrentHashMap<UUID, Job>()
     private val workerId = UUID.randomUUID().toString()
     private var job: Job? = null
 
@@ -141,6 +143,14 @@ class Scheduler(
                 }
             }
 
+            // Handle REPLACE policy
+            if (jobDef.concurrencyPolicy == ConcurrencyPolicy.REPLACE && jobDef.lockKey != null) {
+                val supersededIds = store.supersedeExecutionsByLockKey(jobDef.lockKey)
+                supersededIds.forEach { id ->
+                    activeJobs[id]?.cancel("Superseded by a new execution for lock ${jobDef.lockKey}")
+                }
+            }
+
             // TODO: Configurable lease duration
             val leaseDuration = Duration.ofMinutes(5)
             if (store.claimExecution(execution.id, workerId, leaseDuration)) {
@@ -159,7 +169,13 @@ class Scheduler(
                 }
 
                 scope.launch {
-                    executeJobWithHeartbeat(execution, jobDef, leaseDuration)
+                    val executionJob = coroutineContext[Job]!!
+                    activeJobs[execution.id] = executionJob
+                    try {
+                        executeJobWithHeartbeat(execution, jobDef, leaseDuration)
+                    } finally {
+                        activeJobs.remove(execution.id)
+                    }
                 }
             }
         }
@@ -193,8 +209,10 @@ class Scheduler(
                 while (isActive) {
                     delay(leaseDuration.toMillis() / 2)
                     try {
+                        // Check if we are still RUNNING/CLAIMED (not superseded) while heartbeating
                         if (!store.heartbeat(execution.id, leaseDuration)) {
-                            log.warn("[${execution.jobId}] Failed to heartbeat for execution ${execution.id}, it might have been reclaimed")
+                            log.warn("[${execution.jobId}] Failed to heartbeat for execution ${execution.id}, it might have been reclaimed or superseded")
+                            this@coroutineScope.cancel("Execution ${execution.id} is no longer valid (superseded or reclaimed)")
                             break
                         }
                     } catch (e: Exception) {
@@ -234,6 +252,13 @@ class Scheduler(
 
                 scheduleNextRunIfRecurring(execution, jobDef)
             } catch (e: Exception) {
+                if (e is CancellationException && e !is TimeoutCancellationException) {
+                    log.info("[${execution.jobId}] [$correlationId] Job was cancelled (superseded or shutdown)")
+                    // We don't update status to FAILED here if it was already updated to SUPERSEDED
+                    // But to be safe, we can ensure it's not DEAD_LETTERED
+                    return@withContext
+                }
+                
                 log.error("[${execution.jobId}] [$correlationId] Job failed", e)
                 val nextAttempt = execution.attempt + 1
                 if (nextAttempt < jobDef.retryPolicy.maxAttempts) {
@@ -288,6 +313,8 @@ class Scheduler(
         log.info("Stopping Khrona Scheduler")
         job?.cancel()
         job = null
+        activeJobs.values.forEach { it.cancel("Scheduler stopping") }
+        activeJobs.clear()
     }
 
     suspend fun registerJob(jobDef: JobDefinition) {

@@ -18,4 +18,10 @@ interface JobStore {
     suspend fun heartbeat(id: UUID, leaseDuration: java.time.Duration): Boolean
     suspend fun isLockHeld(lockKey: String, excludeExecutionId: UUID? = null): Boolean
     suspend fun resetExpiredExecutions(now: Instant): Int
+
+    /**
+     * Marks all RUNNING/CLAIMED executions for a specific lock key as SUPERSEDED.
+     * Returns the list of UUIDs that were superseded.
+     */
+    suspend fun supersedeExecutionsByLockKey(lockKey: String): List<UUID>
 }

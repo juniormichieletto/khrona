@@ -7,7 +7,7 @@
 - [x] **Task 1.4:** Wrap job handler execution in `withTimeout` using `JobDefinition.timeout`.
 
 ## Phase 2: API & Concurrency
-- [ ] **Task 2.1:** Change `registerJob` and `trigger` to `suspend fun` and handle storage errors.
+- [x] **Task 2.1:** Change `registerJob` and `trigger` to `suspend fun` and handle storage errors.
 - [ ] **Task 2.2:** Implement `ConcurrencyPolicy.REPLACE` logic (cancel existing execution if possible).
 - [ ] **Task 2.3:** Add unit tests for `REPLACE` and `FORBID` concurrency policies.
 

@@ -98,4 +98,17 @@ open class MockJobStore(private val clock: java.time.Clock = java.time.Clock.sys
         }
         return count
     }
+
+    override suspend fun supersedeExecutionsByLockKey(lockKey: String): List<UUID> {
+        val superseded = mutableListOf<UUID>()
+        executions.replaceAll { id, exec ->
+            if (exec.lockKey == lockKey && (exec.status == ExecutionStatus.CLAIMED || exec.status == ExecutionStatus.RUNNING)) {
+                superseded.add(id)
+                exec.copy(status = ExecutionStatus.SUPERSEDED, completedAt = Instant.now(clock))
+            } else {
+                exec
+            }
+        }
+        return superseded
+    }
 }

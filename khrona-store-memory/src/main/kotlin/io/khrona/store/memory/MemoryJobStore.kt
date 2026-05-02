@@ -105,4 +105,17 @@ class MemoryJobStore : JobStore {
         }
         return count
     }
+
+    override suspend fun supersedeExecutionsByLockKey(lockKey: String): List<UUID> {
+        val superseded = mutableListOf<UUID>()
+        executions.replaceAll { id, exec ->
+            if (exec.lockKey == lockKey && (exec.status == ExecutionStatus.CLAIMED || exec.status == ExecutionStatus.RUNNING)) {
+                superseded.add(id)
+                exec.copy(status = ExecutionStatus.SUPERSEDED, completedAt = Instant.now())
+            } else {
+                exec
+            }
+        }
+        return superseded
+    }
 }

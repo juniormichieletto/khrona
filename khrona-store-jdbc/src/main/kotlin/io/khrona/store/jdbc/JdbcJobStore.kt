@@ -219,6 +219,30 @@ class JdbcJobStore(
         }
     }
 
+    override suspend fun supersedeExecutionsByLockKey(lockKey: String): List<UUID> {
+        val superseded = mutableListOf<UUID>()
+        dataSource.connection.use { conn ->
+            // First find which ones we are going to update to return them
+            val selectSql = "SELECT id FROM khrona_executions WHERE lock_key = ? AND status IN ('CLAIMED', 'RUNNING')"
+            conn.prepareStatement(selectSql).use { stmt ->
+                stmt.setString(1, lockKey)
+                val rs = stmt.executeQuery()
+                while (rs.next()) {
+                    superseded.add(UUID.fromString(rs.getString("id")))
+                }
+            }
+            
+            val updateSql = "UPDATE khrona_executions SET status = ?, completed_at = ? WHERE lock_key = ? AND status IN ('CLAIMED', 'RUNNING')"
+            conn.prepareStatement(updateSql).use { stmt ->
+                stmt.setString(1, ExecutionStatus.SUPERSEDED.name)
+                stmt.setTimestamp(2, Timestamp.from(Instant.now()))
+                stmt.setString(3, lockKey)
+                stmt.executeUpdate()
+            }
+        }
+        return superseded
+    }
+
     private fun mapExecution(rs: ResultSet): JobExecution {
         val idStr = rs.getString("id")
         return JobExecution(
