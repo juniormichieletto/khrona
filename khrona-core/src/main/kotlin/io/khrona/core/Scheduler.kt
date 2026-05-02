@@ -221,7 +221,13 @@ class Scheduler(
                 val handler = handlerRegistry.get(jobDef.id) 
                     ?: throw IllegalStateException("No handler registered for job ${jobDef.id}")
                 
-                handler(execution.payload)
+                if (jobDef.timeout != null) {
+                    withTimeout(jobDef.timeout.toMillis()) {
+                        handler(execution.payload)
+                    }
+                } else {
+                    handler(execution.payload)
+                }
 
                 store.updateExecutionStatus(execution.id, ExecutionStatus.SUCCESS)
                 log.info("[${execution.jobId}] [$correlationId] Job finished successfully")
