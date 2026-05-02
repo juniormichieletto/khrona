@@ -290,32 +290,30 @@ class Scheduler(
         job = null
     }
 
-    fun registerJob(jobDef: JobDefinition) {
+    suspend fun registerJob(jobDef: JobDefinition) {
         validateJob(jobDef)
         handlerRegistry.register(jobDef.id, jobDef.handler)
         val correlationId = MDC.get("correlationId")
-        scope.launch {
-            store.saveJob(jobDef)
-            // Schedule the first execution if it's a recurring/deferred job
-            val now = Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
-            val next = if (jobDef.trigger is OneTimeTrigger) {
-                jobDef.trigger.nextExecutionTime(Instant.EPOCH)
-            } else {
-                jobDef.trigger.nextExecutionTime(now)
-            }
-            if (next != null) {
-                val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
-                if (store.getExecution(deterministicId) == null) {
-                    store.saveExecution(
-                        JobExecution(
-                            id = deterministicId,
-                            jobId = jobDef.id,
-                            scheduledAt = next,
-                            lockKey = jobDef.lockKey,
-                            correlationId = correlationId ?: deterministicId.toString()
-                        )
+        store.saveJob(jobDef)
+        // Schedule the first execution if it's a recurring/deferred job
+        val now = Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+        val next = if (jobDef.trigger is OneTimeTrigger) {
+            jobDef.trigger.nextExecutionTime(Instant.EPOCH)
+        } else {
+            jobDef.trigger.nextExecutionTime(now)
+        }
+        if (next != null) {
+            val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
+            if (store.getExecution(deterministicId) == null) {
+                store.saveExecution(
+                    JobExecution(
+                        id = deterministicId,
+                        jobId = jobDef.id,
+                        scheduledAt = next,
+                        lockKey = jobDef.lockKey,
+                        correlationId = correlationId ?: deterministicId.toString()
                     )
-                }
+                )
             }
         }
     }
@@ -324,22 +322,20 @@ class Scheduler(
      * Manually triggers a job for immediate execution.
      * The job must have been previously registered.
      */
-    fun trigger(jobId: String, payload: Any? = null) {
+    suspend fun trigger(jobId: String, payload: Any? = null) {
         val correlationId = MDC.get("correlationId")
-        scope.launch {
-            val jobDef = store.getJob(jobId) ?: throw IllegalArgumentException("Job $jobId not found")
-            val now = Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
-            val executionId = UUID.randomUUID()
-            store.saveExecution(
-                JobExecution(
-                    id = executionId,
-                    jobId = jobId,
-                    scheduledAt = now,
-                    payload = payload,
-                    lockKey = jobDef.lockKey,
-                    correlationId = correlationId ?: executionId.toString()
-                )
+        val jobDef = store.getJob(jobId) ?: throw IllegalArgumentException("Job $jobId not found")
+        val now = Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+        val executionId = UUID.randomUUID()
+        store.saveExecution(
+            JobExecution(
+                id = executionId,
+                jobId = jobId,
+                scheduledAt = now,
+                payload = payload,
+                lockKey = jobDef.lockKey,
+                correlationId = correlationId ?: executionId.toString()
             )
-        }
+        )
     }
 }

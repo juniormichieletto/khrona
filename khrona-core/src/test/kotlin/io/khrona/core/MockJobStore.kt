@@ -5,7 +5,7 @@ import java.time.Instant
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 
-class MockJobStore(private val clock: java.time.Clock = java.time.Clock.systemUTC()) : JobStore {
+open class MockJobStore(private val clock: java.time.Clock = java.time.Clock.systemUTC()) : JobStore {
     val jobs = ConcurrentHashMap<String, JobDefinition>()
     val executions = ConcurrentHashMap<UUID, JobExecution>()
     val updatedStatuses = mutableListOf<Pair<UUID, ExecutionStatus>>()

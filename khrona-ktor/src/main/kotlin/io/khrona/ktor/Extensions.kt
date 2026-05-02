@@ -7,7 +7,7 @@ fun Application.installKhrona(configure: KhronaConfig.() -> Unit) {
     install(KhronaPlugin, configure)
 }
 
-fun Application.scheduler(block: KhronaConfig.() -> Unit) {
+suspend fun Application.scheduler(block: KhronaConfig.() -> Unit) {
     val plugin = pluginOrNull(KhronaPlugin) ?: throw IllegalStateException("Khrona plugin not installed")
     val tempConfig = KhronaConfig()
     // Initialize with current value

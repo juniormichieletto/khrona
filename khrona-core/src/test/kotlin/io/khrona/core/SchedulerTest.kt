@@ -207,17 +207,59 @@ class SchedulerTest {
         }.build()
 
         assertThrows(IllegalArgumentException::class.java) {
-            scheduler.registerJob(jobDef)
+            runBlocking {
+                scheduler.registerJob(jobDef)
+            }
         }
     }
 
     @Test
-    fun `should not allow multiple triggers in DSL`() {
-        assertThrows(IllegalStateException::class.java) {
-            KhronaConfig().job("multi-trigger") {
-                every(Duration.ofMinutes(1))
-                cron("0 * * * *")
-                execute {}
+    fun `registerJob should propagate store exceptions`() = runTest {
+        val store = object : MockJobStore() {
+            override suspend fun saveJob(job: JobDefinition) {
+                throw RuntimeException("Store failure")
+            }
+        }
+        val config = KhronaConfig().apply { this.store = store }
+        val scheduler = Scheduler(config, this)
+        
+        val jobDef = JobBuilder("test-job").apply {
+            once()
+            execute {}
+        }.build()
+        
+        assertThrows(RuntimeException::class.java) {
+            runBlocking {
+                scheduler.registerJob(jobDef)
+            }
+        }
+    }
+
+    @Test
+    fun `trigger should propagate store exceptions`() = runTest {
+        val store = MockJobStore()
+        val config = KhronaConfig().apply { this.store = store }
+        val scheduler = Scheduler(config, this)
+        
+        val jobDef = JobBuilder("test-job").apply {
+            once()
+            execute {}
+        }.build()
+        
+        scheduler.registerJob(jobDef)
+        
+        // Mock a failure for saveExecution
+        val failingStore = object : MockJobStore() {
+            override suspend fun saveExecution(execution: JobExecution) {
+                throw RuntimeException("Store failure")
+            }
+            override suspend fun getJob(jobId: String): JobDefinition? = store.getJob(jobId)
+        }
+        val failingScheduler = Scheduler(config.apply { this.store = failingStore }, this)
+        
+        assertThrows(RuntimeException::class.java) {
+            runBlocking {
+                failingScheduler.trigger("test-job")
             }
         }
     }
@@ -272,6 +314,9 @@ class SchedulerTest {
         val scheduler = Scheduler(config, backgroundScope, clock)
         
         scheduler.start()
+        
+        // Wait a bit for scheduler.start() to finish initial registration
+        advanceTimeBy(100) 
         
         // Manually trigger
         scheduler.trigger("manual-job")

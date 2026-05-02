@@ -210,7 +210,7 @@ val config = Khrona {
 val scheduler = Scheduler(config)
 scheduler.start()
 
-// Register jobs dynamically
+// Register jobs dynamically (suspend function)
 scheduler.registerJob(JobDefinition(...))
 
 // Run a job once immediately
@@ -229,7 +229,7 @@ scheduler.registerJob(job("delayed-task") {
     }
 })
 
-// Manually trigger an existing job with a custom payload
+// Manually trigger an existing job (suspend function)
 scheduler.trigger("my-job-id", payload = "Ad-hoc trigger data")
 
 // Stop cleanly
