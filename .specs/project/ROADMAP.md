@@ -22,6 +22,14 @@
 - [x] Distributed Locking (`FORBID` policy)
 - [x] Stale Worker Recovery
 
+## v0.3.1: Reliability Hardening
+- [ ] Fix JDBC Handler Registry (JobDefinition.handler loss)
+- [ ] Resilient Recurring Schedules (Next run after terminal failure)
+- [ ] Execution Timeouts Enforcement
+- [ ] Observable API (Suspendable register/trigger)
+- [ ] Structured JSON Payloads
+- [ ] JDBC Schema Optimization (Indexing)
+
 ## v0.4: Ops & Visibility
 - [ ] Admin API & Routes
 - [ ] Metrics & Tracing (Micrometer/OpenTelemetry)
