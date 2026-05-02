@@ -74,6 +74,7 @@ The fastest way to get started with Ktor using ephemeral in-memory storage.
 ```kotlin
 import io.khrona.ktor.*
 import io.khrona.store.memory.MemoryJobStore
+import kotlinx.coroutines.launch
 import kotlin.time.Duration.Companion.minutes
 
 fun Application.module() {
@@ -81,11 +82,13 @@ fun Application.module() {
         store = MemoryJobStore()
     }
 
-    scheduler {
-        job("heartbeat") {
-            every(1.minutes)
-            execute {
-                log.info("Khrona is alive!")
+    launch {
+        scheduler {
+            job("heartbeat") {
+                every(1.minutes)
+                execute {
+                    println("Khrona is alive!")
+                }
             }
         }
     }

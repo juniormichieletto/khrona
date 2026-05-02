@@ -27,7 +27,7 @@
 - [ ] Implement Admin API & Visibility (v0.4)
 
 ## Next Tasks
-- [ ] Fix Ktor quick-start/API mismatch.
+- [x] Fix Ktor quick-start/API mismatch.
 - [ ] Move blocking JDBC work off scheduler/application dispatchers.
 - [ ] Add graceful scheduler shutdown with bounded wait and explicit execution release/marking.
 - [ ] Make lease duration and heartbeat behavior configurable and validated.

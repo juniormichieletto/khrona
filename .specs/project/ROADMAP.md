@@ -42,7 +42,7 @@
 - [x] Safe REPLACE Ordering (claim before supersede)
 
 ## v0.3.2: Production Readiness Hardening
-- [ ] Fix Ktor quick-start/API mismatch so documented setup compiles as written
+- [x] Fix Ktor quick-start/API mismatch so documented setup compiles as written
 - [ ] Isolate blocking JDBC operations from coroutine scheduler/application dispatchers
 - [ ] Add graceful scheduler shutdown with bounded wait for active executions
 - [ ] Mark or release owned `CLAIMED`/`RUNNING` executions during shutdown instead of relying only on lease expiry
