@@ -312,12 +312,43 @@ class Scheduler(
         }
     }
 
-    fun stop() {
+    suspend fun stop() {
         log.info("Stopping Khrona Scheduler")
-        job?.cancel()
+        job?.cancel() // Stop polling for new jobs
         job = null
-        activeJobs.values.forEach { it.cancel("Scheduler stopping") }
+        
+        if (activeJobs.isNotEmpty()) {
+            val remainingIds = activeJobs.keys.toList()
+            try {
+                withTimeout(config.shutdownTimeout.toMillis()) {
+                    log.info("Waiting up to ${config.shutdownTimeout} for ${activeJobs.size} active jobs to complete...")
+                    activeJobs.values.joinAll()
+                    log.info("All active jobs completed cleanly during shutdown.")
+                }
+            } catch (e: TimeoutCancellationException) {
+                log.warn("Shutdown timeout reached. Cancelling ${activeJobs.size} remaining jobs.")
+                activeJobs.values.forEach { it.cancel("Scheduler stopping (timeout)") }
+                
+                // Wait for cancellations to finish
+                activeJobs.values.joinAll()
+                
+                // Explicitly release any executions that didn't complete normally
+                remainingIds.forEach { executionId ->
+                    try {
+                        val currentExec = store.getExecution(executionId)
+                        if (currentExec?.status == ExecutionStatus.CLAIMED || currentExec?.status == ExecutionStatus.RUNNING) {
+                            log.info("Releasing execution $executionId back to PENDING due to shutdown")
+                            store.updateExecutionStatus(executionId, ExecutionStatus.PENDING, "Released during scheduler shutdown")
+                        }
+                    } catch (ex: Exception) {
+                        log.error("Failed to release execution $executionId during shutdown", ex)
+                    }
+                }
+            }
+        }
+        
         activeJobs.clear()
+        log.info("Khrona Scheduler stopped")
     }
 
     suspend fun registerJob(jobDef: JobDefinition) {

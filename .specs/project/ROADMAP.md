@@ -3,7 +3,7 @@
 ## Next Tasks
 - [ ] Fix the Ktor quick-start/API mismatch so users can copy the documented setup into a real Ktor module.
 - [ ] Isolate JDBC store calls onto an IO dispatcher, with an injectable dispatcher if the API shape stays clean.
-- [ ] Implement graceful scheduler shutdown: cancel active handlers, wait up to a configured timeout, then release or mark owned executions.
+- [x] Implement graceful scheduler shutdown: cancel active handlers, wait up to a configured timeout, then release or mark owned executions.
 - [ ] Expose configurable execution lease duration and heartbeat settings with validation.
 - [ ] Bound JDBC polling/claiming so large backlogs are processed in batches.
 - [ ] Validate retry policy configuration and fix fractional backoff factor handling.

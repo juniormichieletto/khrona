@@ -29,7 +29,7 @@
 ## Next Tasks
 - [x] Fix Ktor quick-start/API mismatch.
 - [ ] Move blocking JDBC work off scheduler/application dispatchers.
-- [ ] Add graceful scheduler shutdown with bounded wait and explicit execution release/marking.
+- [x] Add graceful scheduler shutdown with bounded wait and explicit execution release/marking.
 - [ ] Make lease duration and heartbeat behavior configurable and validated.
 - [ ] Add bounded JDBC polling/claiming.
 - [ ] Validate retry policy settings and correct fractional backoff factors.

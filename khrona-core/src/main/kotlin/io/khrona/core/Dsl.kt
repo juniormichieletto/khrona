@@ -98,6 +98,7 @@ class KhronaConfig {
     var store: JobStore? = null
     var pollingInterval: java.time.Duration = java.time.Duration.ofMillis(1000)
     var misfireThreshold: java.time.Duration = java.time.Duration.ofSeconds(60)
+    var shutdownTimeout: java.time.Duration = java.time.Duration.ofSeconds(30)
     val jobs = mutableListOf<JobDefinition>()
 
     fun pollingInterval(interval: kotlin.time.Duration) {
@@ -106,6 +107,10 @@ class KhronaConfig {
 
     fun misfireThreshold(interval: kotlin.time.Duration) {
         this.misfireThreshold = java.time.Duration.ofMillis(interval.inWholeMilliseconds)
+    }
+
+    fun shutdownTimeout(timeout: kotlin.time.Duration) {
+        this.shutdownTimeout = java.time.Duration.ofMillis(timeout.inWholeMilliseconds)
     }
 
     fun job(id: String, block: JobBuilder.() -> Unit) {

@@ -20,7 +20,9 @@ class KhronaPlugin(val scheduler: Scheduler) {
             }
             
             pipeline.monitor.subscribe(ApplicationStopping) {
-                scheduler.stop()
+                kotlinx.coroutines.runBlocking {
+                    scheduler.stop()
+                }
             }
             
             return KhronaPlugin(scheduler)
