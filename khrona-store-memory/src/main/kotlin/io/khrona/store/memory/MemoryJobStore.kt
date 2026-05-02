@@ -30,7 +30,12 @@ class MemoryJobStore : JobStore {
             exec.copy(
                 status = status,
                 error = error,
-                completedAt = if (status == ExecutionStatus.SUCCESS || status == ExecutionStatus.FAILED || status == ExecutionStatus.DEAD_LETTERED) Instant.now() else exec.completedAt
+                completedAt = if (status == ExecutionStatus.SUCCESS ||
+                    status == ExecutionStatus.FAILED ||
+                    status == ExecutionStatus.DEAD_LETTERED ||
+                    status == ExecutionStatus.MISFIRED ||
+                    status == ExecutionStatus.SUPERSEDED
+                ) Instant.now() else exec.completedAt
             )
         }
     }
@@ -106,10 +111,13 @@ class MemoryJobStore : JobStore {
         return count
     }
 
-    override suspend fun supersedeExecutionsByLockKey(lockKey: String): List<UUID> {
+    override suspend fun supersedeExecutionsByLockKey(lockKey: String, excludeExecutionId: UUID?): List<UUID> {
         val superseded = mutableListOf<UUID>()
         executions.replaceAll { id, exec ->
-            if (exec.lockKey == lockKey && (exec.status == ExecutionStatus.CLAIMED || exec.status == ExecutionStatus.RUNNING)) {
+            if (id != excludeExecutionId &&
+                exec.lockKey == lockKey &&
+                (exec.status == ExecutionStatus.CLAIMED || exec.status == ExecutionStatus.RUNNING)
+            ) {
                 superseded.add(id)
                 exec.copy(status = ExecutionStatus.SUPERSEDED, completedAt = Instant.now())
             } else {

@@ -60,4 +60,27 @@ class JdbcPayloadSerializationTest {
         assertTrue(reloadedPayload is Map<*, *>, "Payload should be a Map")
         assertEquals("value", (reloadedPayload as Map<*, *>)["key"])
     }
+
+    @Test
+    fun `should preserve escaped string payloads in JDBC`() = kotlinx.coroutines.test.runTest {
+        val jobDef = JobDefinition(
+            id = "string-payload-job",
+            trigger = IntervalTrigger(Duration.ofMinutes(1)),
+            handler = {}
+        )
+        store.saveJob(jobDef)
+
+        val payload = "quoted \"value\" with newline\nand slash \\"
+        val execution = JobExecution(
+            id = UUID.randomUUID(),
+            jobId = "string-payload-job",
+            scheduledAt = Instant.now(),
+            payload = payload
+        )
+
+        store.saveExecution(execution)
+
+        val reloaded = store.getExecution(execution.id)
+        assertEquals(payload, reloaded?.payload)
+    }
 }

@@ -7,6 +7,7 @@
 - **v0.1 Completion:** Implemented core engine, in-memory store, and Ktor integration.
 - **v0.2 Completion:** Implemented JDBC/Postgres store, retries, and durable scheduling.
 - **v0.3 Completion:** Implemented lease-based claiming, distributed locking (FORBID), and stale worker recovery.
+- **v0.3.1 Hardening:** Implemented handler registry, resilient recurring schedules, enforced timeouts, suspendable APIs, structured JDBC payloads, fail-fast migrations, and safer REPLACE ordering.
 
 ## Blockers
 - None.

@@ -29,6 +29,8 @@
 - [x] Observable API (Suspendable register/trigger)
 - [x] Structured JSON Payloads
 - [x] JDBC Schema Optimization (Indexing)
+- [x] Fail-fast JDBC Migration
+- [x] Safe REPLACE Ordering (claim before supersede)
 
 ## v0.4: Ops & Visibility
 - [ ] Admin API & Routes

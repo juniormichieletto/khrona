@@ -137,4 +137,114 @@ class ConcurrencyReplaceTest {
         scheduler1.stop()
         scheduler2.stop()
     }
+
+    @Test
+    fun `REPLACE policy should not supersede existing execution when replacement claim fails`() = runTest {
+        val clock = SchedulerTest.TestClock(testScheduler)
+        val replacementId = UUID.nameUUIDFromBytes("replacement".toByteArray())
+        val store = ClaimFailingStore(clock, replacementId)
+        val runningExecution = JobExecution(
+            id = UUID.nameUUIDFromBytes("running".toByteArray()),
+            jobId = "replace-job",
+            scheduledAt = Instant.now(clock),
+            status = ExecutionStatus.RUNNING,
+            lockKey = "replace-lock"
+        )
+        val replacement = JobExecution(
+            id = replacementId,
+            jobId = "replace-job",
+            scheduledAt = Instant.now(clock),
+            lockKey = "replace-lock"
+        )
+        val jobDef = JobDefinition(
+            id = "replace-job",
+            handler = {},
+            trigger = OneTimeTrigger(Instant.now(clock)),
+            concurrencyPolicy = ConcurrencyPolicy.REPLACE,
+            lockKey = "replace-lock"
+        )
+        val config = KhronaConfig().apply {
+            this.store = store
+            this.pollingInterval = Duration.ofMillis(100)
+        }
+        val scheduler = Scheduler(config, backgroundScope, clock)
+
+        store.saveJob(jobDef)
+        store.saveExecution(runningExecution)
+        store.saveExecution(replacement)
+
+        scheduler.pollAndExecute()
+
+        assertEquals(
+            ExecutionStatus.RUNNING,
+            store.getExecution(runningExecution.id)?.status,
+            "Existing execution must not be superseded unless the replacement was claimed"
+        )
+        assertFalse(store.supersedeCalled, "Supersede should not be called when replacement claim fails")
+    }
+
+    private class ClaimFailingStore(
+        private val clock: java.time.Clock,
+        private val claimFailureId: UUID
+    ) : JobStore {
+        val jobs = mutableMapOf<String, JobDefinition>()
+        val executions = mutableMapOf<UUID, JobExecution>()
+        var supersedeCalled = false
+
+        override suspend fun saveJob(job: JobDefinition) {
+            jobs[job.id] = job
+        }
+
+        override suspend fun getJob(jobId: String): JobDefinition? = jobs[jobId]
+
+        override suspend fun listJobs(): List<JobDefinition> = jobs.values.toList()
+
+        override suspend fun saveExecution(execution: JobExecution) {
+            executions[execution.id] = execution
+        }
+
+        override suspend fun updateExecutionStatus(id: UUID, status: ExecutionStatus, error: String?) {
+            executions[id] = executions.getValue(id).copy(status = status, error = error)
+        }
+
+        override suspend fun getExecution(id: UUID): JobExecution? = executions[id]
+
+        override suspend fun listEligibleExecutions(now: Instant): List<JobExecution> {
+            return executions.values
+                .filter { it.status == ExecutionStatus.PENDING && it.scheduledAt <= now }
+                .sortedBy { it.scheduledAt }
+        }
+
+        override suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: Duration): Boolean {
+            if (id == claimFailureId) return false
+            executions[id] = executions.getValue(id).copy(
+                status = ExecutionStatus.CLAIMED,
+                workerId = workerId,
+                startedAt = Instant.now(clock),
+                expiresAt = Instant.now(clock).plus(leaseDuration)
+            )
+            return true
+        }
+
+        override suspend fun heartbeat(id: UUID, leaseDuration: Duration): Boolean = false
+
+        override suspend fun isLockHeld(lockKey: String, excludeExecutionId: UUID?): Boolean = false
+
+        override suspend fun resetExpiredExecutions(now: Instant): Int = 0
+
+        override suspend fun supersedeExecutionsByLockKey(lockKey: String, excludeExecutionId: UUID?): List<UUID> {
+            supersedeCalled = true
+            val superseded = executions.values
+                .filter {
+                    it.id != excludeExecutionId &&
+                        it.lockKey == lockKey &&
+                        (it.status == ExecutionStatus.CLAIMED || it.status == ExecutionStatus.RUNNING)
+                }
+                .map { it.id }
+            superseded.forEach { id ->
+                executions[id] = executions.getValue(id).copy(status = ExecutionStatus.SUPERSEDED)
+            }
+            return superseded
+        }
+    }
 }

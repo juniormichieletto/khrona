@@ -143,17 +143,20 @@ class Scheduler(
                 }
             }
 
-            // Handle REPLACE policy
-            if (jobDef.concurrencyPolicy == ConcurrencyPolicy.REPLACE && jobDef.lockKey != null) {
-                val supersededIds = store.supersedeExecutionsByLockKey(jobDef.lockKey)
-                supersededIds.forEach { id ->
-                    activeJobs[id]?.cancel("Superseded by a new execution for lock ${jobDef.lockKey}")
-                }
-            }
-
             // TODO: Configurable lease duration
             val leaseDuration = Duration.ofMinutes(5)
             if (store.claimExecution(execution.id, workerId, leaseDuration)) {
+                // Handle REPLACE only after the replacement has been claimed.
+                if (jobDef.concurrencyPolicy == ConcurrencyPolicy.REPLACE && jobDef.lockKey != null) {
+                    val supersededIds = store.supersedeExecutionsByLockKey(
+                        lockKey = jobDef.lockKey,
+                        excludeExecutionId = execution.id
+                    )
+                    supersededIds.forEach { id ->
+                        activeJobs[id]?.cancel("Superseded by a new execution for lock ${jobDef.lockKey}")
+                    }
+                }
+
                 // Double-check lock AFTER claiming but before launching
                 // This handles the race where two executions for the same lock were claimed 
                 // by different nodes (if duplicate executions existed) or by the same node.

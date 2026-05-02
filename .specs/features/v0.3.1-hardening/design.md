@@ -30,7 +30,8 @@
 **Problem:** `JdbcJobStore` uses `payload?.toString()`.
 **Solution:**
 - Use `kotlinx-serialization-json` to serialize payloads to a JSON string in `khrona_executions.payload_json`.
-- On retrieval, keep it as a `String` (JSON) and provide a typed helper in `JobExecution` if possible, or leave it to the handler to decode. *Initial implementation will focus on preserving the JSON structure.*
+- On retrieval, convert JSON primitives, arrays, and objects back into Kotlin-compatible `String`, `Number`, `Boolean`, `List`, and `Map` structures.
+- String payloads must be encoded through JSON primitives rather than manual quoting so quotes, backslashes, and newlines round-trip correctly.
 
 ## 6. JDBC Schema Optimization
 **Problem:** Minimal indexing.
@@ -38,3 +39,11 @@
 - Add composite index on `(status, scheduled_at)` (already exists, but verify).
 - Add composite index on `(lock_key, status, expires_at)` to speed up `isLockHeld` and `claimExecution` checks.
 - Add index on `(status, expires_at)` for `resetExpiredExecutions`.
+
+## 7. Review Follow-Up Hardening
+**Problem:** Review found remaining edge cases in migration failure handling and `REPLACE` ordering.
+**Solution:**
+- Run JDBC migration in a transaction and throw on real migration failures while keeping known idempotent create-index/table-exists cases safe.
+- For `REPLACE`, claim the replacement execution before superseding existing active executions.
+- Exclude the claimed replacement execution from supersede updates.
+- Use row locking during JDBC supersede selection so selected active executions match the rows being updated.

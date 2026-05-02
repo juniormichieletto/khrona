@@ -176,3 +176,15 @@ The first attempt failed because the sandbox could not write to the local Gradle
 - Add a failing test showing recurring jobs continue after retry exhaustion.
 - Create a small ADR for the handler registry design before changing the storage model.
 - Split the scheduler execution path into smaller internal methods after behavior is covered by tests.
+
+## Resolution Notes
+
+Updated after v0.3.1 hardening work:
+
+- JDBC handler loss was addressed with an in-memory `HandlerRegistry`.
+- Recurring schedules now continue after terminal execution failure.
+- `timeout` is enforced around handler execution.
+- `registerJob` and `trigger` are suspend functions.
+- `REPLACE` now claims the replacement before superseding older active executions.
+- JDBC payloads preserve JSON-compatible maps, lists, strings, numbers, booleans, and nested combinations.
+- JDBC migration now fails fast on real schema errors while preserving idempotency for known create-index/table-exists cases.

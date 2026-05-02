@@ -23,5 +23,5 @@ interface JobStore {
      * Marks all RUNNING/CLAIMED executions for a specific lock key as SUPERSEDED.
      * Returns the list of UUIDs that were superseded.
      */
-    suspend fun supersedeExecutionsByLockKey(lockKey: String): List<UUID>
+    suspend fun supersedeExecutionsByLockKey(lockKey: String, excludeExecutionId: UUID? = null): List<UUID>
 }

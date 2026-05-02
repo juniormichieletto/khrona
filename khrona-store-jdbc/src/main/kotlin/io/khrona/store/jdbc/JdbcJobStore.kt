@@ -4,6 +4,7 @@ import io.khrona.core.*
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.modules.SerializersModule
 import kotlinx.serialization.modules.polymorphic
 import kotlinx.serialization.modules.subclass
@@ -47,22 +48,44 @@ class JdbcJobStore(
         }
         
         dataSource.connection.use { conn ->
-            conn.createStatement().use { stmt ->
-                sql.split(";").forEach { part ->
-                    if (part.trim().isNotEmpty()) {
-                        try {
-                            stmt.execute(part)
-                        } catch (e: Exception) {
-                            if (part.contains("CREATE INDEX") && (e.message?.contains("already exists", ignoreCase = true) == true || e.message?.contains("Duplicate key name", ignoreCase = true) == true)) {
-                                log.debug("Index already exists, skipping: {}", part)
-                            } else {
-                                log.warn("Migration step failed: {}", part, e)
+            val originalAutoCommit = conn.autoCommit
+            conn.autoCommit = false
+            try {
+                conn.createStatement().use { stmt ->
+                    sql.split(";").forEach { part ->
+                        val statement = part.trim()
+                        if (statement.isNotEmpty()) {
+                            try {
+                                stmt.execute(statement)
+                            } catch (e: Exception) {
+                                if (isIgnorableMigrationError(statement, e)) {
+                                    log.debug("Idempotent migration step already applied, skipping: {}", statement)
+                                } else {
+                                    throw e
+                                }
                             }
                         }
                     }
                 }
+                conn.commit()
+            } catch (e: Exception) {
+                conn.rollback()
+                throw e
+            } finally {
+                conn.autoCommit = originalAutoCommit
             }
         }
+    }
+
+    private fun isIgnorableMigrationError(statement: String, error: Exception): Boolean {
+        val message = error.message.orEmpty()
+        val isCreateIndex = statement.startsWith("CREATE INDEX", ignoreCase = true)
+        val isCreateTable = statement.startsWith("CREATE TABLE", ignoreCase = true)
+        return (isCreateIndex && (
+            message.contains("already exists", ignoreCase = true) ||
+                message.contains("Duplicate key name", ignoreCase = true)
+            )) ||
+            ((isCreateIndex || isCreateTable) && message.contains("ORA-00955", ignoreCase = true))
     }
 
     override suspend fun saveJob(job: JobDefinition) {
@@ -115,7 +138,7 @@ class JdbcJobStore(
                 val payloadJson = execution.payload?.let { 
                     try {
                         when (it) {
-                            is String -> "\"$it\""
+                            is String -> json.encodeToString(JsonPrimitive(it))
                             is Number, is Boolean -> it.toString()
                             is Map<*, *> -> {
                                 val map = it.map { e -> e.key.toString() to e.value.toJsonElement() }.toMap()
@@ -237,25 +260,47 @@ class JdbcJobStore(
         }
     }
 
-    override suspend fun supersedeExecutionsByLockKey(lockKey: String): List<UUID> {
+    override suspend fun supersedeExecutionsByLockKey(lockKey: String, excludeExecutionId: UUID?): List<UUID> {
         val superseded = mutableListOf<UUID>()
         dataSource.connection.use { conn ->
-            // First find which ones we are going to update to return them
-            val selectSql = "SELECT id FROM khrona_executions WHERE lock_key = ? AND status IN ('CLAIMED', 'RUNNING')"
-            conn.prepareStatement(selectSql).use { stmt ->
-                stmt.setString(1, lockKey)
-                val rs = stmt.executeQuery()
-                while (rs.next()) {
-                    superseded.add(UUID.fromString(rs.getString("id")))
+            val originalAutoCommit = conn.autoCommit
+            conn.autoCommit = false
+            try {
+                val selectSql = buildString {
+                    append("SELECT id FROM khrona_executions WHERE lock_key = ? AND status IN ('CLAIMED', 'RUNNING')")
+                    if (excludeExecutionId != null) append(" AND id != ?")
+                    append(" FOR UPDATE")
                 }
-            }
-            
-            val updateSql = "UPDATE khrona_executions SET status = ?, completed_at = ? WHERE lock_key = ? AND status IN ('CLAIMED', 'RUNNING')"
-            conn.prepareStatement(updateSql).use { stmt ->
-                stmt.setString(1, ExecutionStatus.SUPERSEDED.name)
-                stmt.setTimestamp(2, Timestamp.from(Instant.now()))
-                stmt.setString(3, lockKey)
-                stmt.executeUpdate()
+                conn.prepareStatement(selectSql).use { stmt ->
+                    stmt.setString(1, lockKey)
+                    if (excludeExecutionId != null) {
+                        stmt.setString(2, excludeExecutionId.toString())
+                    }
+                    val rs = stmt.executeQuery()
+                    while (rs.next()) {
+                        superseded.add(UUID.fromString(rs.getString("id")))
+                    }
+                }
+
+                if (superseded.isNotEmpty()) {
+                    val placeholders = superseded.joinToString(",") { "?" }
+                    val updateSql = "UPDATE khrona_executions SET status = ?, completed_at = ? WHERE id IN ($placeholders)"
+                    conn.prepareStatement(updateSql).use { stmt ->
+                        stmt.setString(1, ExecutionStatus.SUPERSEDED.name)
+                        stmt.setTimestamp(2, Timestamp.from(Instant.now()))
+                        superseded.forEachIndexed { index, id ->
+                            stmt.setString(index + 3, id.toString())
+                        }
+                        stmt.executeUpdate()
+                    }
+                }
+
+                conn.commit()
+            } catch (e: Exception) {
+                conn.rollback()
+                throw e
+            } finally {
+                conn.autoCommit = originalAutoCommit
             }
         }
         return superseded

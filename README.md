@@ -107,6 +107,8 @@ install(Khrona) {
 }
 ```
 
+`migrate()` is fail-fast: schema errors are surfaced during startup instead of being silently ignored. Re-running migration is idempotent for the built-in schema and indexes.
+
 ## MySQL 8 & Multi-Node Testing
 
 Khrona is designed to scale across multiple instances. Use a persistent store to coordinate work.
@@ -166,7 +168,7 @@ Prevent a job from running if a previous execution is still active globally. `lo
 job("heavy-task") {
     every(5.minutes)
     // FORBID: Skip the new run if the old one is still active
-    // REPLACE: Cancel the old run and start the new one immediately
+    // REPLACE: Claim the new run, then supersede and cancel older active runs for the same lock
     concurrencyPolicy = ConcurrencyPolicy.REPLACE 
     
     timeout = 15.minutes // Enforced via coroutine withTimeout
@@ -178,7 +180,9 @@ job("heavy-task") {
 ```
 
 ### Structured Payloads
-Khrona preserves the structure and types of your payloads, even when using persistent storage (JDBC). You can pass Maps, Lists, or any `@Serializable` data class.
+Khrona preserves JSON-compatible payload structure when using persistent storage (JDBC). Maps, Lists, strings, numbers, booleans, and nested combinations round-trip through `payload_json`.
+
+> For custom classes, pass an explicit JSON-compatible representation today. Payload schema/version helpers are planned as a future hardening area.
 
 ```kotlin
 // Triggering with a complex payload
@@ -190,7 +194,7 @@ scheduler.trigger("report-job", payload = mapOf(
 // Inside the job handler, the structure is preserved
 execute { payload ->
     val data = payload as Map<*, *>
-    val id = data["id"] as Int
+    val id = data["id"] as Long
 }
 ```
 
