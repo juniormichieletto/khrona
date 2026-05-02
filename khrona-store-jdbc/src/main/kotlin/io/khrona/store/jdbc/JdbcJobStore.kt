@@ -27,6 +27,7 @@ class JdbcJobStore(
             polymorphic(Trigger::class) {
                 subclass(IntervalTrigger::class)
                 subclass(CronTrigger::class)
+                subclass(OneTimeTrigger::class)
             }
         }
     }

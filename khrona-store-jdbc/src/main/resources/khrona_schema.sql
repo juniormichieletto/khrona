@@ -23,3 +23,5 @@ CREATE TABLE IF NOT EXISTS khrona_executions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_khrona_executions_status_scheduled ON khrona_executions(status, scheduled_at);
+CREATE INDEX IF NOT EXISTS idx_khrona_executions_lock_status_expires ON khrona_executions(lock_key, status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_khrona_executions_status_expires ON khrona_executions(status, expires_at);

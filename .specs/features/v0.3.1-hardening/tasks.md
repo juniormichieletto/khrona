@@ -12,7 +12,7 @@
 - [x] **Task 2.3:** Add unit tests for `REPLACE` and `FORBID` concurrency policies.
 
 ## Phase 3: JDBC Improvements
-- [ ] **Task 3.1:** Update `JdbcJobStore` to use `kotlinx.serialization` for JSON payloads instead of `toString()`.
+- [x] **Task 3.1:** Update `JdbcJobStore` to use `kotlinx.serialization` for JSON payloads instead of `toString()`.
 - [ ] **Task 3.2:** Add indexes to `khrona_schema.sql` for `(lock_key, status, expires_at)` and `(status, expires_at)`.
 - [ ] **Task 3.3:** Create a comprehensive integration test proving JDBC round-trip with handlers and structured payloads.
 
