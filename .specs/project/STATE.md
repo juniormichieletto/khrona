@@ -16,7 +16,7 @@
 - [x] Initialize the Gradle/Kotlin project structure.
 - [x] Implement JDBC/Postgres Store (v0.2)
 - [x] Implement Multi-node Claiming (v0.3)
-- [ ] Implement Reliability Hardening (v0.3.1)
+- [x] Implement Reliability Hardening (v0.3.1)
 - [ ] Implement Admin API & Visibility (v0.4)
 
 ## Deferred Ideas

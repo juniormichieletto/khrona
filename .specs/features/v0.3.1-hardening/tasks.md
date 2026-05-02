@@ -13,11 +13,12 @@
 
 ## Phase 3: JDBC Improvements
 - [x] **Task 3.1:** Update `JdbcJobStore` to use `kotlinx.serialization` for JSON payloads instead of `toString()`.
-- [ ] **Task 3.2:** Add indexes to `khrona_schema.sql` for `(lock_key, status, expires_at)` and `(status, expires_at)`.
-- [ ] **Task 3.3:** Create a comprehensive integration test proving JDBC round-trip with handlers and structured payloads.
+- [x] **Task 3.2:** Add indexes to `khrona_schema.sql` for `(lock_key, status, expires_at)` and `(status, expires_at)`.
+- [x] **Task 3.3:** Create a comprehensive integration test proving JDBC round-trip with handlers and structured payloads.
 
 ## Verification
-- Failing test for JDBC handler loss is fixed.
-- Failing test for recurring job stoppage is fixed.
-- Timeout verification tests.
-- JSON payload round-trip tests.
+- [x] Failing test for JDBC handler loss is fixed.
+- [x] Failing test for recurring job stoppage is fixed.
+- [x] Timeout verification tests pass.
+- [x] JSON payload round-trip tests pass.
+- [x] Grand Finale E2E test passes across restarts.
