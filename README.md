@@ -165,11 +165,32 @@ Prevent a job from running if a previous execution is still active globally. `lo
 ```kotlin
 job("heavy-task") {
     every(5.minutes)
-    concurrencyPolicy = ConcurrencyPolicy.FORBID
-    timeout = Duration.ofMinutes(15)   // Max execution time coroutine
+    // FORBID: Skip the new run if the old one is still active
+    // REPLACE: Cancel the old run and start the new one immediately
+    concurrencyPolicy = ConcurrencyPolicy.REPLACE 
+    
+    timeout = 15.minutes // Enforced via coroutine withTimeout
+    
     execute {
-        // Only one instance of this job runs at a time globally
+        // Safe, bound execution with automatic cancellation support
     }
+}
+```
+
+### Structured Payloads
+Khrona preserves the structure and types of your payloads, even when using persistent storage (JDBC). You can pass Maps, Lists, or any `@Serializable` data class.
+
+```kotlin
+// Triggering with a complex payload
+scheduler.trigger("report-job", payload = mapOf(
+    "id" to 123,
+    "filters" to listOf("ACTIVE", "PENDING")
+))
+
+// Inside the job handler, the structure is preserved
+execute { payload ->
+    val data = payload as Map<*, *>
+    val id = data["id"] as Int
 }
 ```
 
@@ -199,7 +220,7 @@ To show the ID in your logs, update your `logback.xml` pattern to include `%X{co
 
 ## Manual Control (Standalone)
 
-You can also run Khrona outside of Ktor:
+You can also run Khrona outside of Ktor. Note that registration and triggering are **suspend** functions for better error handling and observability.
 
 ```kotlin
 val config = Khrona {
@@ -210,27 +231,16 @@ val config = Khrona {
 val scheduler = Scheduler(config)
 scheduler.start()
 
-// Register jobs dynamically (suspend function)
-scheduler.registerJob(JobDefinition(...))
+runBlocking {
+    // Register jobs dynamically (suspend function)
+    scheduler.registerJob(job("one-time-task") {
+        once()
+        execute { println("Hello!") }
+    })
 
-// Run a job once immediately
-scheduler.registerJob(job("one-time-task") {
-    once()
-    execute {
-        println("Running once!")
-    }
-})
-
-// Schedule a job for a specific time
-scheduler.registerJob(job("delayed-task") {
-    at(Instant.now().plus(Duration.ofHours(1)))
-    execute {
-        println("Running after 1 hour")
-    }
-})
-
-// Manually trigger an existing job (suspend function)
-scheduler.trigger("my-job-id", payload = "Ad-hoc trigger data")
+    // Manually trigger an existing job (suspend function)
+    scheduler.trigger("one-time-task", payload = "Ad-hoc data")
+}
 
 // Stop cleanly
 scheduler.stop()
