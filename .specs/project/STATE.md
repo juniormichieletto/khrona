@@ -24,3 +24,5 @@
 - Payload versioning/evolution (tracked in Future Considerations).
 - Advanced RBAC for Admin API.
 - Dynamic Lock Keys.
+- Cross-database adaptive scheduler delay with bounded fallback polling.
+- Optional database-native wake-up mechanisms after the portable adaptive loop exists.

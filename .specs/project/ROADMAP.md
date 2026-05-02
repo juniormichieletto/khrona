@@ -42,7 +42,9 @@
 - [ ] Testkit (Virtual Time)
 - [ ] Documentation & Samples
 - [ ] Performance Tuning
+- [ ] Cross-Database Adaptive Delay Scheduler
+- [ ] Adaptive scheduler configuration docs
 
 ## Future Considerations
-- **Adaptive Delay Scheduler:** Investigate moving from fixed polling to an adaptive sleep model (sleeping until the next known job execution). This would require a distributed signaling mechanism (e.g., Postgres `NOTIFY`) to wake up workers when new work is scheduled by other nodes.
+- **Cross-Database Adaptive Delay Scheduler:** Replace fixed idle polling with a hybrid adaptive loop that sleeps until the next known execution, stale recovery deadline, or a configurable max polling interval. The baseline must work across Memory, H2, PostgreSQL, MySQL, and Oracle without database-specific notifications. Native database wake-up mechanisms may be added later as optional optimizations.
 - **Dynamic Worker Sizing:** Automatically adjust the number of concurrent execution coroutines based on load.
