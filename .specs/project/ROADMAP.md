@@ -1,5 +1,14 @@
 # ROADMAP — Khrona
 
+## Next Tasks
+- [ ] Fix the Ktor quick-start/API mismatch so users can copy the documented setup into a real Ktor module.
+- [ ] Isolate JDBC store calls onto an IO dispatcher, with an injectable dispatcher if the API shape stays clean.
+- [ ] Implement graceful scheduler shutdown: cancel active handlers, wait up to a configured timeout, then release or mark owned executions.
+- [ ] Expose configurable execution lease duration and heartbeat settings with validation.
+- [ ] Bound JDBC polling/claiming so large backlogs are processed in batches.
+- [ ] Validate retry policy configuration and fix fractional backoff factor handling.
+- [ ] Replace silent unsupported payload `toString()` fallback with fail-fast or explicit serializer behavior.
+
 ## v0.1: Core & In-Memory
 - [x] Project Setup & Module Structure
 - [x] Core Domain Models (JobDefinition, JobExecution, etc.)
@@ -31,6 +40,18 @@
 - [x] JDBC Schema Optimization (Indexing)
 - [x] Fail-fast JDBC Migration
 - [x] Safe REPLACE Ordering (claim before supersede)
+
+## v0.3.2: Production Readiness Hardening
+- [ ] Fix Ktor quick-start/API mismatch so documented setup compiles as written
+- [ ] Isolate blocking JDBC operations from coroutine scheduler/application dispatchers
+- [ ] Add graceful scheduler shutdown with bounded wait for active executions
+- [ ] Mark or release owned `CLAIMED`/`RUNNING` executions during shutdown instead of relying only on lease expiry
+- [ ] Make execution lease duration configurable
+- [ ] Make heartbeat interval configurable or derive it from validated lease settings
+- [ ] Add bounded polling/claiming so large backlogs do not load every eligible execution each poll
+- [ ] Validate retry policy inputs (`maxAttempts`, delays, factor, jitter)
+- [ ] Fix fractional retry backoff factor handling
+- [ ] Fail fast or require explicit serialization for unsupported JDBC payload types instead of silently using `toString()`
 
 ## v0.4: Ops & Visibility
 - [ ] Admin API & Routes
