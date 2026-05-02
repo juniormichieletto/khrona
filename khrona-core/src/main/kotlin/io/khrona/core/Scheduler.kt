@@ -226,25 +226,7 @@ class Scheduler(
                 store.updateExecutionStatus(execution.id, ExecutionStatus.SUCCESS)
                 log.info("[${execution.jobId}] [$correlationId] Job finished successfully")
 
-                // Schedule next run
-                // Use plusMillis(1) to ensure we look for the NEXT execution after this one,
-                // which is important for inclusive triggers like OneTimeTrigger.
-                val next = jobDef.trigger.nextExecutionTime(execution.scheduledAt.plusMillis(1))
-                    ?.truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
-                if (next != null) {
-                    val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
-                    if (store.getExecution(deterministicId) == null) {
-                        store.saveExecution(
-                            JobExecution(
-                                id = deterministicId,
-                                jobId = jobDef.id,
-                                scheduledAt = next,
-                                lockKey = jobDef.lockKey
-                                // Do NOT propagate correlationId to next recurring run
-                            )
-                        )
-                    }
-                }
+                scheduleNextRunIfRecurring(execution, jobDef)
             } catch (e: Exception) {
                 log.error("[${execution.jobId}] [$correlationId] Job failed", e)
                 val nextAttempt = execution.attempt + 1
@@ -269,7 +251,29 @@ class Scheduler(
                 } else {
                     store.updateExecutionStatus(execution.id, ExecutionStatus.DEAD_LETTERED, e.message)
                     log.warn("[${execution.jobId}] [$correlationId] Reached max attempts (${jobDef.retryPolicy.maxAttempts}) and is now DEAD_LETTERED")
+                    scheduleNextRunIfRecurring(execution, jobDef)
                 }
+            }
+        }
+    }
+
+    private suspend fun scheduleNextRunIfRecurring(execution: JobExecution, jobDef: JobDefinition) {
+        // Use plusMillis(1) to ensure we look for the NEXT execution after this one,
+        // which is important for inclusive triggers like OneTimeTrigger.
+        val next = jobDef.trigger.nextExecutionTime(execution.scheduledAt.plusMillis(1))
+            ?.truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+        if (next != null) {
+            val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
+            if (store.getExecution(deterministicId) == null) {
+                store.saveExecution(
+                    JobExecution(
+                        id = deterministicId,
+                        jobId = jobDef.id,
+                        scheduledAt = next,
+                        lockKey = jobDef.lockKey
+                        // Do NOT propagate correlationId to next recurring run
+                    )
+                )
             }
         }
     }

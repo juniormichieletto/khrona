@@ -1,8 +1,8 @@
 # Tasks: v0.3.1 - Reliability Hardening
 
 ## Phase 1: Core Reliability
-- [ ] **Task 1.1:** Implement `HandlerRegistry` to store job handlers in-memory.
-- [ ] **Task 1.2:** Refactor `Scheduler` to use `HandlerRegistry` when executing claimed jobs.
+- [x] **Task 1.1:** Implement `HandlerRegistry` to store job handlers in-memory.
+- [x] **Task 1.2:** Refactor `Scheduler` to use `HandlerRegistry` when executing claimed jobs.
 - [ ] **Task 1.3:** Update `Scheduler` to schedule the next occurrence of recurring jobs even after `DEAD_LETTERED` status.
 - [ ] **Task 1.4:** Wrap job handler execution in `withTimeout` using `JobDefinition.timeout`.
 
