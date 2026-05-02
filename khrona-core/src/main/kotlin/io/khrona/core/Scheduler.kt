@@ -16,6 +16,7 @@ class Scheduler(
 ) {
     private val log = LoggerFactory.getLogger(Scheduler::class.java)
     private val store = config.store ?: throw IllegalStateException("JobStore must be configured")
+    private val handlerRegistry = HandlerRegistry()
     private val workerId = UUID.randomUUID().toString()
     private var job: Job? = null
 
@@ -26,7 +27,10 @@ class Scheduler(
         val correlationId = MDC.get("correlationId")
 
         // Validate jobs from config
-        config.jobs.forEach { validateJob(it) }
+        config.jobs.forEach { 
+            validateJob(it)
+            handlerRegistry.register(it.id, it.handler)
+        }
         
         job = scope.launch {
             // Register jobs from config into store
@@ -214,7 +218,10 @@ class Scheduler(
                 log.info("[${execution.jobId}] [$correlationId] Executing job (execution: ${execution.id})")
                 store.updateExecutionStatus(execution.id, ExecutionStatus.RUNNING)
 
-                jobDef.handler(execution.payload)
+                val handler = handlerRegistry.get(jobDef.id) 
+                    ?: throw IllegalStateException("No handler registered for job ${jobDef.id}")
+                
+                handler(execution.payload)
 
                 store.updateExecutionStatus(execution.id, ExecutionStatus.SUCCESS)
                 log.info("[${execution.jobId}] [$correlationId] Job finished successfully")
@@ -275,6 +282,7 @@ class Scheduler(
 
     fun registerJob(jobDef: JobDefinition) {
         validateJob(jobDef)
+        handlerRegistry.register(jobDef.id, jobDef.handler)
         val correlationId = MDC.get("correlationId")
         scope.launch {
             store.saveJob(jobDef)

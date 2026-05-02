@@ -36,6 +36,10 @@ class SchedulerDistributedTest {
         val scheduler1 = Scheduler(config, this)
         val scheduler2 = Scheduler(config, this)
         
+        // Register the job in both schedulers to populate their HandlerRegistries
+        scheduler1.registerJob(jobDef)
+        scheduler2.registerJob(jobDef)
+        
         // Manually trigger an execution
         store.saveExecution(JobExecution(jobId = jobDef.id, scheduledAt = Instant.now(), lockKey = "my-lock"))
         
