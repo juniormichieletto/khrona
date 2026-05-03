@@ -1,13 +1,9 @@
 # ROADMAP — Khrona
 
 ## Next Tasks
-- [ ] Fix the Ktor quick-start/API mismatch so users can copy the documented setup into a real Ktor module.
-- [ ] Isolate JDBC store calls onto an IO dispatcher, with an injectable dispatcher if the API shape stays clean.
-- [x] Implement graceful scheduler shutdown: cancel active handlers, wait up to a configured timeout, then release or mark owned executions.
-- [ ] Expose configurable execution lease duration and heartbeat settings with validation.
-- [ ] Bound JDBC polling/claiming so large backlogs are processed in batches.
-- [ ] Validate retry policy configuration and fix fractional backoff factor handling.
-- [ ] Replace silent unsupported payload `toString()` fallback with fail-fast or explicit serializer behavior.
+- [ ] Implement Admin API & Dashboard (v0.4)
+- [ ] Implement Metrics (Micrometer/OpenTelemetry) (v0.4)
+- [ ] Add lock inspection capabilities (v0.4)
 
 ## v0.1: Core & In-Memory
 - [x] Project Setup & Module Structure
