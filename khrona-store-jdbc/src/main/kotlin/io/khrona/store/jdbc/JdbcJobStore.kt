@@ -368,7 +368,7 @@ class JdbcJobStore(
                 val element = json.parseToJsonElement(it)
                 element.toAny()
             } catch (e: Exception) {
-                it // Fallback to raw string
+                throw IllegalStateException("Failed to parse payload_json for execution $idStr", e)
             }
         }
         

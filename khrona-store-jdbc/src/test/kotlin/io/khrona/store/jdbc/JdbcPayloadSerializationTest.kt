@@ -129,4 +129,34 @@ class JdbcPayloadSerializationTest {
             runBlocking { store.saveExecution(execution) }
         }
     }
+
+    @Test
+    fun `should fail fast for malformed persisted payload JSON`() = kotlinx.coroutines.test.runTest {
+        val jobDef = JobDefinition(
+            id = "test-job",
+            trigger = IntervalTrigger(Duration.ofMinutes(1)),
+            handler = {}
+        )
+        store.saveJob(jobDef)
+
+        val execution = JobExecution(
+            id = UUID.randomUUID(),
+            jobId = "test-job",
+            scheduledAt = Instant.now(),
+            payload = mapOf("key" to "value")
+        )
+        store.saveExecution(execution)
+
+        dataSource.connection.use { conn ->
+            conn.prepareStatement("UPDATE khrona_executions SET payload_json = ? WHERE id = ?").use { stmt ->
+                stmt.setString(1, "{bad json")
+                stmt.setString(2, execution.id.toString())
+                stmt.executeUpdate()
+            }
+        }
+
+        assertThrows(IllegalStateException::class.java) {
+            runBlocking { store.getExecution(execution.id) }
+        }
+    }
 }

@@ -187,6 +187,8 @@ job("heavy-task") {
 ### Structured Payloads
 Khrona preserves JSON-compatible payload structure when using persistent storage (JDBC). Maps, Lists, strings, numbers, booleans, and nested combinations round-trip through `payload_json`.
 
+Malformed persisted payload JSON fails fast when an execution is loaded, so corrupt or manually edited payload data is surfaced at the store boundary instead of being passed to job handlers as a raw string.
+
 > For custom classes, pass an explicit JSON-compatible representation today. Payload schema/version helpers are planned as a future hardening area.
 
 ```kotlin
@@ -249,10 +251,10 @@ runBlocking {
 
     // Manually trigger an existing job (suspend function)
     scheduler.trigger("one-time-task", payload = "Ad-hoc data")
-}
 
-// Stop cleanly
-scheduler.stop()
+    // Stop cleanly
+    scheduler.stop()
+}
 ```
 
 ## Trigger Formats
