@@ -23,6 +23,7 @@
 - [x] Implement JDBC/Postgres Store (v0.2)
 - [x] Implement Multi-node Claiming (v0.3)
 - [x] Implement Reliability Hardening (v0.3.1)
+- [x] Add Production Readiness Hardening implementation plan (v0.3.2)
 - [ ] Implement Production Readiness Hardening (v0.3.2)
 - [ ] Implement Admin API & Visibility (v0.4)
 

@@ -42,6 +42,7 @@
 - [x] Safe REPLACE Ordering (claim before supersede)
 
 ## v0.3.2: Production Readiness Hardening
+- Implementation plan: `.specs/features/v0.3.2-production-readiness/`
 - [x] Fix Ktor quick-start/API mismatch so documented setup compiles as written
 - [ ] Isolate blocking JDBC operations from coroutine scheduler/application dispatchers
 - [ ] Add graceful scheduler shutdown with bounded wait for active executions
