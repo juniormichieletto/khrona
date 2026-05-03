@@ -25,6 +25,10 @@ class Scheduler(
 
     init {
         validateConfig()
+        config.jobs.forEach {
+            validateJob(it)
+            handlerRegistry.register(it.id, it.handler)
+        }
     }
 
     private fun validateConfig() {
@@ -48,12 +52,6 @@ class Scheduler(
 
         val correlationId = MDC.get("correlationId")
 
-        // Validate jobs from config
-        config.jobs.forEach { 
-            validateJob(it)
-            handlerRegistry.register(it.id, it.handler)
-        }
-        
         job = scope.launch {
             // Register jobs from config into store
             config.jobs.forEach { store.saveJob(it) }
@@ -142,6 +140,12 @@ class Scheduler(
         val eligible = store.listEligibleExecutions(now, config.pollBatchSize)
         
         eligible.forEach { execution ->
+            // Check if we have a handler for this job before claiming
+            if (!handlerRegistry.hasHandler(execution.jobId)) {
+                log.trace("[${execution.jobId}] Skipping execution ${execution.id} because no local handler is registered")
+                return@forEach
+            }
+
             // Re-fetch job def in case it changed or for fresh state
             val jobDef = store.getJob(execution.jobId) ?: return@forEach
             

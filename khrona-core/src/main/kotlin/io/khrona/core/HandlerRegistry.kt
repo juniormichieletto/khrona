@@ -13,6 +13,10 @@ class HandlerRegistry {
         return handlers[jobId]
     }
 
+    fun hasHandler(jobId: String): Boolean {
+        return handlers.containsKey(jobId)
+    }
+
     fun remove(jobId: String) {
         handlers.remove(jobId)
     }

@@ -146,9 +146,8 @@ class SchedulerTest {
             }
         }
         
-        val scheduler = Scheduler(config, this, clock)
         assertThrows(IllegalArgumentException::class.java) {
-            scheduler.start()
+            Scheduler(config, this, clock)
         }
     }
 
@@ -165,9 +164,8 @@ class SchedulerTest {
             }
         }
         
-        val scheduler = Scheduler(config, this, clock)
         assertThrows(IllegalArgumentException::class.java) {
-            scheduler.start()
+            Scheduler(config, this, clock)
         }
     }
 

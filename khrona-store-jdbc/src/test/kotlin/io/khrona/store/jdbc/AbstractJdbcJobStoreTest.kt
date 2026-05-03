@@ -9,12 +9,15 @@ import org.junit.jupiter.api.Assertions.*
 import java.time.Duration
 import java.time.Instant
 import java.util.*
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import javax.sql.DataSource
 
 abstract class AbstractJdbcJobStoreTest {
 
     protected lateinit var dataSource: HikariDataSource
     protected lateinit var store: JdbcJobStore
+    private val log = org.slf4j.LoggerFactory.getLogger(AbstractJdbcJobStoreTest::class.java)
 
     abstract fun createDataSource(): HikariDataSource
 
@@ -189,5 +192,114 @@ abstract class AbstractJdbcJobStoreTest {
         assertNotNull(firstExpiry)
         assertNotNull(secondExpiry)
         assertTrue(secondExpiry!! > firstExpiry!!)
+    }
+
+    @Test
+    fun `should ensure only one instance executes a specific job across multiple instances`() = runBlocking {
+        val instanceCount = 6
+        val executionCount = 10
+        val jobId = "highly-contested-job-${UUID.randomUUID()}"
+        val lockKey = "shared-lock-${UUID.randomUUID()}"
+
+        val executionLog = ConcurrentHashMap<String, AtomicInteger>()
+        val schedulers = (1..instanceCount).map { instance ->
+            val config = KhronaConfig().apply {
+                this.store = this@AbstractJdbcJobStoreTest.store
+                pollingInterval = Duration.ofMillis(100)
+            }
+            Scheduler(config, CoroutineScope(Dispatchers.Default + SupervisorJob())).also { scheduler ->
+                scheduler.registerJob(
+                    JobDefinition(
+                        id = jobId,
+                        trigger = IntervalTrigger(Duration.ofMinutes(1)),
+                        concurrencyPolicy = ConcurrencyPolicy.FORBID,
+                        lockKey = lockKey,
+                        handler = { payload ->
+                            val serial = payload as String
+                            log.info("Worker $instance executing $serial")
+                            executionLog.computeIfAbsent(serial) { AtomicInteger(0) }.incrementAndGet()
+                            delay(200)
+                        }
+                    )
+                )
+                scheduler.start()
+            }
+        }
+
+        try {
+            repeat(executionCount) { index ->
+                val serial = "exec-$index"
+                store.saveExecution(
+                    JobExecution(
+                        jobId = jobId,
+                        scheduledAt = Instant.now(),
+                        payload = serial,
+                        lockKey = lockKey
+                    )
+                )
+            }
+
+            withTimeout(15_000) {
+                while (executionLog.size < executionCount) {
+                    delay(500)
+                    log.info("Progress: ${executionLog.size}/$executionCount processed")
+                }
+            }
+
+            executionLog.forEach { (serial, count) ->
+                assertEquals(1, count.get(), "Execution $serial should have been processed exactly once across all instances")
+            }
+        } finally {
+            schedulers.forEach { it.stop() }
+        }
+    }
+
+    @Test
+    fun `should allow parallel execution of different jobs across instances`() = runBlocking {
+        val instanceCount = 4
+        val executionLog = ConcurrentHashMap<String, Long>()
+        val testRunId = UUID.randomUUID()
+
+        val schedulers = (1..instanceCount).map { index ->
+            val jobId = "parallel-job-$testRunId-$index"
+            val config = KhronaConfig().apply {
+                this.store = this@AbstractJdbcJobStoreTest.store
+                pollingInterval = Duration.ofMillis(100)
+            }
+            Scheduler(config, CoroutineScope(Dispatchers.Default + SupervisorJob())).also { scheduler ->
+                scheduler.registerJob(
+                    JobDefinition(
+                        id = jobId,
+                        trigger = IntervalTrigger(Duration.ofHours(1)),
+                        handler = {
+                            log.info("Executing $jobId")
+                            executionLog[jobId] = System.currentTimeMillis()
+                            delay(1_000)
+                        }
+                    )
+                )
+                scheduler.start()
+            }
+        }
+
+        try {
+            repeat(instanceCount) { index ->
+                val jobId = "parallel-job-$testRunId-${index + 1}"
+                store.saveExecution(JobExecution(jobId = jobId, scheduledAt = Instant.now()))
+            }
+
+            withTimeout(10_000) {
+                while (executionLog.size < instanceCount) {
+                    delay(500)
+                    log.info("Parallel progress: ${executionLog.size}/$instanceCount processed")
+                }
+            }
+
+            val times = executionLog.values.sorted()
+            val delta = times.last() - times.first()
+            assertTrue(delta < 2_000, "Jobs should have started in parallel, but delta was ${delta}ms")
+        } finally {
+            schedulers.forEach { it.stop() }
+        }
     }
 }
