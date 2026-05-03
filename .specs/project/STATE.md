@@ -10,12 +10,7 @@
 - **v0.3.1 Hardening:** Implemented handler registry, resilient recurring schedules, enforced timeouts, suspendable APIs, structured JDBC payloads, fail-fast migrations, and safer REPLACE ordering.
 
 ## Blockers
-- Production readiness review found runtime hardening blockers before the project should be described as production-ready:
-  - Blocking JDBC work currently runs inside suspend APIs without dispatcher isolation.
-  - Scheduler shutdown cancels active jobs but relies on lease expiry for recovery.
-  - Lease duration is fixed instead of configurable.
-  - Eligible execution polling is unbounded.
-  - Ktor quick-start documentation does not compile as written.
+- None. v0.3.2 hardening addresses previously identified production-readiness blockers, including validation and lifecycle isolation gaps found in review.
 
 ## Todos
 - [x] Map existing codebase (if any) to `.specs/codebase/`.
@@ -24,17 +19,13 @@
 - [x] Implement Multi-node Claiming (v0.3)
 - [x] Implement Reliability Hardening (v0.3.1)
 - [x] Add Production Readiness Hardening implementation plan (v0.3.2)
-- [ ] Implement Production Readiness Hardening (v0.3.2)
+- [x] Implement Production Readiness Hardening (v0.3.2)
 - [ ] Implement Admin API & Visibility (v0.4)
 
 ## Next Tasks
-- [x] Fix Ktor quick-start/API mismatch.
-- [ ] Move blocking JDBC work off scheduler/application dispatchers.
-- [x] Add graceful scheduler shutdown with bounded wait and explicit execution release/marking.
-- [ ] Make lease duration and heartbeat behavior configurable and validated.
-- [ ] Add bounded JDBC polling/claiming.
-- [ ] Validate retry policy settings and correct fractional backoff factors.
-- [ ] Remove silent unsupported JDBC payload fallback behavior.
+- [ ] Implement Admin API & Dashboard (v0.4)
+- [ ] Implement Metrics (Micrometer) (v0.4)
+- [ ] Add lock inspection capabilities (v0.4)
 
 ## Deferred Ideas
 - Payload versioning/evolution (tracked in Future Considerations).

@@ -50,4 +50,40 @@ class JobBuilderTest {
         
         assertEquals("custom-lock", job.lockKey)
     }
+
+    @Test
+    fun `should fail to build job without trigger`() {
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException::class.java) {
+            JobBuilder("test").apply {
+                execute {}
+            }.build()
+        }
+    }
+
+    @Test
+    fun `should fail to build job with invalid retry policy`() {
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException::class.java) {
+            JobBuilder("test").apply {
+                retry { maxAttempts = 0 }
+                every(Duration.ofMinutes(1))
+                execute {}
+            }.build()
+        }
+
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException::class.java) {
+            JobBuilder("test").apply {
+                retry { factor = 0.5 } // Must be >= 1.0
+                every(Duration.ofMinutes(1))
+                execute {}
+            }.build()
+        }
+
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException::class.java) {
+            JobBuilder("test").apply {
+                retry { jitter = 1.5 } // Must be 0..1
+                every(Duration.ofMinutes(1))
+                execute {}
+            }.build()
+        }
+    }
 }

@@ -22,7 +22,7 @@ abstract class AbstractJdbcJobStoreTest {
     fun setup() {
         dataSource = createDataSource()
         store = JdbcJobStore(dataSource)
-        store.migrate()
+        runBlocking { store.migrate() }
     }
 
     @AfterEach

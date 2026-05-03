@@ -1,12 +1,13 @@
 package io.khrona.store.jdbc
 
+import kotlinx.coroutines.runBlocking
 import org.h2.jdbcx.JdbcDataSource
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 
 class JdbcMigrationTest {
     @Test
-    fun `migration should throw on non-idempotency failures`() {
+    fun `migration should throw on non-idempotency failures`() = runBlocking {
         val dataSource = JdbcDataSource().apply {
             setURL("jdbc:h2:mem:khrona_migration_failure;DB_CLOSE_DELAY=-1")
             user = "sa"
@@ -21,8 +22,10 @@ class JdbcMigrationTest {
         }
 
         assertThrows(Exception::class.java) {
-            val store = JdbcJobStore(dataSource, H2Dialect())
-            store.migrate()
+            runBlocking {
+                val store = JdbcJobStore(dataSource, H2Dialect())
+                store.migrate()
+            }
         }
     }
 }

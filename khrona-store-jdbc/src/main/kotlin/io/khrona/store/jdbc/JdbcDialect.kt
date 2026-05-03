@@ -46,6 +46,7 @@ class PostgresDialect : JdbcDialect {
         WHERE (status = 'PENDING' OR ((status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?))
         AND scheduled_at <= ? 
         ORDER BY scheduled_at ASC
+        LIMIT ?
     """.trimIndent()
 
     override fun heartbeatSql(): String = """
@@ -87,6 +88,7 @@ class H2Dialect : JdbcDialect {
         WHERE (status = 'PENDING' OR ((status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?))
         AND scheduled_at <= ? 
         ORDER BY scheduled_at ASC
+        LIMIT ?
     """.trimIndent()
 
     override fun heartbeatSql(): String = """
@@ -146,6 +148,7 @@ class MySqlDialect : JdbcDialect {
         WHERE (status = 'PENDING' OR ((status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?))
         AND scheduled_at <= ? 
         ORDER BY scheduled_at ASC
+        LIMIT ?
     """.trimIndent()
 
     override fun heartbeatSql(): String = """
@@ -200,6 +203,7 @@ class OracleDialect : JdbcDialect {
         WHERE (status = 'PENDING' OR ((status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?))
         AND scheduled_at <= ? 
         ORDER BY scheduled_at ASC
+        FETCH FIRST ? ROWS ONLY
     """.trimIndent()
 
     override fun heartbeatSql(): String = """

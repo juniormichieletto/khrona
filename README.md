@@ -102,15 +102,17 @@ For production use, jobs should persist across application restarts.
 ```kotlin
 import io.khrona.store.jdbc.JdbcJobStore
 import io.khrona.store.jdbc.PostgresDialect // Or MySqlDialect, H2Dialect, etc.
+import kotlinx.coroutines.runBlocking
 
-val store = JdbcJobStore(dataSource, PostgresDialect()).apply { migrate() }
+val store = JdbcJobStore(dataSource, PostgresDialect())
+runBlocking { store.migrate() }
 
 install(Khrona) {
     this.store = store
 }
 ```
 
-`migrate()` is fail-fast: schema errors are surfaced during startup instead of being silently ignored. Re-running migration is idempotent for the built-in schema and indexes.
+`migrate()` is suspend and fail-fast: schema errors are surfaced during startup instead of being silently ignored. Re-running migration is idempotent for the built-in schema and indexes.
 
 ## MySQL 8 & Multi-Node Testing
 

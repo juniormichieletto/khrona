@@ -44,15 +44,17 @@
 ## v0.3.2: Production Readiness Hardening
 - Implementation plan: `.specs/features/v0.3.2-production-readiness/`
 - [x] Fix Ktor quick-start/API mismatch so documented setup compiles as written
-- [ ] Isolate blocking JDBC operations from coroutine scheduler/application dispatchers
-- [ ] Add graceful scheduler shutdown with bounded wait for active executions
-- [ ] Mark or release owned `CLAIMED`/`RUNNING` executions during shutdown instead of relying only on lease expiry
-- [ ] Make execution lease duration configurable
-- [ ] Make heartbeat interval configurable or derive it from validated lease settings
-- [ ] Add bounded polling/claiming so large backlogs do not load every eligible execution each poll
-- [ ] Validate retry policy inputs (`maxAttempts`, delays, factor, jitter)
-- [ ] Fix fractional retry backoff factor handling
-- [ ] Fail fast or require explicit serialization for unsupported JDBC payload types instead of silently using `toString()`
+- [x] Isolate blocking JDBC operations from coroutine scheduler/application dispatchers
+- [x] Add graceful scheduler shutdown with bounded wait for active executions
+- [x] Mark or release owned `CLAIMED`/`RUNNING` executions during shutdown instead of relying only on lease expiry
+- [x] Make execution lease duration configurable
+- [x] Make heartbeat interval configurable or derive it from validated lease settings
+- [x] Add bounded polling/claiming so large backlogs do not load every eligible execution each poll
+- [x] Validate retry policy inputs (`maxAttempts`, delays, factor, jitter)
+- [x] Fix fractional retry backoff factor handling
+- [x] Fail fast or require explicit serialization for unsupported JDBC payload types (no silent fallback)
+- [x] Hardened pollBatchSize validation
+- [x] Completed JDBC dispatcher isolation (including lazy dialect resolution and suspend migrate)
 
 ## v0.4: Ops & Visibility
 - [ ] Admin API & Routes

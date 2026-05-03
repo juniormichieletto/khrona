@@ -1,6 +1,9 @@
+@file:OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+
 package io.khrona.store.jdbc
 
 import io.khrona.core.*
+import kotlinx.coroutines.runBlocking
 import org.h2.jdbcx.JdbcDataSource
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
@@ -22,14 +25,17 @@ class JdbcHandlerLossTest {
             password = ""
         }
         store = JdbcJobStore(dataSource)
-        store.migrate()
+        runBlocking { store.migrate() }
     }
 
     @Test
     fun `should correctly execute handler after reloading job from JDBC when using Scheduler`() = kotlinx.coroutines.test.runTest {
+        // Use a store that shares the test dispatcher to ensure virtual time works correctly
+        val testStore = JdbcJobStore(dataSource, dispatcher = kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler))
+        
         val executed = AtomicBoolean(false)
         val config = KhronaConfig().apply {
-            this.store = this@JdbcHandlerLossTest.store
+            this.store = testStore
             // Use a short polling interval for fast tests
             this.pollingInterval = Duration.ofMillis(100)
             job("test-scheduler-fix") {

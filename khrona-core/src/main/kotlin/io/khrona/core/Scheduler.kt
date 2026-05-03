@@ -20,7 +20,27 @@ class Scheduler(
     private val handlerRegistry = HandlerRegistry()
     private val activeJobs = ConcurrentHashMap<UUID, Job>()
     private val workerId = UUID.randomUUID().toString()
+    private val heartbeatInterval = config.heartbeatInterval ?: config.executionLeaseDuration.dividedBy(2)
     private var job: Job? = null
+
+    init {
+        validateConfig()
+    }
+
+    private fun validateConfig() {
+        if (config.executionLeaseDuration.isNegative || config.executionLeaseDuration.isZero) {
+            throw IllegalArgumentException("executionLeaseDuration must be positive")
+        }
+        if (heartbeatInterval.isNegative || heartbeatInterval.isZero) {
+            throw IllegalArgumentException("heartbeatInterval must be positive")
+        }
+        if (heartbeatInterval >= config.executionLeaseDuration) {
+            throw IllegalArgumentException("heartbeatInterval must be strictly less than executionLeaseDuration")
+        }
+        if (config.pollBatchSize <= 0) {
+            throw IllegalArgumentException("pollBatchSize must be positive")
+        }
+    }
 
     fun start() {
         if (job != null) return
@@ -119,7 +139,7 @@ class Scheduler(
 
     internal suspend fun pollAndExecute() {
         val now = Instant.now(clock)
-        val eligible = store.listEligibleExecutions(now)
+        val eligible = store.listEligibleExecutions(now, config.pollBatchSize)
         
         eligible.forEach { execution ->
             // Re-fetch job def in case it changed or for fresh state
@@ -143,9 +163,7 @@ class Scheduler(
                 }
             }
 
-            // TODO: Configurable lease duration
-            val leaseDuration = Duration.ofMinutes(5)
-            if (store.claimExecution(execution.id, workerId, leaseDuration)) {
+            if (store.claimExecution(execution.id, workerId, config.executionLeaseDuration)) {
                 // Handle REPLACE only after the replacement has been claimed.
                 if (jobDef.concurrencyPolicy == ConcurrencyPolicy.REPLACE && jobDef.lockKey != null) {
                     val supersededIds = store.supersedeExecutionsByLockKey(
@@ -175,7 +193,7 @@ class Scheduler(
                     val executionJob = coroutineContext[Job]!!
                     activeJobs[execution.id] = executionJob
                     try {
-                        executeJobWithHeartbeat(execution, jobDef, leaseDuration)
+                        executeJobWithHeartbeat(execution, jobDef, config.executionLeaseDuration)
                     } finally {
                         activeJobs.remove(execution.id)
                     }
@@ -210,7 +228,7 @@ class Scheduler(
         coroutineScope {
             val heartbeatJob = launch {
                 while (isActive) {
-                    delay(leaseDuration.toMillis() / 2)
+                    delay(heartbeatInterval.toMillis())
                     try {
                         // Check if we are still RUNNING/CLAIMED (not superseded) while heartbeating
                         if (!store.heartbeat(execution.id, leaseDuration)) {

@@ -8,6 +8,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.modules.SerializersModule
 import kotlinx.serialization.modules.polymorphic
 import kotlinx.serialization.modules.subclass
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.slf4j.LoggerFactory
 import java.sql.ResultSet
 import java.sql.Timestamp
@@ -18,9 +20,24 @@ import javax.sql.DataSource
 
 class JdbcJobStore(
     private val dataSource: DataSource,
-    private val dialect: JdbcDialect = resolveDialect(dataSource)
+    dialect: JdbcDialect? = null,
+    private val dispatcher: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.IO
 ) : JobStore {
     private val log = LoggerFactory.getLogger(JdbcJobStore::class.java)
+    
+    private var _dialect: JdbcDialect? = dialect
+    private val dialectMutex = Mutex()
+
+    private suspend fun getDialect(): JdbcDialect {
+        _dialect?.let { return it }
+        return dialectMutex.withLock {
+            _dialect ?: inJdbcContext {
+                resolveDialect(dataSource)
+            }.also { resolved ->
+                _dialect = resolved
+            }
+        }
+    }
 
     private val json = Json { 
         ignoreUnknownKeys = true 
@@ -33,10 +50,17 @@ class JdbcJobStore(
         }
     }
 
-    fun migrate() {
+    private suspend fun <T> inJdbcContext(block: suspend () -> T): T {
+        return kotlinx.coroutines.withContext(dispatcher) {
+            block()
+        }
+    }
+
+    suspend fun migrate() = inJdbcContext {
         var sql = this::class.java.getResource("/khrona_schema.sql")?.readText()
             ?: throw IllegalStateException("Schema file not found")
         
+        val dialect = getDialect()
         if (dialect is OracleDialect) {
             sql = sql.replace("TEXT", "CLOB")
                 .replace("IF NOT EXISTS", "") 
@@ -88,7 +112,8 @@ class JdbcJobStore(
             ((isCreateIndex || isCreateTable) && message.contains("ORA-00955", ignoreCase = true))
     }
 
-    override suspend fun saveJob(job: JobDefinition) {
+    override suspend fun saveJob(job: JobDefinition): Unit = inJdbcContext {
+        val dialect = getDialect()
         dataSource.connection.use { conn ->
             conn.prepareStatement(dialect.upsertJobSql()).use { stmt ->
                 stmt.setString(1, job.id)
@@ -98,21 +123,21 @@ class JdbcJobStore(
         }
     }
 
-    override suspend fun getJob(jobId: String): JobDefinition? {
+    override suspend fun getJob(jobId: String): JobDefinition? = inJdbcContext {
         dataSource.connection.use { conn ->
             val sql = "SELECT definition_json FROM khrona_jobs WHERE id = ?"
             conn.prepareStatement(sql).use { stmt ->
                 stmt.setString(1, jobId)
                 val rs = stmt.executeQuery()
                 if (rs.next()) {
-                    return json.decodeFromString<JobDefinition>(rs.getString("definition_json"))
+                    return@inJdbcContext json.decodeFromString<JobDefinition>(rs.getString("definition_json"))
                 }
             }
         }
-        return null
+        return@inJdbcContext null
     }
 
-    override suspend fun listJobs(): List<JobDefinition> {
+    override suspend fun listJobs(): List<JobDefinition> = inJdbcContext {
         val jobs = mutableListOf<JobDefinition>()
         dataSource.connection.use { conn ->
             val sql = "SELECT definition_json FROM khrona_jobs"
@@ -123,10 +148,11 @@ class JdbcJobStore(
                 }
             }
         }
-        return jobs
+        return@inJdbcContext jobs
     }
 
-    override suspend fun saveExecution(execution: JobExecution) {
+    override suspend fun saveExecution(execution: JobExecution): Unit = inJdbcContext {
+        val dialect = getDialect()
         dataSource.connection.use { conn ->
             conn.prepareStatement(dialect.upsertExecutionSql()).use { stmt ->
                 stmt.setString(1, execution.id.toString())
@@ -136,23 +162,7 @@ class JdbcJobStore(
                 stmt.setInt(5, execution.attempt)
                 
                 val payloadJson = execution.payload?.let { 
-                    try {
-                        when (it) {
-                            is String -> json.encodeToString(JsonPrimitive(it))
-                            is Number, is Boolean -> it.toString()
-                            is Map<*, *> -> {
-                                val map = it.map { e -> e.key.toString() to e.value.toJsonElement() }.toMap()
-                                json.encodeToString(kotlinx.serialization.json.JsonObject(map))
-                            }
-                            is Iterable<*> -> {
-                                val list = it.map { e -> e.toJsonElement() }
-                                json.encodeToString(kotlinx.serialization.json.JsonArray(list))
-                            }
-                            else -> json.encodeToString(it)
-                        }
-                    } catch (e: Exception) {
-                        it.toString()
-                    }
+                    json.encodeToString(it.toJsonElement("$"))
                 }
                 stmt.setString(6, payloadJson)
                 stmt.setString(7, execution.lockKey)
@@ -162,7 +172,7 @@ class JdbcJobStore(
         }
     }
 
-    override suspend fun updateExecutionStatus(id: UUID, status: ExecutionStatus, error: String?) {
+    override suspend fun updateExecutionStatus(id: UUID, status: ExecutionStatus, error: String?): Unit = inJdbcContext {
         dataSource.connection.use { conn ->
             val sql = "UPDATE khrona_executions SET status = ?, error = ?, completed_at = ? WHERE id = ?"
             conn.prepareStatement(sql).use { stmt ->
@@ -180,36 +190,39 @@ class JdbcJobStore(
         }
     }
 
-    override suspend fun getExecution(id: UUID): JobExecution? {
+    override suspend fun getExecution(id: UUID): JobExecution? = inJdbcContext {
         dataSource.connection.use { conn ->
             val sql = "SELECT * FROM khrona_executions WHERE id = ?"
             conn.prepareStatement(sql).use { stmt ->
                 stmt.setString(1, id.toString())
                 val rs = stmt.executeQuery()
                 if (rs.next()) {
-                    return mapExecution(rs)
+                    return@inJdbcContext mapExecution(rs)
                 }
             }
         }
-        return null
+        return@inJdbcContext null
     }
 
-    override suspend fun listEligibleExecutions(now: Instant): List<JobExecution> {
+    override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> = inJdbcContext {
+        val dialect = getDialect()
         val executions = mutableListOf<JobExecution>()
         dataSource.connection.use { conn ->
             conn.prepareStatement(dialect.listEligibleExecutionsSql()).use { stmt ->
                 stmt.setTimestamp(1, Timestamp.from(now))
                 stmt.setTimestamp(2, Timestamp.from(now))
+                stmt.setInt(3, limit)
                 val rs = stmt.executeQuery()
                 while (rs.next()) {
                     executions.add(mapExecution(rs))
                 }
             }
         }
-        return executions
+        return@inJdbcContext executions
     }
 
-    override suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: Duration): Boolean {
+    override suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: Duration): Boolean = inJdbcContext {
+        val dialect = getDialect()
         dataSource.connection.use { conn ->
             conn.prepareStatement(dialect.claimExecutionSql()).use { stmt ->
                 val now = Instant.now()
@@ -220,23 +233,25 @@ class JdbcJobStore(
                 stmt.setTimestamp(4, Timestamp.from(now))
                 stmt.setString(5, id.toString())
                 stmt.setTimestamp(6, Timestamp.from(now))
-                return stmt.executeUpdate() > 0
+                return@inJdbcContext stmt.executeUpdate() > 0
             }
         }
     }
 
-    override suspend fun heartbeat(id: UUID, leaseDuration: Duration): Boolean {
+    override suspend fun heartbeat(id: UUID, leaseDuration: Duration): Boolean = inJdbcContext {
+        val dialect = getDialect()
         dataSource.connection.use { conn ->
             conn.prepareStatement(dialect.heartbeatSql()).use { stmt ->
                 val expiresAt = Instant.now().plus(leaseDuration)
                 stmt.setTimestamp(1, Timestamp.from(expiresAt))
                 stmt.setString(2, id.toString())
-                return stmt.executeUpdate() > 0
+                return@inJdbcContext stmt.executeUpdate() > 0
             }
         }
     }
 
-    override suspend fun isLockHeld(lockKey: String, excludeExecutionId: UUID?): Boolean {
+    override suspend fun isLockHeld(lockKey: String, excludeExecutionId: UUID?): Boolean = inJdbcContext {
+        val dialect = getDialect()
         dataSource.connection.use { conn ->
             val sql = dialect.isLockHeldSql(excludeExecutionId != null)
             conn.prepareStatement(sql).use { stmt ->
@@ -246,21 +261,22 @@ class JdbcJobStore(
                     stmt.setString(3, excludeExecutionId.toString())
                 }
                 val rs = stmt.executeQuery()
-                return rs.next() && rs.getInt(1) > 0
+                return@inJdbcContext rs.next() && rs.getInt(1) > 0
             }
         }
     }
 
-    override suspend fun resetExpiredExecutions(now: Instant): Int {
+    override suspend fun resetExpiredExecutions(now: Instant): Int = inJdbcContext {
+        val dialect = getDialect()
         dataSource.connection.use { conn ->
             conn.prepareStatement(dialect.resetExpiredExecutionsSql()).use { stmt ->
                 stmt.setTimestamp(1, Timestamp.from(now))
-                return stmt.executeUpdate()
+                return@inJdbcContext stmt.executeUpdate()
             }
         }
     }
 
-    override suspend fun supersedeExecutionsByLockKey(lockKey: String, excludeExecutionId: UUID?): List<UUID> {
+    override suspend fun supersedeExecutionsByLockKey(lockKey: String, excludeExecutionId: UUID?): List<UUID> = inJdbcContext {
         val superseded = mutableListOf<UUID>()
         dataSource.connection.use { conn ->
             val originalAutoCommit = conn.autoCommit
@@ -303,24 +319,31 @@ class JdbcJobStore(
                 conn.autoCommit = originalAutoCommit
             }
         }
-        return superseded
+        return@inJdbcContext superseded
     }
 
-    private fun Any?.toJsonElement(): kotlinx.serialization.json.JsonElement {
+    private fun Any?.toJsonElement(path: String): kotlinx.serialization.json.JsonElement {
         return when (this) {
             null -> kotlinx.serialization.json.JsonNull
-            is Number -> kotlinx.serialization.json.JsonPrimitive(this)
+            is Number -> {
+                if (!this.toDouble().isFinite()) throw IllegalArgumentException("Unsupported numeric value at $path: $this")
+                kotlinx.serialization.json.JsonPrimitive(this)
+            }
             is Boolean -> kotlinx.serialization.json.JsonPrimitive(this)
             is String -> kotlinx.serialization.json.JsonPrimitive(this)
             is Map<*, *> -> {
-                val map = this.map { it.key.toString() to it.value.toJsonElement() }.toMap()
+                val map = this.map { 
+                    val key = it.key as? String 
+                        ?: throw IllegalArgumentException("Unsupported map key type at $path: ${it.key?.javaClass?.name ?: "null"} (only String keys are supported)")
+                    key to it.value.toJsonElement("$path.$key") 
+                }.toMap()
                 kotlinx.serialization.json.JsonObject(map)
             }
             is Iterable<*> -> {
-                val list = this.map { it.toJsonElement() }
+                val list = this.mapIndexed { index, e -> e.toJsonElement("$path[$index]") }
                 kotlinx.serialization.json.JsonArray(list)
             }
-            else -> kotlinx.serialization.json.JsonPrimitive(this.toString())
+            else -> throw IllegalArgumentException("Unsupported payload type at $path: ${this.javaClass.name}")
         }
     }
 

@@ -12,7 +12,7 @@ interface JobStore {
     suspend fun updateExecutionStatus(id: UUID, status: ExecutionStatus, error: String? = null)
     suspend fun getExecution(id: UUID): JobExecution?
     
-    suspend fun listEligibleExecutions(now: Instant): List<JobExecution>
+    suspend fun listEligibleExecutions(now: Instant, limit: Int = Int.MAX_VALUE): List<JobExecution>
     suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: java.time.Duration): Boolean
     
     suspend fun heartbeat(id: UUID, leaseDuration: java.time.Duration): Boolean

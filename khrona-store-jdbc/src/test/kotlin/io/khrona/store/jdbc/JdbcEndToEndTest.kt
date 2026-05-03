@@ -22,7 +22,7 @@ class JdbcEndToEndTest {
             password = ""
         }
         store = JdbcJobStore(dataSource)
-        store.migrate()
+        runBlocking { store.migrate() }
     }
 
     @Test

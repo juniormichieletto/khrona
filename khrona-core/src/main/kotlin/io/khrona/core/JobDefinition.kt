@@ -73,14 +73,27 @@ data class RetryPolicy(
     val factor: Double = 2.0,
     val jitter: Double = 0.1
 ) {
+    init {
+        require(maxAttempts > 0) { "maxAttempts must be at least 1" }
+        require(!initialDelay.isNegative) { "initialDelay must not be negative" }
+        require(!maxDelay.isNegative) { "maxDelay must not be negative" }
+        require(maxDelay >= initialDelay) { "maxDelay must be greater than or equal to initialDelay" }
+        require(factor >= 1.0) { "factor must be at least 1.0" }
+        require(jitter in 0.0..1.0) { "jitter must be between 0.0 and 1.0" }
+    }
 
     fun calculateDelay(attempt: Int): Duration {
         if (attempt <= 0) return Duration.ZERO
-        val backoff = initialDelay.multipliedBy(Math.pow(factor, (attempt - 1).toDouble()).toLong())
+        // Use Double arithmetic to preserve fractional factors before converting to long millis
+        val backoffMillis = (initialDelay.toMillis() * Math.pow(factor, (attempt - 1).toDouble())).toLong()
+        val backoff = Duration.ofMillis(backoffMillis)
         val cappedBackoff = if (backoff > maxDelay) maxDelay else backoff
         
+        if (jitter <= 0.0) return cappedBackoff
+        
         val jitterAmount = cappedBackoff.toMillis() * jitter * (Math.random() * 2 - 1)
-        return cappedBackoff.plusMillis(jitterAmount.toLong())
+        val finalDelay = cappedBackoff.plusMillis(jitterAmount.toLong())
+        return if (finalDelay.isNegative) Duration.ZERO else finalDelay
     }
 
     companion object {

@@ -1,6 +1,7 @@
 package io.khrona.store.jdbc
 
 import io.khrona.core.*
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 import org.h2.jdbcx.JdbcDataSource
 import org.junit.jupiter.api.Assertions.*
@@ -25,7 +26,7 @@ class JdbcPayloadSerializationTest {
             password = ""
         }
         store = JdbcJobStore(dataSource)
-        store.migrate()
+        runBlocking { store.migrate() }
     }
 
     @Test
@@ -62,25 +63,70 @@ class JdbcPayloadSerializationTest {
     }
 
     @Test
-    fun `should preserve escaped string payloads in JDBC`() = kotlinx.coroutines.test.runTest {
+    fun `should fail fast for unsupported payload types in JDBC`() = kotlinx.coroutines.test.runTest {
         val jobDef = JobDefinition(
-            id = "string-payload-job",
+            id = "test-job",
             trigger = IntervalTrigger(Duration.ofMinutes(1)),
             handler = {}
         )
         store.saveJob(jobDef)
 
-        val payload = "quoted \"value\" with newline\nand slash \\"
+        // Unsupported type: java.util.Date
         val execution = JobExecution(
             id = UUID.randomUUID(),
-            jobId = "string-payload-job",
+            jobId = "test-job",
+            scheduledAt = Instant.now(),
+            payload = Date()
+        )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { store.saveExecution(execution) }
+        }
+    }
+
+    @Test
+    fun `should fail fast for unsupported nested payload types in JDBC`() = kotlinx.coroutines.test.runTest {
+        val jobDef = JobDefinition(
+            id = "test-job",
+            trigger = IntervalTrigger(Duration.ofMinutes(1)),
+            handler = {}
+        )
+        store.saveJob(jobDef)
+
+        // Unsupported nested type
+        val payload = mapOf("key" to Date())
+        val execution = JobExecution(
+            id = UUID.randomUUID(),
+            jobId = "test-job",
             scheduledAt = Instant.now(),
             payload = payload
         )
 
-        store.saveExecution(execution)
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { store.saveExecution(execution) }
+        }
+    }
 
-        val reloaded = store.getExecution(execution.id)
-        assertEquals(payload, reloaded?.payload)
+    @Test
+    fun `should fail fast for non-string map keys in JDBC`() = kotlinx.coroutines.test.runTest {
+        val jobDef = JobDefinition(
+            id = "test-job",
+            trigger = IntervalTrigger(Duration.ofMinutes(1)),
+            handler = {}
+        )
+        store.saveJob(jobDef)
+
+        // Non-string map key
+        val payload = mapOf(123 to "value")
+        val execution = JobExecution(
+            id = UUID.randomUUID(),
+            jobId = "test-job",
+            scheduledAt = Instant.now(),
+            payload = payload
+        )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { store.saveExecution(execution) }
+        }
     }
 }

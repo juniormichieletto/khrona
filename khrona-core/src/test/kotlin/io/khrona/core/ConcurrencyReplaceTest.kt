@@ -209,10 +209,11 @@ class ConcurrencyReplaceTest {
 
         override suspend fun getExecution(id: UUID): JobExecution? = executions[id]
 
-        override suspend fun listEligibleExecutions(now: Instant): List<JobExecution> {
+        override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> {
             return executions.values
                 .filter { it.status == ExecutionStatus.PENDING && it.scheduledAt <= now }
                 .sortedBy { it.scheduledAt }
+                .take(limit)
         }
 
         override suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: Duration): Boolean {
