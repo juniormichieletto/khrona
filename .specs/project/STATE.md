@@ -20,9 +20,12 @@
 - [x] Implement Reliability Hardening (v0.3.1)
 - [x] Add Production Readiness Hardening implementation plan (v0.3.2)
 - [x] Implement Production Readiness Hardening (v0.3.2)
+- [x] Add Android SQLite Store implementation plan (v0.6)
+- [ ] Implement Android SQLite Store (v0.6)
 - [ ] Implement Admin API & Visibility (v0.4)
 
 ## Next Tasks
+- [ ] Implement Android SQLite Store (v0.6)
 - [ ] Implement Admin API & Dashboard (v0.4)
 - [ ] Implement Metrics (Micrometer) (v0.4)
 - [ ] Add lock inspection capabilities (v0.4)
@@ -33,3 +36,4 @@
 - Dynamic Lock Keys.
 - Cross-database adaptive scheduler delay with bounded fallback polling.
 - Optional database-native wake-up mechanisms after the portable adaptive loop exists.
+- Android OS wake-up integration beyond storage, such as exact alarms or first-class WorkManager orchestration.

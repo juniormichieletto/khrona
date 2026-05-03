@@ -1,6 +1,7 @@
 # ROADMAP — Khrona
 
 ## Next Tasks
+- [ ] Implement Android SQLite Store (v0.6)
 - [ ] Implement Admin API & Dashboard (v0.4)
 - [ ] Implement Metrics (Micrometer/OpenTelemetry) (v0.4)
 - [ ] Add lock inspection capabilities (v0.4)
@@ -65,6 +66,15 @@
 - [ ] Cross-Database Adaptive Delay Scheduler
 - [ ] Adaptive scheduler configuration docs
 
+## v0.6: Android SQLite Store
+- Implementation plan: `.specs/features/v0.6-android-sqlite/`
+- [ ] Add `khrona-store-android-sqlite` module
+- [ ] Implement Android-compatible SQLite `JobStore`
+- [ ] Add versioned schema and migrations
+- [ ] Add Android SQLite store contract tests
+- [ ] Document Android lifecycle and WorkManager integration boundaries
+
 ## Future Considerations
 - **Cross-Database Adaptive Delay Scheduler:** Replace fixed idle polling with a hybrid adaptive loop that sleeps until the next known execution, stale recovery deadline, or a configurable max polling interval. The baseline must work across Memory, H2, PostgreSQL, MySQL, and Oracle without database-specific notifications. Native database wake-up mechanisms may be added later as optional optimizations.
+- **Android OS wake-up integration:** Android SQLite persists Khrona state, but exact alarms, foreground services, and WorkManager orchestration should remain app-level integration points unless a later Android integration module is justified.
 - **Dynamic Worker Sizing:** Automatically adjust the number of concurrent execution coroutines based on load.
