@@ -59,11 +59,11 @@ graph TD
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("io.github.juniormichieletto:khrona-ktor:0.3.1")
+    implementation("io.github.juniormichieletto:khrona-ktor:0.3.2")
     
     // Choose your storage:
-    implementation("io.github.juniormichieletto:khrona-store-memory:0.3.1") // For dev/testing
-    implementation("io.github.juniormichieletto:khrona-store-jdbc:0.3.1")   // For production
+    implementation("io.github.juniormichieletto:khrona-store-memory:0.3.2") // For dev/testing
+    implementation("io.github.juniormichieletto:khrona-store-jdbc:0.3.2")   // For production
 }
 ```
 
@@ -278,7 +278,7 @@ Use Kotlin's `Duration` for human-readable intervals:
 - [x] **v0.1:** Core engine, Kotlin DSL, Ktor integration.
 - [x] **v0.2:** Persistence support (Postgres, H2), retries, and dead-letter handling.
 - [x] **v0.3:** Distributed execution, lease-based claiming, and concurrency policies.
-- [x] **v0.3.1:** Reliability hardening (Registry, Timeouts, Atomic REPLACE).
+- [x] **v0.3.2:** Reliability hardening (Registry, Timeouts, Atomic REPLACE).
 - [ ] **v0.4:** Admin UI & Dashboard, Metrics (Micrometer).
 - [ ] **v0.5:** SQLite storage support (Android friendly), Redis-backed distributed locking.
 - [ ] **v0.6:** Performance tuning and advanced misfire policies.
