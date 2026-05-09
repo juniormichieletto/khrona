@@ -1128,6 +1128,7 @@ Khrona does **not** guarantee:
 - claimed-before-active shutdown edge hardening
 - timezone-aware cron scheduling
 - job pause/disable support
+- persisted job reconciliation for jobs removed from code
 - operator ergonomics
 
 ---
@@ -1167,19 +1168,24 @@ The following items are identified for future discussion and refinement:
 - Allow a job definition to be temporarily suppressed without removing it from code or persistent storage.
 - Define whether paused jobs skip scheduling, skip claiming, or retain pending executions for later resume.
 
-### 29.9 Backpressure & Rate Limiting
+### 29.9 Persisted Job Reconciliation
+- Detect persisted jobs and executions whose handler is no longer registered in the current code deployment.
+- Define explicit operator workflows for disabling, tombstoning, deleting, or migrating removed-code jobs so stale eligible executions do not remain in storage indefinitely.
+- Keep reconciliation behavior conservative by default so removing a handler from one deployment unit does not accidentally delete jobs still handled by another service or scheduler instance.
+
+### 29.10 Backpressure & Rate Limiting
 - Strategies for global or per-job rate limiting to prevent database and worker exhaustion during spikes.
 
-### 29.10 Multi-tenancy
+### 29.11 Multi-tenancy
 - Context propagation for tenant-aware applications (e.g., `TenantId` in `CoroutineContext` or MDC).
 
-### 29.11 Admin API Security
+### 29.12 Admin API Security
 - Role-Based Access Control (RBAC) for the Admin API to distinguish between read-only monitoring and destructive operations (e.g., deleting dead-letter jobs).
 
-### 29.12 Memory Efficiency & History Pruning
+### 29.13 Memory Efficiency & History Pruning
 - **Execution History Growth:** Implement pruning or TTL (Time-To-Live) policies for `JobExecution` records in memory and persistent stores to prevent unbounded memory growth over time.
 - **Eviction Strategy:** Define strategies for archiving or deleting `SUCCESS` and `FAILED` executions to maintain optimal performance for long-running application instances.
 
-### 29.13 Job Isolation & Resilience
+### 29.14 Job Isolation & Resilience
 - **Failure Impact:** Ensure strict isolation of job failures using structured concurrency and supervisor jobs so that individual job crashes never compromise the stability of the host Ktor application.
 - **Resource Limits:** Explore per-job memory or execution time limits to prevent rogue jobs from exhausting system resources.

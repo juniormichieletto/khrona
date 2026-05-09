@@ -68,6 +68,7 @@
 - [ ] Timezone-aware cron scheduling
 - [ ] Dead-letter queue tooling enhancements for inspection, replay, and cleanup
 - [ ] Job pause/disable support
+- [ ] Persisted job reconciliation for jobs removed from code
 - [ ] Cross-Database Adaptive Delay Scheduler
 - [ ] Adaptive scheduler configuration docs
 
@@ -85,5 +86,6 @@
 - **Timezone support:** Add timezone-aware cron scheduling while preserving UTC as the portable default behavior.
 - **Dead-letter queue tooling:** Expand current terminal `DEAD_LETTERED` status into operator-friendly inspection, replay, and cleanup workflows.
 - **Job pause/disable:** Allow jobs to be temporarily suppressed without removing their definitions from code or storage.
+- **Persisted job reconciliation:** Detect persisted jobs whose code-defined handler is no longer registered, then provide explicit disable, tombstone, cleanup, or migration workflows instead of leaving stale executions to be skipped forever.
 - **Android OS wake-up integration:** Android SQLite persists Khrona state, but exact alarms, foreground services, and WorkManager orchestration should remain app-level integration points unless a later Android integration module is justified.
 - **Dynamic Worker Sizing:** Automatically adjust the number of concurrent execution coroutines based on load.

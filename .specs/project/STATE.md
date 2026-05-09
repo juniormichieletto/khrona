@@ -40,6 +40,7 @@
 - Timezone-aware cron scheduling.
 - Dead-letter queue inspection, replay, and cleanup tooling.
 - Job pause/disable support.
+- Persisted job reconciliation for jobs removed from code, including disable/tombstone/cleanup workflows.
 - Cross-database adaptive scheduler delay with bounded fallback polling.
 - Optional database-native wake-up mechanisms after the portable adaptive loop exists.
 - Android OS wake-up integration beyond storage, such as exact alarms or first-class WorkManager orchestration.
