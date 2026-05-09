@@ -7,6 +7,13 @@ import java.time.Duration
 
 class JobBuilderTest {
     @Test
+    fun `should default shutdown timeout below common Kubernetes grace period`() {
+        val config = KhronaConfig()
+
+        assertEquals(Duration.ofSeconds(25), config.shutdownTimeout)
+    }
+
+    @Test
     fun `should default lockKey to id when policy is FORBID`() {
         val job = JobBuilder("test-job").apply {
             concurrencyPolicy = ConcurrencyPolicy.FORBID

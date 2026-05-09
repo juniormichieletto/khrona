@@ -98,7 +98,7 @@ class KhronaConfig {
     var store: JobStore? = null
     var pollingInterval: java.time.Duration = java.time.Duration.ofMillis(1000)
     var misfireThreshold: java.time.Duration = java.time.Duration.ofSeconds(60)
-    var shutdownTimeout: java.time.Duration = java.time.Duration.ofSeconds(30)
+    var shutdownTimeout: java.time.Duration = java.time.Duration.ofSeconds(25)
     var executionLeaseDuration: java.time.Duration = java.time.Duration.ofMinutes(5)
     var heartbeatInterval: java.time.Duration? = null
     var pollBatchSize: Int = 100

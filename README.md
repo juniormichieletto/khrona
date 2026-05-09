@@ -204,6 +204,44 @@ Persistent stores such as `JdbcJobStore` keep execution state across application
 
 Design long-running handlers to be idempotent, checkpoint progress externally, or split the work into smaller executions. This avoids duplicate side effects when a restarted or reclaimed execution runs again.
 
+### Graceful Shutdown and Cancellation
+`scheduler.stop()` is a suspend function that performs a graceful shutdown:
+
+1. It cancels the scheduler polling loop so no new executions are claimed.
+2. It waits for currently active job handlers to finish.
+3. If active handlers do not finish before `shutdownTimeout`, it cancels the remaining job coroutines.
+4. It releases any still-active executions owned by this scheduler from `CLAIMED` or `RUNNING` back to `PENDING`, so another scheduler can pick them up later.
+
+`shutdownTimeout` defaults to 25 seconds and can be configured on the scheduler:
+
+```kotlin
+val config = Khrona {
+    store = MemoryJobStore()
+    shutdownTimeout(20.seconds)
+}
+```
+
+If you run Khrona in Kubernetes, keep `shutdownTimeout` lower than the pod's `terminationGracePeriodSeconds`. For example, with Kubernetes' common 30 second grace period, a 20-25 second Khrona shutdown timeout leaves time for cancellation handlers, status updates, connection cleanup, and process exit before the container is killed.
+
+Cancellation is cooperative. Timeouts, `ConcurrencyPolicy.REPLACE`, heartbeat loss, and shutdown cancellation all use coroutine cancellation. Handlers that call cancellable suspending APIs such as `delay`, Ktor HTTP clients, or database drivers with coroutine support will receive `CancellationException` and can clean up in `try/finally` or `catch` blocks:
+
+```kotlin
+job("sync-report") {
+    every(15.minutes)
+    timeout = 10.minutes
+
+    execute {
+        try {
+            runReportSync()
+        } finally {
+            closeTemporaryResources()
+        }
+    }
+}
+```
+
+Blocking or non-cooperative code is not forcibly interrupted by coroutine cancellation. For long-running handlers, prefer cancellable suspending APIs, check coroutine cancellation at safe points, and keep side effects idempotent so a released or timed-out execution can be retried safely.
+
 ### Structured Payloads
 Khrona preserves JSON-compatible payload structure when using persistent storage (JDBC). Maps, Lists, strings, numbers, booleans, and nested combinations round-trip through `payload_json`.
 
