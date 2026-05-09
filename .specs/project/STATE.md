@@ -29,11 +29,17 @@
 - [ ] Implement Admin API & Dashboard (v0.4)
 - [ ] Implement Metrics (Micrometer) (v0.4)
 - [ ] Add lock inspection capabilities (v0.4)
+- [ ] Add shutdown/cancellation contract hardening to a future reliability release
+- [ ] Add timezone support, DLQ tooling enhancements, and job pause/disable to future production features
 
 ## Deferred Ideas
 - Payload versioning/evolution (tracked in Future Considerations).
 - Advanced RBAC for Admin API.
 - Dynamic Lock Keys.
+- Shutdown/cancellation contract tests and claimed-before-active edge hardening.
+- Timezone-aware cron scheduling.
+- Dead-letter queue inspection, replay, and cleanup tooling.
+- Job pause/disable support.
 - Cross-database adaptive scheduler delay with bounded fallback polling.
 - Optional database-native wake-up mechanisms after the portable adaptive loop exists.
 - Android OS wake-up integration beyond storage, such as exact alarms or first-class WorkManager orchestration.

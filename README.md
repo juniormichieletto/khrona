@@ -223,7 +223,7 @@ val config = Khrona {
 
 If you run Khrona in Kubernetes, keep `shutdownTimeout` lower than the pod's `terminationGracePeriodSeconds`. For example, with Kubernetes' common 30 second grace period, a 20-25 second Khrona shutdown timeout leaves time for cancellation handlers, status updates, connection cleanup, and process exit before the container is killed.
 
-Cancellation is cooperative. Timeouts, `ConcurrencyPolicy.REPLACE`, heartbeat loss, and shutdown cancellation all use coroutine cancellation. Handlers that call cancellable suspending APIs such as `delay`, Ktor HTTP clients, or database drivers with coroutine support will receive `CancellationException` and can clean up in `try/finally` or `catch` blocks:
+Cancellation is cooperative. Timeouts, `ConcurrencyPolicy.REPLACE`, heartbeat loss, and `scheduler.stop()` timeout cancellation all use coroutine cancellation. A manually triggered execution can also cause an older active execution to be cancelled when the job uses `ConcurrencyPolicy.REPLACE` and the new execution is claimed. Handlers that call cancellable suspending APIs such as `delay`, Ktor HTTP clients, or database drivers with coroutine support will receive `CancellationException` and can clean up in `try/finally` or `catch` blocks:
 
 ```kotlin
 job("sync-report") {
@@ -240,7 +240,7 @@ job("sync-report") {
 }
 ```
 
-Blocking or non-cooperative code is not forcibly interrupted by coroutine cancellation. For long-running handlers, prefer cancellable suspending APIs, check coroutine cancellation at safe points, and keep side effects idempotent so a released or timed-out execution can be retried safely.
+Blocking or non-cooperative code is not forcibly interrupted by coroutine cancellation. For long-running handlers, prefer cancellable suspending APIs. For CPU-bound or loop-based handlers, call `kotlinx.coroutines.ensureActive()` or `yield()` at safe points so cancellation can be observed promptly. Keep side effects idempotent so a released or timed-out execution can be retried safely.
 
 ### Structured Payloads
 Khrona preserves JSON-compatible payload structure when using persistent storage (JDBC). Maps, Lists, strings, numbers, booleans, and nested combinations round-trip through `payload_json`.

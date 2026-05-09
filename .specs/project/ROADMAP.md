@@ -61,8 +61,13 @@
 
 ## v0.5: Hardening
 - [ ] Testkit (Virtual Time)
+- [ ] Focused shutdown and cancellation contract tests
+- [ ] Harden claimed-before-active shutdown edge so newly claimed executions cannot rely only on lease expiry
 - [ ] Documentation & Samples
 - [ ] Performance Tuning
+- [ ] Timezone-aware cron scheduling
+- [ ] Dead-letter queue tooling enhancements for inspection, replay, and cleanup
+- [ ] Job pause/disable support
 - [ ] Cross-Database Adaptive Delay Scheduler
 - [ ] Adaptive scheduler configuration docs
 
@@ -76,5 +81,9 @@
 
 ## Future Considerations
 - **Cross-Database Adaptive Delay Scheduler:** Replace fixed idle polling with a hybrid adaptive loop that sleeps until the next known execution, stale recovery deadline, or a configurable max polling interval. The baseline must work across Memory, H2, PostgreSQL, MySQL, and Oracle without database-specific notifications. Native database wake-up mechanisms may be added later as optional optimizations.
+- **Shutdown contract hardening:** Add focused tests for timeout, shutdown cancellation, cancellation propagation, and the claimed-before-active edge so the documented lifecycle remains enforceable.
+- **Timezone support:** Add timezone-aware cron scheduling while preserving UTC as the portable default behavior.
+- **Dead-letter queue tooling:** Expand current terminal `DEAD_LETTERED` status into operator-friendly inspection, replay, and cleanup workflows.
+- **Job pause/disable:** Allow jobs to be temporarily suppressed without removing their definitions from code or storage.
 - **Android OS wake-up integration:** Android SQLite persists Khrona state, but exact alarms, foreground services, and WorkManager orchestration should remain app-level integration points unless a later Android integration module is justified.
 - **Dynamic Worker Sizing:** Automatically adjust the number of concurrent execution coroutines based on load.

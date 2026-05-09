@@ -1124,6 +1124,10 @@ Khrona does **not** guarantee:
 - transactional improvements and integrations
 - dead-letter tooling enhancements
 - testkit hardening
+- shutdown and cancellation contract tests
+- claimed-before-active shutdown edge hardening
+- timezone-aware cron scheduling
+- job pause/disable support
 - operator ergonomics
 
 ---
@@ -1146,19 +1150,36 @@ The following items are identified for future discussion and refinement:
 ### 29.4 Error Classification
 - Distinguishing between transient failures (retryable) and fatal logic errors (immediate dead-letter) to optimize resource usage.
 
-### 29.5 Backpressure & Rate Limiting
+### 29.5 Shutdown & Cancellation Contract
+- **Lifecycle tests:** Add focused tests that enforce timeout cancellation, `scheduler.stop()` cancellation, handler `CancellationException` propagation, and cooperative cancellation behavior.
+- **Claimed-before-active edge:** Harden or explicitly define the narrow window where an execution has been claimed but the active job coroutine has not yet been registered for shutdown coordination.
+- **Documentation drift:** Keep README lifecycle wording tied to these tests so production shutdown behavior stays auditable.
+
+### 29.6 Timezone-Aware Scheduling
+- Support timezone-aware cron scheduling while preserving UTC as the default and documenting invalid timezone handling.
+- Define how timezone changes interact with persisted jobs and future execution calculation.
+
+### 29.7 Dead-Letter Queue Tooling
+- Expand current `DEAD_LETTERED` execution status into operator-friendly workflows for listing, inspecting payload/error context, replaying, and cleaning up terminal executions.
+- Keep the baseline portable across Memory, H2, PostgreSQL, MySQL, and Oracle stores before adding backend-specific integrations.
+
+### 29.8 Job Pause/Disable
+- Allow a job definition to be temporarily suppressed without removing it from code or persistent storage.
+- Define whether paused jobs skip scheduling, skip claiming, or retain pending executions for later resume.
+
+### 29.9 Backpressure & Rate Limiting
 - Strategies for global or per-job rate limiting to prevent database and worker exhaustion during spikes.
 
-### 29.6 Multi-tenancy
+### 29.10 Multi-tenancy
 - Context propagation for tenant-aware applications (e.g., `TenantId` in `CoroutineContext` or MDC).
 
-### 29.7 Admin API Security
+### 29.11 Admin API Security
 - Role-Based Access Control (RBAC) for the Admin API to distinguish between read-only monitoring and destructive operations (e.g., deleting dead-letter jobs).
 
-### 29.8 Memory Efficiency & History Pruning
+### 29.12 Memory Efficiency & History Pruning
 - **Execution History Growth:** Implement pruning or TTL (Time-To-Live) policies for `JobExecution` records in memory and persistent stores to prevent unbounded memory growth over time.
 - **Eviction Strategy:** Define strategies for archiving or deleting `SUCCESS` and `FAILED` executions to maintain optimal performance for long-running application instances.
 
-### 29.9 Job Isolation & Resilience
+### 29.13 Job Isolation & Resilience
 - **Failure Impact:** Ensure strict isolation of job failures using structured concurrency and supervisor jobs so that individual job crashes never compromise the stability of the host Ktor application.
 - **Resource Limits:** Explore per-job memory or execution time limits to prevent rogue jobs from exhausting system resources.
