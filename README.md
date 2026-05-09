@@ -184,6 +184,26 @@ job("heavy-task") {
 }
 ```
 
+### Long-Running Jobs, Timeouts, and Restarts
+`timeout` is optional. If a job does not set a timeout, Khrona does not enforce a per-execution runtime limit while the application process is alive. The handler can keep running until it completes, fails, the scheduler is stopped, or the coroutine is cancelled by the host application.
+
+For long-running jobs, set a timeout slightly above the expected maximum runtime so a stuck handler does not stay `RUNNING` forever:
+
+```kotlin
+job("long-report") {
+    once()
+    timeout = java.time.Duration.ofHours(21)
+
+    execute {
+        // Expected to complete within about 20 hours
+    }
+}
+```
+
+Persistent stores such as `JdbcJobStore` keep execution state across application restarts. If the application crashes or restarts while a job is `CLAIMED` or `RUNNING`, heartbeats stop, the execution lease eventually expires, and the scheduler can pick the execution up again after restart. This starts the handler again from the beginning; Khrona does not resume from the last line of code that ran.
+
+Design long-running handlers to be idempotent, checkpoint progress externally, or split the work into smaller executions. This avoids duplicate side effects when a restarted or reclaimed execution runs again.
+
 ### Structured Payloads
 Khrona preserves JSON-compatible payload structure when using persistent storage (JDBC). Maps, Lists, strings, numbers, booleans, and nested combinations round-trip through `payload_json`.
 
