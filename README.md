@@ -276,6 +276,8 @@ job("report") {
 }
 ```
 
+Misfire policies apply to persisted executions that already exist in the store. They do not make a newly registered cron job catch up earlier schedule times. For example, if a job with `cron("54 10 * * *")` is first registered at 22:54 UTC, Khrona schedules the next 10:54 UTC occurrence, usually tomorrow. It does not fire immediately unless an execution for today at 10:54 UTC was already persisted and is now late.
+
 Set `MisfirePolicy.IGNORE` when missed executions should be skipped instead:
 
 ```kotlin
