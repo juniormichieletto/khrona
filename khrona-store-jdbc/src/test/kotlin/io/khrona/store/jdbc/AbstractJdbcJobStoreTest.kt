@@ -7,7 +7,9 @@ import kotlinx.coroutines.*
 import org.junit.jupiter.api.*
 import org.junit.jupiter.api.Assertions.*
 import java.time.Duration
+import java.time.Clock
 import java.time.Instant
+import java.time.ZoneOffset
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -69,6 +71,24 @@ abstract class AbstractJdbcJobStoreTest {
         assertNotNull(saved)
         assertTrue(saved?.trigger is CronTrigger)
         assertEquals("0 * * * *", (saved?.trigger as CronTrigger).expression)
+    }
+
+    @Test
+    fun `should save and get job with timezone cron trigger`() = runBlocking {
+        val job = JobDefinition(
+            id = "cron-zone-job",
+            handler = { },
+            trigger = CronTrigger("0 9 * * *", timeZone = "America/New_York")
+        )
+
+        store.saveJob(job)
+        val saved = store.getJob("cron-zone-job")
+
+        assertNotNull(saved)
+        assertTrue(saved?.trigger is CronTrigger)
+        val trigger = saved?.trigger as CronTrigger
+        assertEquals("0 9 * * *", trigger.expression)
+        assertEquals("America/New_York", trigger.timeZone)
     }
 
     @Test
@@ -298,6 +318,71 @@ abstract class AbstractJdbcJobStoreTest {
             val times = executionLog.values.sorted()
             val delta = times.last() - times.first()
             assertTrue(delta < 2_000, "Jobs should have started in parallel, but delta was ${delta}ms")
+        } finally {
+            schedulers.forEach { it.stop() }
+        }
+    }
+
+    @Test
+    fun `should schedule timezone-aware cron jobs once across multiple instances`() = runBlocking {
+        val instanceCount = 4
+        val testRunId = UUID.randomUUID()
+        val clock = Clock.fixed(Instant.parse("2030-01-15T13:30:00Z"), ZoneOffset.UTC)
+        val jobs = listOf(
+            JobDefinition(
+                id = "cron-utc-$testRunId",
+                trigger = CronTrigger("0 9 * * *"),
+                handler = {}
+            ) to Instant.parse("2030-01-16T09:00:00Z"),
+            JobDefinition(
+                id = "cron-new-york-$testRunId",
+                trigger = CronTrigger("0 9 * * *", timeZone = "America/New_York"),
+                handler = {}
+            ) to Instant.parse("2030-01-15T14:00:00Z"),
+            JobDefinition(
+                id = "cron-tokyo-$testRunId",
+                trigger = CronTrigger("0 9 * * *", timeZone = "Asia/Tokyo"),
+                handler = {}
+            ) to Instant.parse("2030-01-16T00:00:00Z")
+        )
+
+        val schedulers = (1..instanceCount).map {
+            Scheduler(
+                KhronaConfig().apply {
+                    this.store = this@AbstractJdbcJobStoreTest.store
+                    pollingInterval = Duration.ofMillis(100)
+                },
+                CoroutineScope(Dispatchers.Default + SupervisorJob()),
+                clock
+            )
+        }
+
+        try {
+            schedulers.forEach { scheduler ->
+                jobs.forEach { (job, _) -> scheduler.registerJob(job) }
+            }
+
+            jobs.forEach { (job, expectedScheduledAt) ->
+                val saved = store.getJob(job.id)
+                assertNotNull(saved)
+                assertTrue(saved?.trigger is CronTrigger)
+                assertEquals((job.trigger as CronTrigger).timeZone, (saved?.trigger as CronTrigger).timeZone)
+
+                val executionId = UUID.nameUUIDFromBytes("${job.id}:$expectedScheduledAt".toByteArray())
+                val execution = store.getExecution(executionId)
+                assertNotNull(execution, "Expected one deterministic first execution for ${job.id}")
+                assertEquals(job.id, execution?.jobId)
+                assertEquals(expectedScheduledAt, execution?.scheduledAt)
+            }
+
+            val persistedFirstExecutions = store.listEligibleExecutions(
+                Instant.parse("2030-01-17T00:00:00Z"),
+                jobs.size * instanceCount
+            ).filter { execution ->
+                jobs.any { (job, _) -> job.id == execution.jobId }
+            }
+
+            assertEquals(jobs.size, persistedFirstExecutions.size)
         } finally {
             schedulers.forEach { it.stop() }
         }

@@ -115,4 +115,99 @@ class MisfireTest {
         val expectedNext = trigger.nextExecutionTime(now)
         assertEquals(expectedNext, nextExec?.scheduledAt)
     }
+
+    @Test
+    fun `cron misfire should fire now by default`() = runTest {
+        val store = MockJobStore()
+        val clock = SchedulerTest.TestClock(testScheduler)
+        val now = Instant.now(clock)
+
+        val config = KhronaConfig().apply {
+            this.store = store
+            this.misfireThreshold = Duration.ofSeconds(30)
+            job("misfire-cron-default") {
+                cron("0 * * * *")
+                execute {}
+            }
+        }
+
+        val scheduler = Scheduler(config, this, clock)
+
+        val execution = JobExecution(
+            jobId = "misfire-cron-default",
+            scheduledAt = now.minus(Duration.ofHours(1))
+        )
+        store.saveExecution(execution)
+        store.saveJob(config.jobs.first())
+
+        scheduler.pollAndExecute()
+
+        assertEquals(ExecutionStatus.CLAIMED, store.getExecution(execution.id)?.status)
+    }
+
+    @Test
+    fun `cron misfire should fire now when policy is explicitly FIRE_NOW`() = runTest {
+        val store = MockJobStore()
+        val clock = SchedulerTest.TestClock(testScheduler)
+        val now = Instant.now(clock)
+
+        val config = KhronaConfig().apply {
+            this.store = store
+            this.misfireThreshold = Duration.ofSeconds(30)
+            job("misfire-cron-fire-now") {
+                cron("0 * * * *")
+                misfirePolicy = MisfirePolicy.FIRE_NOW
+                execute {}
+            }
+        }
+
+        val scheduler = Scheduler(config, this, clock)
+
+        val execution = JobExecution(
+            jobId = "misfire-cron-fire-now",
+            scheduledAt = now.minus(Duration.ofHours(1))
+        )
+        store.saveExecution(execution)
+        store.saveJob(config.jobs.first())
+
+        scheduler.pollAndExecute()
+
+        assertEquals(ExecutionStatus.CLAIMED, store.getExecution(execution.id)?.status)
+    }
+
+    @Test
+    fun `timezone cron misfire should ignore and schedule next run in configured timezone`() = runTest {
+        val store = MockJobStore()
+        val clock = SchedulerTest.TestClock(testScheduler)
+        val now = Instant.now(clock)
+
+        val config = KhronaConfig().apply {
+            this.store = store
+            this.misfireThreshold = Duration.ofSeconds(30)
+            job("misfire-cron-new-york") {
+                cron("0 9 * * *", "America/New_York")
+                misfirePolicy = MisfirePolicy.IGNORE
+                execute {}
+            }
+        }
+
+        val scheduler = Scheduler(config, this, clock)
+
+        val execution = JobExecution(
+            jobId = "misfire-cron-new-york",
+            scheduledAt = now.minus(Duration.ofHours(1))
+        )
+        store.saveExecution(execution)
+        store.saveJob(config.jobs.first())
+
+        scheduler.pollAndExecute()
+
+        assertEquals(ExecutionStatus.MISFIRED, store.getExecution(execution.id)?.status)
+
+        val nextExec = store.executions.values.find {
+            it.jobId == "misfire-cron-new-york" && it.status == ExecutionStatus.PENDING
+        }
+        val expectedNext = CronTrigger("0 9 * * *", timeZone = "America/New_York").nextExecutionTime(now)
+        assertEquals(expectedNext, nextExec?.scheduledAt)
+    }
 }

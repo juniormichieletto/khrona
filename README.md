@@ -12,7 +12,7 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
 - **🛠️ Fluent DSL:** Define jobs and schedules using a clean, Kotlin-first DSL.
 - **⏱️ Flexible Triggers:**
   - **Interval:** Run jobs at fixed durations (e.g., every 5 minutes).
-  - **Cron:** Standard Unix-format cron expressions (`* * * * *`).
+  - **Cron:** Standard Unix-format cron expressions (`* * * * *`) with optional per-job timezones.
 - **🛡️ Reliability & Resilience:**
   - **Retry Policies:** Configurable exponential backoff with jitter.
   - **Concurrency Control:** Manage overlapping executions with `FORBID` or `REPLACE` policies.
@@ -266,6 +266,18 @@ execute { payload ->
 ### Misfire Policies
 Define what happens if a job misses its scheduled time (e.g., due to downtime).
 
+`MisfirePolicy.FIRE_NOW` is the default. When an execution is older than `misfireThreshold`, Khrona runs that delayed execution as soon as it is claimed:
+
+```kotlin
+job("report") {
+    cron("0 0 * * *")
+    // misfirePolicy defaults to MisfirePolicy.FIRE_NOW
+    execute { ... }
+}
+```
+
+Set `MisfirePolicy.IGNORE` when missed executions should be skipped instead:
+
 ```kotlin
 job("report") {
     cron("0 0 * * *")
@@ -273,6 +285,8 @@ job("report") {
     execute { ... }
 }
 ```
+
+For cron jobs, `IGNORE` marks the delayed execution as `MISFIRED` and schedules the next cron occurrence after the current time. If the cron trigger has a timezone, that next occurrence is calculated using the configured timezone and then stored as a UTC `Instant`.
 
 ### Correlation ID & Observability
 Khrona automatically manages `correlationId` propagation via Slf4j MDC, making it easy to trace a specific job execution across your logs.
@@ -320,11 +334,32 @@ runBlocking {
 ### Cron Trigger (Unix Format)
 Khrona uses the standard **Unix 5-field format**: `min hour dom month dow`.
 
-> **Note:** All cron expressions are evaluated in **UTC** time.
+`cron(expression)` is evaluated in **UTC** by default:
+
+```kotlin
+job("daily-report") {
+    cron("0 9 * * *")
+    execute { ... }
+}
+```
+
+Pass a `ZoneId` when the cron expression should follow a local wall-clock schedule:
+
+```kotlin
+import java.time.ZoneId
+
+job("weekday-report") {
+    cron("0 9 * * 1-5", ZoneId.of("America/New_York"))
+    execute { ... }
+}
+```
 
 - `* * * * *` : Every minute
 - `0 * * * *` : Every hour
 - `30 5 * * 1` : Every Monday at 05:30 UTC
+- `0 9 * * 1-5` with `ZoneId.of("America/New_York")` : Every weekday at 09:00 New York local time
+
+Khrona still stores and compares scheduled executions as UTC `Instant`s. The timezone only controls how cron wall-clock fields are interpreted before the next run is converted back to an `Instant`. Around daylight saving changes, schedules follow the local wall-clock rules for the configured zone; skipped or repeated local times use cron-utils' `ZonedDateTime` behavior.
 
 ### Interval Trigger
 Use Kotlin's `Duration` for human-readable intervals:

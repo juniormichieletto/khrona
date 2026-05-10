@@ -1,6 +1,7 @@
 package io.khrona.core
 
 import java.time.Duration
+import java.time.ZoneId
 
 class JobBuilder(val id: String) {
     var description: String? = null
@@ -54,6 +55,21 @@ class JobBuilder(val id: String) {
     fun cron(expression: String) {
         if (this.trigger != null) throw IllegalStateException("Trigger already defined for job $id")
         this.trigger = CronTrigger(expression, id)
+    }
+
+    /**
+     * Defines a cron trigger evaluated in the provided [zoneId].
+     */
+    fun cron(expression: String, zoneId: ZoneId) {
+        cron(expression, zoneId.id)
+    }
+
+    /**
+     * Defines a cron trigger evaluated in the provided IANA timezone ID.
+     */
+    fun cron(expression: String, timeZone: String) {
+        if (this.trigger != null) throw IllegalStateException("Trigger already defined for job $id")
+        this.trigger = CronTrigger(expression, id, timeZone)
     }
 
     fun execute(block: JobHandler) {

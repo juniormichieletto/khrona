@@ -34,6 +34,7 @@ class KhronaKtorTest {
 
             val plugin = plugin(Khrona)
             assertEquals(Duration.ofMillis(1), plugin.scheduler.config.pollingInterval)
+            assertEquals(listOf("test-job"), plugin.scheduler.config.jobs.map { it.id })
         }
     }
 

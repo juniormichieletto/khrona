@@ -20,5 +20,7 @@ suspend fun Application.scheduler(block: KhronaConfig.() -> Unit) {
     
     tempConfig.jobs.forEach { job ->
         plugin.scheduler.registerJob(job)
+        plugin.scheduler.config.jobs.removeAll { it.id == job.id }
+        plugin.scheduler.config.jobs.add(job)
     }
 }

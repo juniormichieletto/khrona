@@ -2,8 +2,10 @@ package io.khrona.core
 
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.time.Duration
+import java.time.ZoneId
 
 class JobBuilderTest {
     @Test
@@ -56,6 +58,17 @@ class JobBuilderTest {
         }.build()
         
         assertEquals("custom-lock", job.lockKey)
+    }
+
+    @Test
+    fun `cron DSL should support zone id`() {
+        val job = JobBuilder("test-job").apply {
+            cron("0 9 * * *", ZoneId.of("America/New_York"))
+            execute {}
+        }.build()
+
+        assertTrue(job.trigger is CronTrigger)
+        assertEquals("America/New_York", (job.trigger as CronTrigger).timeZone)
     }
 
     @Test

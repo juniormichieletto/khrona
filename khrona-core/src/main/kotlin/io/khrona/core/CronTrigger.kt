@@ -13,7 +13,11 @@ import java.time.ZonedDateTime
 
 @Serializable
 @SerialName("cron")
-class CronTrigger(val expression: String, val context: String? = null) : Trigger {
+class CronTrigger(
+    val expression: String,
+    val context: String? = null,
+    val timeZone: String = "UTC"
+) : Trigger {
     init {
         // Fast-fail: Validate the expression immediately
         try {
@@ -21,6 +25,13 @@ class CronTrigger(val expression: String, val context: String? = null) : Trigger
         } catch (e: Exception) {
             val prefix = if (context != null) "Job '$context' has an invalid" else "Invalid"
             throw IllegalArgumentException("$prefix Unix cron expression '$expression': ${e.message}", e)
+        }
+
+        try {
+            ZoneId.of(timeZone)
+        } catch (e: Exception) {
+            val prefix = if (context != null) "Job '$context' has an invalid" else "Invalid"
+            throw IllegalArgumentException("$prefix time zone '$timeZone': ${e.message}", e)
         }
     }
 
@@ -32,9 +43,11 @@ class CronTrigger(val expression: String, val context: String? = null) : Trigger
     private val cron = lazy { parser.value.parse(expression) }
     @Transient
     private val executionTime = lazy { ExecutionTime.forCron(cron.value) }
+    @Transient
+    private val zoneId = lazy { ZoneId.of(timeZone) }
 
     override fun nextExecutionTime(after: Instant): Instant? {
-        val zdt = ZonedDateTime.ofInstant(after, ZoneId.of("UTC"))
+        val zdt = ZonedDateTime.ofInstant(after, zoneId.value)
         return executionTime.value.nextExecution(zdt)
             .map { it.toInstant() }
             .orElse(null)
