@@ -52,7 +52,7 @@ graph TD
     Workers <--> Store
 ```
 
-> For a detailed breakdown of the execution flow and sequence diagrams, see the [Full Architecture Document](.specs/codebase/ARCHITECTURE.md).
+> For a detailed breakdown of the execution flow and sequence diagrams, see the [Full Architecture Document](.specs/codebase/ARCHITECTURE.md). For scheduler and database load guidance, see the [Performance Guide](.specs/codebase/PERFORMANCE.md).
 
 ## Installation
 
