@@ -1,6 +1,7 @@
 # ROADMAP — Khrona
 
 ## Next Tasks
+- [ ] Implement Redis Store (v0.7)
 - [ ] Implement Android SQLite Store (v0.6)
 - [ ] Implement Admin API & Dashboard (v0.4)
 - [ ] Implement Metrics (Micrometer/OpenTelemetry) (v0.4)
@@ -79,6 +80,14 @@
 - [ ] Add versioned schema and migrations
 - [ ] Add Android SQLite store contract tests
 - [ ] Document Android lifecycle and WorkManager integration boundaries
+
+## v0.7: Redis Store
+- Implementation plan: `.specs/features/v0.7-redis-store/`
+- [ ] Add `khrona-store-redis` module
+- [ ] Implement Redis-backed `JobStore`
+- [ ] Add atomic Redis claiming, heartbeat, recovery, and lock semantics
+- [ ] Add Redis Testcontainers integration coverage
+- [ ] Document Redis persistence, eviction, namespace, and cleanup tradeoffs
 
 ## Future Considerations
 - **Cross-Database Adaptive Delay Scheduler:** Replace fixed idle polling with a hybrid adaptive loop that sleeps until the next known execution, stale recovery deadline, or a configurable max polling interval. The baseline must work across Memory, H2, PostgreSQL, MySQL, and Oracle without database-specific notifications. Native database wake-up mechanisms may be added later as optional optimizations.
