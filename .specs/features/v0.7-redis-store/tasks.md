@@ -43,12 +43,21 @@
 - [ ] **Task 6.3:** Verify `MisfirePolicy.FIRE_NOW` and `IGNORE` behavior using Redis.
 - [ ] **Task 6.4:** Verify recurring next-run persistence after success and terminal failure.
 
-## Phase 7: Documentation and Operations
+## Phase 7: Production Hardening
 
-- [ ] **Task 7.1:** Update README with Redis dependency/setup example.
-- [ ] **Task 7.2:** Update architecture docs to include `RedisJobStore`.
-- [ ] **Task 7.3:** Add Redis performance and operational guidance covering persistence, eviction policies, namespaces, cleanup, and connection management.
-- [ ] **Task 7.4:** Document Redis durability tradeoffs compared with JDBC.
+- [ ] **Task 7.1:** Implement `RedisJobStoreConfig` with timeouts, pool sizing, and retry settings.
+- [ ] **Task 7.2:** Implement Redis AUTH and TLS support.
+- [ ] **Task 7.3:** Implement `KhronaRedisOomException` and fail-fast command handling.
+- [ ] **Task 7.4:** Implement `AutoCloseable` for the store to ensure clean connection pool shutdown.
+- [ ] **Task 7.5:** Add logging for Lua script errors and connection failures.
+- [ ] **Task 7.6:** (Optional) Add a basic observability interface for command latency.
+
+## Phase 8: Documentation and Operations
+
+- [ ] **Task 8.1:** Update README with Redis dependency/setup example.
+- [ ] **Task 8.2:** Update architecture docs to include `RedisJobStore`.
+- [ ] **Task 8.3:** Add Redis performance and operational guidance covering persistence, eviction policies, namespaces, cleanup, and connection management.
+- [ ] **Task 8.4:** Document Redis durability tradeoffs compared with JDBC.
 
 ## Verification
 

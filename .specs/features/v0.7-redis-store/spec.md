@@ -29,6 +29,12 @@ This feature will add a Redis-backed implementation of the `JobStore` SPI so Khr
 - **REQ-RS10: Bounded Operations:** Eligible execution listing must respect `pollBatchSize` and avoid scanning the full keyspace on each scheduler poll.
 - **REQ-RS11: Cleanup Guidance:** Documentation must explain how completed, misfired, failed, and dead-lettered executions are retained or cleaned up.
 - **REQ-RS12: Test Coverage:** Add Redis store contract tests using Testcontainers Redis and shared behavior tests comparable to Memory and JDBC.
+- **REQ-RS13: Connection Resilience:** Support connection pooling, command timeouts, and reconnection strategies.
+- **REQ-RS14: Observability:** Provide hooks or logging for command latency, connection errors, and pool health.
+- **REQ-RS15: Security:** Support Redis AUTH and TLS configuration for production environments.
+- **REQ-RS16: Graceful Shutdown:** Implement a clean shutdown mechanism to drain and close Redis connections.
+- **REQ-RS17: Failure Propagation:** Fail fast with specific exceptions when Redis is unavailable or returns OOM errors.
+- **REQ-RS18: Configuration Depth:** Expose timeouts, pool sizes, and retry settings in the store configuration.
 
 ## Non-Goals
 

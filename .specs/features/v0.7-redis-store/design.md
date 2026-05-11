@@ -99,6 +99,31 @@ Use the same JSON-compatible payload conversion behavior as JDBC:
 
 Job definitions should serialize triggers, policies, lock keys, timeout, retry policy, and metadata. Handlers remain transient and are supplied by local scheduler registration as they are today.
 
+## Production Hardening
+
+### Resilience and Connection Management
+The Redis store should use a client that supports connection pooling (e.g., Lettuce or Jedis). The configuration must expose:
+- **Connection Timeout:** Time to wait for a connection to be established.
+- **Command Timeout:** Time to wait for a specific Redis command to return.
+- **Pool Sizing:** Min/Max idle and active connections.
+- **Reconnection Policy:** Exponential backoff for lost connections.
+
+### Observability
+- **Logging:** Use SLF4J to log connection issues, command failures, and Lua script errors.
+- **Metrics:** Provide an optional listener/interceptor interface so users can plug in Micrometer or OpenTelemetry to track command latency and pool usage.
+
+### Security
+- **AUTH:** Support password and username-based authentication (Redis 6+ ACLs).
+- **TLS:** Support encrypted connections with configurable trust stores.
+
+### Error Handling
+- **OOM:** Redis `OOM command not allowed` errors must be caught and propagated as a specific `KhronaRedisOomException` so applications can react.
+- **Fail-Fast:** If Redis is down, the store should not block indefinitely but fail the current operation after the command timeout.
+
+### Cleanup and Backpressure
+- **Cleanup:** Implement an optional periodic cleanup task or provide clear scripts for deleting old terminal executions.
+- **Backpressure:** The store relies on the scheduler's `pollBatchSize` to bound work, but the Redis client pool acts as the physical backpressure boundary for concurrent store operations.
+
 ## Durability and Retention
 
 Redis persistence depends on deployment configuration. The documentation must explain that:
