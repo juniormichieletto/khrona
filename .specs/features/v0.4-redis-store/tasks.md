@@ -1,39 +1,60 @@
 # Tasks: v0.4 - Redis Store
 
+## Current Implementation Status
+
+Last updated after the first Redis implementation slice.
+
+Implemented and verified:
+- `khrona-store-redis` module is included in Gradle.
+- Lettuce Redis client dependency is configured.
+- Redis Testcontainers test harness is in place.
+- `RedisJobStore` supports the shared `JobStore` contract for job persistence, execution persistence, bounded eligible lookup, claiming, heartbeat, stale recovery, lock inspection, status updates, and structured payload round trips.
+- Concurrent claim contention test proves only one worker wins a pending execution claim.
+- Unsupported payload values fail fast like JDBC.
+- `./gradlew clean test` passes with the Redis module included.
+
+Important caveats:
+- `claimExecution` currently uses a Redis `SET NX` lease guard plus record/index updates. It passes contention tests, but Task 3.3 remains open because the full Lua script contract still needs to move ownership, lease, and index cleanup into one atomic Redis operation.
+- `supersedeExecutionsByLockKey` is functional for the current store contract but Task 5.2 remains open because it is not yet implemented as an atomic Redis script with dedicated tests.
+- Redis multi-scheduler behavior, namespace isolation, retry/DLQ/misfire scenarios, and README/operations docs are still pending.
+
+Next resume step:
+- Start with Task 2.4 or Task 3.3. Recommended TDD path: add the namespace isolation test first because it is small and should pass with the current namespace model, then add a failing Lua-contract test for `claimExecution` atomic index cleanup before replacing the current `SET NX` guarded implementation.
+
 ## Phase 1: Module and Client Setup
 
-- [ ] **Task 1.1:** Add `khrona-store-redis` to Gradle settings.
-- [ ] **Task 1.2:** Add Lettuce Redis client dependency (async/coroutine support, TLS/AUTH, command timeouts).
-- [ ] **Task 1.3:** Add Redis Testcontainers dependency and test fixture setup.
-- [ ] **Task 1.4:** Define `RedisJobStore` public constructor/configuration, including namespace and resource ownership.
-- [ ] **Task 1.5:** Create failing `RedisJobStoreContract` test against empty implementation.
+- [x] **Task 1.1:** Add `khrona-store-redis` to Gradle settings.
+- [x] **Task 1.2:** Add Lettuce Redis client dependency (async/coroutine support, TLS/AUTH, command timeouts).
+- [x] **Task 1.3:** Add Redis Testcontainers dependency and test fixture setup.
+- [x] **Task 1.4:** Define `RedisJobStore` public constructor/configuration, including namespace and resource ownership.
+- [x] **Task 1.5:** Create failing `RedisJobStoreContract` test against empty implementation.
 
 ## Phase 2: Redis Data Model
 
-- [ ] **Task 2.1:** Define key namespace conventions for jobs, executions, pending index, lease indexes, status indexes, and lock indexes.
-- [ ] **Task 2.2:** Implement job definition save/get/list operations.
-- [ ] **Task 2.3:** Implement execution serialization using the same structured JSON payload behavior as JDBC.
+- [x] **Task 2.1:** Define key namespace conventions for jobs, executions, pending index, lease indexes, status indexes, and lock indexes.
+- [x] **Task 2.2:** Implement job definition save/get/list operations.
+- [x] **Task 2.3:** Implement execution serialization using the same structured JSON payload behavior as JDBC.
 - [ ] **Task 2.4:** Add namespace isolation tests using two stores against one Redis instance.
-- [ ] **Task 2.5:** Document index cleanup rules for each status transition (pending, claimed, running, lock, status sets).
+- [x] **Task 2.5:** Document index cleanup rules for each status transition (pending, claimed, running, lock, status sets).
 
 ## Phase 3: Execution Queue and Claiming
 
-- [ ] **Task 3.1:** Implement `saveExecution` with deterministic-id upsert behavior and pending sorted-set indexing.
-- [ ] **Task 3.2:** Implement bounded `listEligibleExecutions(now, limit)` using sorted-set score lookup.
+- [x] **Task 3.1:** Implement `saveExecution` with deterministic-id upsert behavior and pending sorted-set indexing.
+- [x] **Task 3.2:** Implement bounded `listEligibleExecutions(now, limit)` using sorted-set score lookup.
 - [ ] **Task 3.3:** Implement atomic `claimExecution` Lua script with ownership, lease updates, and index cleanup.
-- [ ] **Task 3.4:** Add concurrent claim contention tests proving only one worker claims a pending execution.
+- [x] **Task 3.4:** Add concurrent claim contention tests proving only one worker claims a pending execution.
 - [ ] **Task 3.5:** Add multi-scheduler tests proving interval, cron, one-time, and manual executions are not duplicated.
 
 ## Phase 4: Lease, Heartbeat, and Recovery
 
-- [ ] **Task 4.1:** Implement heartbeat updates with owner/status validation.
-- [ ] **Task 4.2:** Implement `resetExpiredExecutions(now)` using lease sorted sets.
+- [x] **Task 4.1:** Implement heartbeat updates with owner/status validation.
+- [x] **Task 4.2:** Implement `resetExpiredExecutions(now)` using lease sorted sets.
 - [ ] **Task 4.3:** Add tests for running execution recovery after heartbeat stops.
 - [ ] **Task 4.4:** Add tests for configurable lease and heartbeat behavior with Redis.
 
 ## Phase 5: Locking and Replacement
 
-- [ ] **Task 5.1:** Implement `isLockHeld(lockKey, excludeExecutionId)` using Redis lock indexes.
+- [x] **Task 5.1:** Implement `isLockHeld(lockKey, excludeExecutionId)` using Redis lock indexes.
 - [ ] **Task 5.2:** Implement `supersedeExecutionsByLockKey` atomically.
 - [ ] **Task 5.3:** Add tests for `FORBID` overlap prevention across scheduler instances.
 - [ ] **Task 5.4:** Add tests for `REPLACE` superseding active executions without superseding the newly claimed execution.
@@ -64,12 +85,12 @@
 
 ## Verification
 
-- [ ] Redis store passes shared `JobStore` behavior tests.
+- [x] Redis store passes shared `JobStore` behavior tests.
 - [ ] Multi-instance scheduler tests pass against Redis.
 - [ ] Namespace isolation works.
-- [ ] Bounded polling does not scan all execution keys.
-- [ ] Atomic claiming prevents duplicate execution.
-- [ ] Heartbeat and stale recovery match existing scheduler semantics.
-- [ ] Structured payload behavior matches JDBC.
-- [ ] Memory and JDBC store tests remain green.
-- [ ] Full suite passes with `./gradlew clean test`.
+- [x] Bounded polling does not scan all execution keys.
+- [x] Atomic claiming prevents duplicate execution.
+- [x] Heartbeat and stale recovery match existing scheduler semantics.
+- [x] Structured payload behavior matches JDBC.
+- [x] Memory and JDBC store tests remain green.
+- [x] Full suite passes with `./gradlew clean test`.

@@ -8,6 +8,7 @@ include("khrona-core")
 include("khrona-ktor")
 include("khrona-store-memory")
 include("khrona-store-jdbc")
+include("khrona-store-redis")
 
 nmcpSettings {
     centralPortal {
