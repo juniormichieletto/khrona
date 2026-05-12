@@ -14,6 +14,7 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.slf4j.simple)
     testImplementation(libs.h2)
+    testImplementation(testFixtures(project(":khrona-core")))
     testImplementation(libs.testcontainers.postgresql)
     testImplementation(libs.testcontainers.mysql)
     testImplementation(libs.testcontainers.oracle)

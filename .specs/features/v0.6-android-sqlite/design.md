@@ -110,6 +110,10 @@ Reuse shared `JobStore` contract tests where possible. Android-specific testing 
 
 Implementation should choose the least fragile test setup that works with the Gradle structure. Options include Android instrumented tests, Robolectric tests, or a split where shared SQL behavior is tested on JVM and Android integration is tested separately.
 
+Phase 1 implementation starts by extracting portable `JobStore` contract tests into `khrona-core` test fixtures. Store modules should consume this fixture so Memory, JDBC, and Android SQLite prove the same baseline behavior before adding backend-specific coverage.
+
+The Android module must not be added to `settings.gradle.kts` until the Android build stack is selected and available in CI/local development. The current repo root applies JVM conventions to all subprojects, so introducing an Android library module also requires splitting the root Gradle convention so Android subprojects are not configured as plain JVM libraries.
+
 ## Expected Tradeoffs
 
 - Android support expands Khrona's use cases but introduces a new build target and test environment.

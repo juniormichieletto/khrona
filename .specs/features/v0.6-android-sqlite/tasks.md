@@ -4,8 +4,14 @@
 
 - [ ] **Task 1.1:** Add `khrona-store-android-sqlite` to Gradle settings with an Android-compatible library setup.
 - [ ] **Task 1.2:** Choose and document the Android SQLite access layer after verifying compatibility with the current Gradle/Kotlin setup.
-- [ ] **Task 1.3:** Extract or reuse shared `JobStore` contract tests so Memory, JDBC, and Android SQLite can be compared consistently.
+- [x] **Task 1.3:** Extract or reuse shared `JobStore` contract tests so Memory, JDBC, and Android SQLite can be compared consistently.
 - [ ] **Task 1.4:** Add an Android SQLite test harness that can create, close, reopen, and clean an isolated database.
+
+### Phase 1 Notes
+
+- Shared `JobStore` contract tests now live in `khrona-core` test fixtures.
+- `khrona-store-memory` and `khrona-store-jdbc` consume the shared contract, giving `khrona-store-android-sqlite` a concrete compatibility target when the module is added.
+- The Android module setup remains blocked on selecting the Android SQLite/build stack and splitting the root Gradle convention so Android modules are not configured as plain JVM subprojects.
 
 ## Phase 2: Schema and Migrations
 

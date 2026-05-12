@@ -3,6 +3,7 @@ package io.khrona.store.jdbc
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import io.khrona.core.*
+import io.khrona.core.testing.JobStoreContract
 import kotlinx.coroutines.*
 import org.junit.jupiter.api.*
 import org.junit.jupiter.api.Assertions.*
@@ -15,13 +16,15 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import javax.sql.DataSource
 
-abstract class AbstractJdbcJobStoreTest {
+abstract class AbstractJdbcJobStoreTest : JobStoreContract {
 
     protected lateinit var dataSource: HikariDataSource
     protected lateinit var store: JdbcJobStore
     private val log = org.slf4j.LoggerFactory.getLogger(AbstractJdbcJobStoreTest::class.java)
 
     abstract fun createDataSource(): HikariDataSource
+
+    override fun createStore(): JobStore = store
 
     @BeforeEach
     fun setup() {
