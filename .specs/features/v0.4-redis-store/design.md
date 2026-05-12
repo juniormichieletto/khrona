@@ -1,4 +1,4 @@
-# Design: v0.7 - Redis Store
+# Design: v0.4 - Redis Store
 
 ## Problem
 
@@ -17,7 +17,7 @@ khrona-store-redis
 The module should depend on:
 
 - `khrona-core`
-- a coroutine-friendly Redis client selected during implementation
+- **Lettuce** as the coroutine-friendly Redis client (async APIs, command timeouts, TLS/AUTH support, production maturity)
 - Kotlin serialization already used by Khrona
 
 `khrona-core`, `khrona-store-memory`, `khrona-store-jdbc`, and `khrona-ktor` must not depend on Redis.
@@ -68,6 +68,36 @@ Critical transitions should use Lua scripts or Redis transactions so each operat
 
 Claiming must remove the execution from `pending`, update ownership/lease fields, and add it to the claimed lease index atomically. If the execution is no longer pending, claim returns false.
 
+### Lua Script Contracts
+
+Critical atomic operations require Lua scripts with explicit input/output contracts:
+
+**claimExecution(executionId, workerId, expiresAt)**
+- Input: execution ID, worker ID, expiration timestamp
+- Checks: execution exists in pending set, not already claimed
+- On success: removes from pending, sets CLAIMED with workerId/expiresAt, adds to claimed lease index, returns true
+- On failure: returns false (already claimed or not found)
+
+**resetExpiredExecutions(now)**
+- Input: current timestamp
+- Scans: claimed and running lease indexes for scores < now
+- For each expired: sets status to PENDING, clears workerId/expiresAt, removes from claimed/running indexes, adds to pending index
+- Returns: count of reset executions
+
+**supersedeExecutionsByLockKey(lockKey, newExecutionId)**
+- Input: lock key, new execution ID to preserve
+- Scans: active executions for this lock key
+- For each: sets status to SUPERSEDED, removes from claimed/running indexes, updates supersedingBy field
+- Preserves: new execution (must already be claimed before this script runs)
+- Returns: count of superseded executions
+
+**saveExecution(execution) - deterministic upsert**
+- Input: execution JSON with deterministic ID
+- Checks: if execution exists, compare createdAt to reject non-deterministic updates
+- On insert: add to pending index
+- On reject: return conflict error
+- Returns: inserted or conflict
+
 ## Lease, Heartbeat, and Recovery
 
 Khrona should keep explicit execution state in Redis rather than relying only on Redis key TTLs. TTLs may be useful for cleanup, but correctness should come from stored status and sorted-set lease indexes.
@@ -75,15 +105,26 @@ Khrona should keep explicit execution state in Redis rather than relying only on
 Heartbeat should:
 
 - verify the execution is still `CLAIMED` or `RUNNING`
-- verify the worker still owns it when ownership is available
+- note: current `JobStore.heartbeat(id, leaseDuration)` SPI has no workerId parameter, so ownership is inferred by execution status and ID only (matching Memory/JDBC behavior)
 - update `expiresAt`
 - move the execution score in the claimed/running lease index
 
 `resetExpiredExecutions(now)` should find expired claimed/running ids by sorted-set score and reset them to `PENDING`, clearing worker and lease fields.
 
-## Lock Semantics
+## Index Cleanup Rules
 
-The store must preserve existing lock-key behavior:
+Every status transition must explicitly manage index membership:
+
+| Transition | Pending | Claimed | Running | Lock Indexes | Status Indexes |
+|------------|---------|---------|---------|--------------|----------------|
+| PENDING → CLAIMED | Remove | Add | - | Update if lockKey | Add to CLAIMED set |
+| CLAIMED → RUNNING | - | - | Add | - | Add to RUNNING set |
+| RUNNING → PENDING (reset) | Add | - | Remove | Update if lockKey | Move sets |
+| CLAIMED/RUNNING → SUPERSEDED | - | Remove | Remove | Clear lock ownership | Update terminal status |
+| Any → COMPLETE/FAILED/DEAD_LETTER | - | Remove | Remove | Clear lock ownership | Add to terminal set |
+| Retry created | Add | - | - | Update if lockKey | Add to PENDING set |
+
+The Lua scripts for claim, reset, supersede, and terminal status must handle index cleanup atomically with the status change.
 
 - `FORBID` should prevent overlapping active executions for the same lock key.
 - `REPLACE` should supersede active executions sharing the lock key after the new execution is claimed.
@@ -132,7 +173,9 @@ Redis persistence depends on deployment configuration. The documentation must ex
 - Memory eviction policies can delete scheduler keys if Redis is not configured with enough memory or an appropriate policy.
 - Completed execution retention needs a clear cleanup strategy to avoid unbounded memory growth.
 
-The first implementation should include conservative defaults and document any retention behavior. If automatic cleanup is added, it must not delete pending, claimed, running, retry, or dead-letter records unexpectedly.
+**v0.4 Retention Decision:** Ship with manual cleanup documentation and scripts only. Do not include automatic cleanup API. This avoids accidental data loss and keeps v0.4 scope focused. Document the recommended cleanup scripts for removing old COMPLETE/FAILED terminal records after retention period.
+
+The first implementation should include conservative defaults and document any retention behavior. If automatic cleanup is added in a future version, it must not delete pending, claimed, running, retry, or dead-letter records unexpectedly.
 
 ## Testing Strategy
 
@@ -157,3 +200,4 @@ Coverage should include:
 - Redis persistence is configuration-dependent, so durability expectations must be explicit.
 - Atomic Lua scripts add implementation complexity but keep scheduler transitions correct.
 - Redis Cluster can be supported later if key hash tags and script constraints need dedicated design.
+- **v0.4 is single Redis / non-cluster only.** Key naming does not use hash tags. Scripts operate on single keys or multiple keys within one namespace.

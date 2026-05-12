@@ -1,4 +1,4 @@
-# Tasks: v0.6 - Android SQLite Store
+# Tasks: v0.7 - Android SQLite Store
 
 ## Phase 1: Module and Test Harness
 

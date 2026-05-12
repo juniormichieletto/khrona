@@ -374,9 +374,10 @@ Use Kotlin's `Duration` for human-readable intervals:
 - [x] **v0.2:** Persistence support (Postgres, H2), retries, and dead-letter handling.
 - [x] **v0.3:** Distributed execution, lease-based claiming, and concurrency policies.
 - [x] **v0.3.3:** Reliability hardening (Registry, Timeouts, Atomic REPLACE).
-- [ ] **v0.4:** Admin UI & Dashboard, Metrics (Micrometer).
-- [ ] **v0.5:** SQLite storage support (Android friendly), Redis-backed distributed locking.
-- [ ] **v0.6:** Performance tuning and advanced misfire policies.
+- [ ] **v0.4:** Redis-backed `JobStore` with atomic claiming, heartbeat, recovery, and lock semantics.
+- [ ] **v0.5:** Admin UI & Dashboard, Metrics (Micrometer/OpenTelemetry), lock inspection.
+- [ ] **v0.6:** Production hardening, testkit improvements, adaptive delay, and operator ergonomics.
+- [ ] **v0.7:** Android SQLite storage support.
 
 ## License
 

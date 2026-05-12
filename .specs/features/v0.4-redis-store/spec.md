@@ -1,4 +1,4 @@
-# Spec: v0.7 - Redis Store
+# Spec: v0.4 - Redis Store
 
 ## Overview
 
@@ -17,7 +17,7 @@ This feature will add a Redis-backed implementation of the `JobStore` SPI so Khr
 
 ## Requirements
 
-- **REQ-RS1: Redis Store Module:** Add a separate `khrona-store-redis` module that depends on `khrona-core` and a coroutine-friendly Redis client.
+- **REQ-RS1: Redis Store Module:** Add a separate `khrona-store-redis` module that depends on `khrona-core` and Lettuce Redis client.
 - **REQ-RS2: JobStore Compatibility:** The Redis store must implement the same `JobStore` behavior required by the scheduler, including job definition persistence, execution enqueueing, bounded eligible listing, claiming, status updates, heartbeat, stale execution recovery, lock checks, supersede behavior, retry/dead-letter state, and structured payload persistence.
 - **REQ-RS3: Atomic Claims:** Claiming an execution must be atomic across scheduler instances so the same pending execution cannot be claimed by more than one worker.
 - **REQ-RS4: Lease and Heartbeat:** Claimed and running executions must keep `workerId`, `startedAt`, and `expiresAt` state, and `heartbeat` must extend the lease only while the execution is still owned.
@@ -44,6 +44,8 @@ This feature will add a Redis-backed implementation of the `JobStore` SPI so Khr
 - Requiring Redis Streams, Pub/Sub, or keyspace notifications for baseline correctness.
 - Using Redis as a sidecar lock provider for JDBC jobs in the first version.
 - Adding admin UI features for Redis-specific inspection in this feature.
+- Automatic cleanup API - v0.4 ships with manual cleanup documentation only.
+- Redis Cluster support - v0.4 is single Redis / non-cluster only.
 
 ## Success Criteria
 

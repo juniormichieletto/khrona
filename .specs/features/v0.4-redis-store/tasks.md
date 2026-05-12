@@ -1,11 +1,12 @@
-# Tasks: v0.7 - Redis Store
+# Tasks: v0.4 - Redis Store
 
 ## Phase 1: Module and Client Setup
 
 - [ ] **Task 1.1:** Add `khrona-store-redis` to Gradle settings.
-- [ ] **Task 1.2:** Choose and add a coroutine-friendly Redis client dependency after validating Kotlin/JVM compatibility.
+- [ ] **Task 1.2:** Add Lettuce Redis client dependency (async/coroutine support, TLS/AUTH, command timeouts).
 - [ ] **Task 1.3:** Add Redis Testcontainers dependency and test fixture setup.
 - [ ] **Task 1.4:** Define `RedisJobStore` public constructor/configuration, including namespace and resource ownership.
+- [ ] **Task 1.5:** Create failing `RedisJobStoreContract` test against empty implementation.
 
 ## Phase 2: Redis Data Model
 
@@ -13,12 +14,13 @@
 - [ ] **Task 2.2:** Implement job definition save/get/list operations.
 - [ ] **Task 2.3:** Implement execution serialization using the same structured JSON payload behavior as JDBC.
 - [ ] **Task 2.4:** Add namespace isolation tests using two stores against one Redis instance.
+- [ ] **Task 2.5:** Document index cleanup rules for each status transition (pending, claimed, running, lock, status sets).
 
 ## Phase 3: Execution Queue and Claiming
 
 - [ ] **Task 3.1:** Implement `saveExecution` with deterministic-id upsert behavior and pending sorted-set indexing.
 - [ ] **Task 3.2:** Implement bounded `listEligibleExecutions(now, limit)` using sorted-set score lookup.
-- [ ] **Task 3.3:** Implement atomic `claimExecution` with ownership and lease updates.
+- [ ] **Task 3.3:** Implement atomic `claimExecution` Lua script with ownership, lease updates, and index cleanup.
 - [ ] **Task 3.4:** Add concurrent claim contention tests proving only one worker claims a pending execution.
 - [ ] **Task 3.5:** Add multi-scheduler tests proving interval, cron, one-time, and manual executions are not duplicated.
 
@@ -56,8 +58,9 @@
 
 - [ ] **Task 8.1:** Update README with Redis dependency/setup example.
 - [ ] **Task 8.2:** Update architecture docs to include `RedisJobStore`.
-- [ ] **Task 8.3:** Add Redis performance and operational guidance covering persistence, eviction policies, namespaces, cleanup, and connection management.
+- [ ] **Task 8.3:** Add Redis performance and operational guidance covering persistence, eviction policies, namespaces, cleanup scripts, and connection management.
 - [ ] **Task 8.4:** Document Redis durability tradeoffs compared with JDBC.
+- [ ] **Task 8.5:** Document v0.4 cleanup strategy (manual scripts only, no automatic cleanup API).
 
 ## Verification
 

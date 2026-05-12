@@ -1,4 +1,4 @@
-# Spec: v0.6 - Android SQLite Store
+# Spec: v0.7 - Android SQLite Store
 
 ## Overview
 

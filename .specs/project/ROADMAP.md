@@ -1,11 +1,11 @@
 # ROADMAP — Khrona
 
 ## Next Tasks
-- [ ] Implement Redis Store (v0.7)
-- [ ] Implement Android SQLite Store (v0.6)
-- [ ] Implement Admin API & Dashboard (v0.4)
-- [ ] Implement Metrics (Micrometer/OpenTelemetry) (v0.4)
-- [ ] Add lock inspection capabilities (v0.4)
+- [ ] Implement Redis Store (v0.4)
+- [ ] Implement Admin API & Dashboard (v0.5)
+- [ ] Implement Metrics (Micrometer/OpenTelemetry) (v0.5)
+- [ ] Add lock inspection capabilities (v0.5)
+- [ ] Implement Android SQLite Store (v0.7)
 
 ## v0.1: Core & In-Memory
 - [x] Project Setup & Module Structure
@@ -54,13 +54,21 @@
 - [x] Hardened pollBatchSize validation
 - [x] Completed JDBC dispatcher isolation (including lazy dialect resolution and suspend migrate)
 
-## v0.4: Ops & Visibility
+## v0.4: Redis Store
+- Implementation plan: `.specs/features/v0.4-redis-store/`
+- [ ] Add `khrona-store-redis` module
+- [ ] Implement Redis-backed `JobStore`
+- [ ] Add atomic Redis claiming, heartbeat, recovery, and lock semantics
+- [ ] Add Redis Testcontainers integration coverage
+- [ ] Document Redis persistence, eviction, namespace, and cleanup tradeoffs
+
+## v0.5: Ops & Visibility
 - [ ] Admin API & Routes
 - [ ] Metrics & Tracing (Micrometer/OpenTelemetry)
 - [x] Misfire Policies
 - [ ] Lock Inspection
 
-## v0.5: Hardening
+## v0.6: Hardening
 - [ ] Testkit (Virtual Time)
 - [ ] Focused shutdown and cancellation contract tests
 - [ ] Harden claimed-before-active shutdown edge so newly claimed executions cannot rely only on lease expiry
@@ -73,21 +81,13 @@
 - [ ] Cross-Database Adaptive Delay Scheduler
 - [ ] Adaptive scheduler configuration docs
 
-## v0.6: Android SQLite Store
-- Implementation plan: `.specs/features/v0.6-android-sqlite/`
+## v0.7: Android SQLite Store
+- Implementation plan: `.specs/features/v0.7-android-sqlite/`
 - [ ] Add `khrona-store-android-sqlite` module
 - [ ] Implement Android-compatible SQLite `JobStore`
 - [ ] Add versioned schema and migrations
 - [ ] Add Android SQLite store contract tests
 - [ ] Document Android lifecycle and WorkManager integration boundaries
-
-## v0.7: Redis Store
-- Implementation plan: `.specs/features/v0.7-redis-store/`
-- [ ] Add `khrona-store-redis` module
-- [ ] Implement Redis-backed `JobStore`
-- [ ] Add atomic Redis claiming, heartbeat, recovery, and lock semantics
-- [ ] Add Redis Testcontainers integration coverage
-- [ ] Document Redis persistence, eviction, namespace, and cleanup tradeoffs
 
 ## Future Considerations
 - **Cross-Database Adaptive Delay Scheduler:** Replace fixed idle polling with a hybrid adaptive loop that sleeps until the next known execution, stale recovery deadline, or a configurable max polling interval. The baseline must work across Memory, H2, PostgreSQL, MySQL, and Oracle without database-specific notifications. Native database wake-up mechanisms may be added later as optional optimizations.

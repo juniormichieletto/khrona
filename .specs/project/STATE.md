@@ -20,18 +20,18 @@
 - [x] Implement Reliability Hardening (v0.3.1)
 - [x] Add Production Readiness Hardening implementation plan (v0.3.2)
 - [x] Implement Production Readiness Hardening (v0.3.2)
-- [x] Add Android SQLite Store implementation plan (v0.6)
-- [x] Add Redis Store implementation plan (v0.7)
-- [ ] Implement Redis Store (v0.7)
-- [ ] Implement Android SQLite Store (v0.6)
-- [ ] Implement Admin API & Visibility (v0.4)
+- [x] Add Android SQLite Store implementation plan (v0.7)
+- [x] Add Redis Store implementation plan (v0.4)
+- [ ] Implement Redis Store (v0.4)
+- [ ] Implement Admin API & Visibility (v0.5)
+- [ ] Implement Android SQLite Store (v0.7)
 
 ## Next Tasks
-- [ ] Implement Redis Store (v0.7)
-- [ ] Implement Android SQLite Store (v0.6)
-- [ ] Implement Admin API & Dashboard (v0.4)
-- [ ] Implement Metrics (Micrometer) (v0.4)
-- [ ] Add lock inspection capabilities (v0.4)
+- [ ] Implement Redis Store (v0.4)
+- [ ] Implement Admin API & Dashboard (v0.5)
+- [ ] Implement Metrics (Micrometer) (v0.5)
+- [ ] Add lock inspection capabilities (v0.5)
+- [ ] Implement Android SQLite Store (v0.7)
 - [ ] Add shutdown/cancellation contract hardening to a future reliability release
 - [ ] Add timezone support, DLQ tooling enhancements, and job pause/disable to future production features
 

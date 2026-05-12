@@ -1115,12 +1115,18 @@ Khrona does **not** guarantee:
 - stale worker recovery
 
 ### v0.4
+- Redis-backed `JobStore`
+- atomic Redis claiming, heartbeat, recovery, and lock semantics
+- Redis Testcontainers integration coverage
+- Redis persistence, eviction, namespace, and cleanup documentation
+
+### v0.5
 - admin API
 - metrics and tracing
 - misfire policies
 - lock inspection
 
-### v0.5
+### v0.6
 - transactional improvements and integrations
 - dead-letter tooling enhancements
 - testkit hardening
@@ -1130,6 +1136,12 @@ Khrona does **not** guarantee:
 - job pause/disable support
 - persisted job reconciliation for jobs removed from code
 - operator ergonomics
+
+### v0.7
+- Android SQLite store
+- Android-compatible SQLite schema and migrations
+- Android SQLite store contract tests
+- Android lifecycle and WorkManager integration boundary documentation
 
 ---
 

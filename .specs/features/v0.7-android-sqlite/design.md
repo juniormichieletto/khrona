@@ -1,4 +1,4 @@
-# Design: v0.6 - Android SQLite Store
+# Design: v0.7 - Android SQLite Store
 
 ## Problem
 
