@@ -1,5 +1,7 @@
 # Design: v0.4 - Redis Store
 
+Status: **EXPERIMENTAL** until the Redis v0.4 release-readiness review is complete.
+
 ## Problem
 
 Some deployments prefer Redis over a relational database for scheduler coordination because Redis is already available, low-latency, and operationally simple for distributed locks and queues. Khrona's `JobStore` SPI already captures the scheduler contract, but a Redis implementation needs careful key design and atomic transitions to preserve at-least-once semantics across instances.
@@ -143,19 +145,21 @@ Job definitions should serialize triggers, policies, lock keys, timeout, retry p
 ## Production Hardening
 
 ### Resilience and Connection Management
-The Redis store should use a client that supports connection pooling (e.g., Lettuce or Jedis). The configuration must expose:
-- **Connection Timeout:** Time to wait for a connection to be established.
+The Redis store uses Lettuce with a thread-safe connection and bounded request queue. `RedisJobStoreConfig` exposes:
 - **Command Timeout:** Time to wait for a specific Redis command to return.
-- **Pool Sizing:** Min/Max idle and active connections.
-- **Reconnection Policy:** Exponential backoff for lost connections.
+- **Request Queue Size:** Client-side backpressure boundary for queued Redis commands.
+- **Reconnect Behavior:** Whether Lettuce should automatically reconnect after disconnects.
+- **Shutdown Timing:** Quiet period and timeout used when the store owns the Redis client.
+
+Separate connection pooling is intentionally not part of v0.4. Lettuce connections are thread-safe, and Khrona already bounds work with `pollBatchSize` plus Redis request queue sizing. Add pooling only after profiling shows connection contention.
 
 ### Observability
 - **Logging:** Use SLF4J to log connection issues, command failures, and Lua script errors.
-- **Metrics:** Provide an optional listener/interceptor interface so users can plug in Micrometer or OpenTelemetry to track command latency and pool usage.
+- **Metrics:** Optional future work: provide a listener/interceptor interface so users can plug in Micrometer or OpenTelemetry to track command latency.
 
 ### Security
-- **AUTH:** Support password and username-based authentication (Redis 6+ ACLs).
-- **TLS:** Support encrypted connections with configurable trust stores.
+- **AUTH:** Support password and username-based authentication (Redis 6+ ACLs) through Redis URI configuration.
+- **TLS:** Support encrypted connections through `rediss://` Redis URI configuration.
 
 ### Error Handling
 - **OOM:** Redis `OOM command not allowed` errors must be caught and propagated as a specific `KhronaRedisOomException` so applications can react.
@@ -163,7 +167,7 @@ The Redis store should use a client that supports connection pooling (e.g., Lett
 
 ### Cleanup and Backpressure
 - **Cleanup:** Implement an optional periodic cleanup task or provide clear scripts for deleting old terminal executions.
-- **Backpressure:** The store relies on the scheduler's `pollBatchSize` to bound work, but the Redis client pool acts as the physical backpressure boundary for concurrent store operations.
+- **Backpressure:** The store relies on the scheduler's `pollBatchSize` to bound work, and the Redis client's request queue size acts as the physical backpressure boundary for concurrent store operations.
 
 ## Durability and Retention
 

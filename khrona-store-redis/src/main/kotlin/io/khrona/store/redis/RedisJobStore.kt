@@ -8,8 +8,12 @@ import io.khrona.core.JobExecution
 import io.khrona.core.JobStore
 import io.khrona.core.OneTimeTrigger
 import io.khrona.core.Trigger
+import io.lettuce.core.ClientOptions
+import io.lettuce.core.RedisException
+import io.lettuce.core.RedisURI
 import io.lettuce.core.RedisClient
 import io.lettuce.core.ScriptOutputType
+import io.lettuce.core.TimeoutOptions
 import io.lettuce.core.api.StatefulRedisConnection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -29,20 +33,48 @@ import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.modules.SerializersModule
 import kotlinx.serialization.modules.polymorphic
 import kotlinx.serialization.modules.subclass
+import org.slf4j.LoggerFactory
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
+
+data class RedisJobStoreConfig(
+    val redisUri: String,
+    val namespace: String = "khrona",
+    val commandTimeout: Duration = Duration.ofSeconds(5),
+    val autoReconnect: Boolean = true,
+    val requestQueueSize: Int = 10_000,
+    val shutdownQuietPeriod: Duration = Duration.ofMillis(100),
+    val shutdownTimeout: Duration = Duration.ofSeconds(2)
+) {
+    init {
+        require(redisUri.isNotBlank()) { "redisUri must not be blank" }
+        require(namespace.isNotBlank()) { "namespace must not be blank" }
+        require(!commandTimeout.isNegative && !commandTimeout.isZero) { "commandTimeout must be positive" }
+        require(requestQueueSize > 0) { "requestQueueSize must be positive" }
+        require(!shutdownQuietPeriod.isNegative) { "shutdownQuietPeriod must not be negative" }
+        require(!shutdownTimeout.isNegative && !shutdownTimeout.isZero) { "shutdownTimeout must be positive" }
+    }
+}
+
+class KhronaRedisOomException(message: String, cause: Throwable) : RuntimeException(message, cause)
 
 class RedisJobStore private constructor(
     private val client: RedisClient,
     private val connection: StatefulRedisConnection<String, String>,
     namespace: String,
-    private val ownsClient: Boolean
+    private val ownsClient: Boolean,
+    private val config: RedisJobStoreConfig? = null
 ) : JobStore, AutoCloseable {
+    constructor(config: RedisJobStoreConfig) : this(
+        client = createClient(config),
+        namespace = config.namespace,
+        ownsClient = true,
+        config = config
+    )
+
     constructor(redisUri: String, namespace: String = "khrona") : this(
-        client = RedisClient.create(redisUri),
-        namespace = namespace,
-        ownsClient = true
+        config = RedisJobStoreConfig(redisUri = redisUri, namespace = namespace)
     )
 
     constructor(client: RedisClient, namespace: String = "khrona") : this(
@@ -51,11 +83,17 @@ class RedisJobStore private constructor(
         ownsClient = false
     )
 
-    private constructor(client: RedisClient, namespace: String, ownsClient: Boolean) : this(
+    private constructor(
+        client: RedisClient,
+        namespace: String,
+        ownsClient: Boolean,
+        config: RedisJobStoreConfig? = null
+    ) : this(
         client = client,
         connection = client.connect(),
         namespace = namespace,
-        ownsClient = ownsClient
+        ownsClient = ownsClient,
+        config = config
     )
 
     private val keys = RedisKeys(namespace)
@@ -79,12 +117,23 @@ class RedisJobStore private constructor(
 
     override suspend fun updateExecutionStatus(id: UUID, status: ExecutionStatus, error: String?): Unit = inRedisContext {
         val current = getStoredExecution(id) ?: return@inRedisContext
-        val updated = current.copy(
-            status = status.name,
-            error = error,
-            completedAt = if (status.isTerminal()) Instant.now().toString() else current.completedAt
+        val completedAt = if (status.isTerminal()) Instant.now().toString() else current.completedAt
+        val expiresAt = current.expiresAt?.let { Instant.parse(it) }
+        commands.eval<Long>(
+            UPDATE_EXECUTION_STATUS_SCRIPT,
+            ScriptOutputType.INTEGER,
+            arrayOf(keys.executions, keys.pending, keys.claimed, keys.running, keys.executionLocks(id.toString())),
+            id.toString(),
+            status.name,
+            error ?: "",
+            status.isTerminal().toString(),
+            completedAt ?: "",
+            current.scheduledAt.toScore().toString(),
+            expiresAt?.toEpochMilli()?.toString() ?: "",
+            expiresAt?.ttlFromNowMillis()?.toString() ?: "",
+            keys.lockPrefix,
+            keys.claimLockPrefix
         )
-        saveStoredExecution(updated)
     }
 
     override suspend fun getExecution(id: UUID): JobExecution? = inRedisContext {
@@ -211,7 +260,11 @@ class RedisJobStore private constructor(
     override fun close() {
         connection.close()
         if (ownsClient) {
-            client.shutdown()
+            if (config != null) {
+                client.shutdown(config.shutdownQuietPeriod, config.shutdownTimeout)
+            } else {
+                client.shutdown()
+            }
         }
     }
 
@@ -269,11 +322,37 @@ class RedisJobStore private constructor(
 
     private suspend fun <T> inRedisContext(block: () -> T): T {
         return withContext(Dispatchers.IO) {
-            block()
+            try {
+                block()
+            } catch (e: RedisException) {
+                if (e.message?.contains("OOM", ignoreCase = true) == true) {
+                    log.error("Redis command failed because Redis reported OOM", e)
+                    throw KhronaRedisOomException("Redis command failed because Redis reported OOM", e)
+                }
+                log.error("Redis command failed", e)
+                throw e
+            }
         }
     }
 
     companion object {
+        private val log = LoggerFactory.getLogger(RedisJobStore::class.java)
+
+        private fun createClient(config: RedisJobStoreConfig): RedisClient {
+            val redisUri = RedisURI.create(config.redisUri).apply {
+                timeout = config.commandTimeout
+            }
+            return RedisClient.create(redisUri).also { client ->
+                client.setOptions(
+                    ClientOptions.builder()
+                        .autoReconnect(config.autoReconnect)
+                        .requestQueueSize(config.requestQueueSize)
+                        .timeoutOptions(TimeoutOptions.enabled(config.commandTimeout))
+                        .build()
+                )
+            }
+        }
+
         private val json = Json {
             ignoreUnknownKeys = true
             serializersModule = SerializersModule {
@@ -404,6 +483,64 @@ class RedisJobStore private constructor(
             end
 
             return superseded
+        """
+
+        private const val UPDATE_EXECUTION_STATUS_SCRIPT = """
+            local id = ARGV[1]
+            local execution_json = redis.call('HGET', KEYS[1], id)
+            if not execution_json then
+                return 0
+            end
+
+            local execution = cjson.decode(execution_json)
+
+            redis.call('ZREM', KEYS[2], id)
+            redis.call('ZREM', KEYS[3], id)
+            redis.call('ZREM', KEYS[4], id)
+
+            local lock_indexes = redis.call('SMEMBERS', KEYS[5])
+            for _, lock_index in ipairs(lock_indexes) do
+                redis.call('SREM', lock_index, id)
+            end
+            redis.call('DEL', KEYS[5])
+
+            execution['status'] = ARGV[2]
+            if ARGV[3] == '' then
+                execution['error'] = cjson.null
+            else
+                execution['error'] = ARGV[3]
+            end
+            if ARGV[4] == 'true' and ARGV[5] ~= '' then
+                execution['completedAt'] = ARGV[5]
+            end
+
+            redis.call('HSET', KEYS[1], id, cjson.encode(execution))
+
+            if ARGV[2] == 'PENDING' then
+                redis.call('ZADD', KEYS[2], ARGV[6], id)
+                redis.call('DEL', ARGV[10] .. id)
+            elseif ARGV[2] == 'CLAIMED' then
+                if ARGV[7] ~= '' then
+                    redis.call('ZADD', KEYS[3], ARGV[7], id)
+                    redis.call('PEXPIRE', ARGV[10] .. id, ARGV[8])
+                end
+            elseif ARGV[2] == 'RUNNING' then
+                if ARGV[7] ~= '' then
+                    redis.call('ZADD', KEYS[4], ARGV[7], id)
+                    redis.call('PEXPIRE', ARGV[10] .. id, ARGV[8])
+                end
+            else
+                redis.call('DEL', ARGV[10] .. id)
+            end
+
+            local lock_key = execution['lockKey']
+            if (ARGV[2] == 'CLAIMED' or ARGV[2] == 'RUNNING') and lock_key ~= nil and lock_key ~= cjson.null then
+                local lock_index = ARGV[9] .. lock_key
+                redis.call('SADD', lock_index, id)
+                redis.call('SADD', KEYS[5], lock_index)
+            end
+
+            return 1
         """
     }
 }

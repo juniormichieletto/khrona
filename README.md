@@ -18,6 +18,7 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
   - **Concurrency Control:** Manage overlapping executions with `FORBID` or `REPLACE` policies.
   - **Misfire Policies:** Handle delayed executions (FIRE_NOW or IGNORE).
 - **💾 Persistence Support:** Durable job storage using JDBC (PostgreSQL, MySQL, Oracle, H2).
+- **⚡ Redis Store (Experimental):** Redis-backed coordination with atomic claiming, leases, recovery, and lock replacement.
 - **🌐 Distributed Ready:** Multi-node deployment support with deterministic IDs and distributed locking.
 - **🔌 Ktor Integration:** First-class Ktor plugin with seamless lifecycle management.
 
@@ -38,6 +39,7 @@ graph TD
         Store[JobStore Interface]
         Memory[MemoryJobStore] --- Store
         JDBC[JdbcJobStore] --- Store
+        Redis[RedisJobStore] --- Store
         
         subgraph "JDBC Dialects"
             JDBC --- Postgres[PostgreSQL]
@@ -64,6 +66,7 @@ dependencies {
     // Choose your storage:
     implementation("io.github.juniormichieletto:khrona-store-memory:0.3.3") // For dev/testing
     implementation("io.github.juniormichieletto:khrona-store-jdbc:0.3.3")   // For production
+    // implementation("io.github.juniormichieletto:khrona-store-redis:<v0.4+>") // Experimental Redis coordination
 }
 ```
 
@@ -113,6 +116,86 @@ install(Khrona) {
 ```
 
 `migrate()` is suspend and fail-fast: schema errors are surfaced during startup instead of being silently ignored. Re-running migration is idempotent for the built-in schema and indexes.
+
+## Persistent Storage (Redis)
+
+> **Experimental:** `RedisJobStore` is implemented and covered by integration tests, but it is still marked experimental until the v0.4 release-readiness review is complete. Validate it under your own Redis persistence, eviction, failover, and load settings before using it for critical production workloads.
+
+Redis can be used as a full `JobStore` when low-latency distributed coordination is preferred over JDBC. The Redis store persists job definitions and executions, uses sorted sets for bounded polling and lease recovery, and uses Lua scripts for atomic claim and replacement transitions.
+
+```kotlin
+import io.khrona.store.redis.RedisJobStore
+import io.khrona.store.redis.RedisJobStoreConfig
+import java.time.Duration
+
+val store = RedisJobStore(
+    RedisJobStoreConfig(
+        redisUri = "redis://localhost:6379",
+        namespace = "khrona-prod",
+        commandTimeout = Duration.ofSeconds(2),
+        autoReconnect = true,
+        requestQueueSize = 10_000
+    )
+)
+
+install(Khrona) {
+    this.store = store
+}
+```
+
+### Local Redis for Development
+
+Start a Redis container with settings that match Khrona's scheduler durability expectations:
+
+```bash
+docker run -d --name khrona-redis \
+  -p 6379:6379 \
+  -v khrona-redis-data:/data \
+  redis:7-alpine redis-server \
+    --appendonly yes \
+    --save 60 1 \
+    --maxmemory-policy noeviction \
+    --requirepass khrona_dev_password
+```
+
+Use this URI with the container above:
+
+```kotlin
+val store = RedisJobStore(
+    RedisJobStoreConfig(
+        redisUri = "redis://:khrona_dev_password@localhost:6379/0",
+        namespace = "khrona-local",
+        commandTimeout = Duration.ofSeconds(2),
+        requestQueueSize = 1_000
+    )
+)
+```
+
+Check and clean up the local container:
+
+```bash
+docker logs khrona-redis
+docker exec -it khrona-redis redis-cli -a khrona_dev_password PING
+docker stop khrona-redis
+docker rm khrona-redis
+docker volume rm khrona-redis-data
+```
+
+For a no-password quick smoke test, omit `--requirepass` and use `redis://localhost:6379/0`. Do not use that setup for shared environments.
+
+Use Redis URI features for security and topology:
+
+- AUTH / ACL: `redis://username:password@redis.example.com:6379`
+- TLS: `rediss://redis.example.com:6380`
+- Database selection: `redis://localhost:6379/1`
+
+Operational requirements:
+
+- Enable Redis persistence (`AOF` or appropriate `RDB`) if scheduled state must survive Redis restarts.
+- Do not use an eviction policy that can evict Khrona keys. Prefer dedicated Redis memory or `noeviction` for scheduler data.
+- Keep `namespace` unique per environment or tenant to avoid cross-application key collisions.
+- Use `pollBatchSize` on `KhronaConfig` and `requestQueueSize` on `RedisJobStoreConfig` as the scheduler and client-side backpressure boundaries.
+- v0.4 does not include automatic terminal-execution cleanup. Use operator-owned cleanup scripts for old `SUCCESS`, `FAILED`, `MISFIRED`, and `SUPERSEDED` records after your retention window. Do not delete `PENDING`, `CLAIMED`, `RUNNING`, or `DEAD_LETTERED` executions unless you intentionally want to remove work or investigation data.
 
 ## MySQL 8 & Multi-Node Testing
 
@@ -374,7 +457,7 @@ Use Kotlin's `Duration` for human-readable intervals:
 - [x] **v0.2:** Persistence support (Postgres, H2), retries, and dead-letter handling.
 - [x] **v0.3:** Distributed execution, lease-based claiming, and concurrency policies.
 - [x] **v0.3.3:** Reliability hardening (Registry, Timeouts, Atomic REPLACE).
-- [ ] **v0.4:** Redis-backed `JobStore` with atomic claiming, heartbeat, recovery, and lock semantics.
+- [x] **v0.4:** Redis-backed `JobStore` with atomic claiming, heartbeat, recovery, and lock semantics. **Experimental until release-readiness review is complete.**
 - [ ] **v0.5:** Admin UI & Dashboard, Metrics (Micrometer/OpenTelemetry), lock inspection.
 - [ ] **v0.6:** Production hardening, testkit improvements, adaptive delay, and operator ergonomics.
 - [ ] **v0.7:** Android SQLite storage support.

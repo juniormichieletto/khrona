@@ -1,5 +1,7 @@
 # Spec: v0.4 - Redis Store
 
+Status: **EXPERIMENTAL** until the Redis v0.4 release-readiness review is complete.
+
 ## Overview
 
 Khrona currently supports in-memory storage and JDBC-backed durable storage. Redis is a strong fit for deployments that want low-latency scheduling coordination, distributed claiming, and short operational setup without introducing a relational database just for scheduler state.

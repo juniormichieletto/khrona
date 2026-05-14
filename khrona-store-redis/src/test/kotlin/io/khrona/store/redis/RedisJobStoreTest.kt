@@ -11,6 +11,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.AfterEach
@@ -62,6 +63,44 @@ class RedisJobStoreTest : JobStoreContract {
     }
 
     @Test
+    fun `supports explicit redis job store config`() = runTest {
+        val namespace = "configured-store-${UUID.randomUUID()}"
+        val store = RedisJobStore(
+            RedisJobStoreConfig(
+                redisUri = redisUri(),
+                namespace = namespace,
+                commandTimeout = Duration.ofSeconds(2),
+                autoReconnect = true,
+                requestQueueSize = 128,
+                shutdownQuietPeriod = Duration.ZERO,
+                shutdownTimeout = Duration.ofSeconds(1)
+            )
+        )
+        stores.add(store)
+        val execution = JobExecution(jobId = "configured-store-job", scheduledAt = Instant.now())
+
+        store.saveExecution(execution)
+
+        assertEquals(execution.id, store.getExecution(execution.id)?.id)
+    }
+
+    @Test
+    fun `rejects invalid redis job store config`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            RedisJobStoreConfig(redisUri = "", namespace = "khrona")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            RedisJobStoreConfig(redisUri = redisUri(), namespace = "")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            RedisJobStoreConfig(redisUri = redisUri(), commandTimeout = Duration.ZERO)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            RedisJobStoreConfig(redisUri = redisUri(), requestQueueSize = 0)
+        }
+    }
+
+    @Test
     fun `claim ignores stale redis claim lock when execution state is pending`() = runTest {
         val namespace = "stale-claim-lock-${UUID.randomUUID()}"
         val store = RedisJobStore(redisUri(), namespace = namespace)
@@ -94,6 +133,48 @@ class RedisJobStoreTest : JobStoreContract {
         val secondScore = redisScore(namespace, "claimed", execution.id)
 
         assertTrue(secondScore > firstScore)
+    }
+
+    @Test
+    fun `resetExpiredExecutions recovers running executions after heartbeat stops`() = runTest {
+        val store = createStore()
+        val expiredRunning = JobExecution(
+            jobId = "expired-running-job",
+            scheduledAt = Instant.now().minusSeconds(60),
+            startedAt = Instant.now().minusSeconds(30),
+            expiresAt = Instant.now().minusSeconds(1),
+            status = ExecutionStatus.RUNNING,
+            workerId = "lost-worker",
+            lockKey = "expired-running-lock"
+        )
+        store.saveExecution(expiredRunning)
+
+        val recovered = store.resetExpiredExecutions(Instant.now())
+
+        val updated = store.getExecution(expiredRunning.id)
+        assertEquals(1, recovered)
+        assertEquals(ExecutionStatus.PENDING, updated?.status)
+        assertEquals(null, updated?.workerId)
+        assertEquals(null, updated?.startedAt)
+        assertEquals(null, updated?.expiresAt)
+        assertFalse(store.isLockHeld("expired-running-lock"))
+        assertEquals(listOf(expiredRunning.id), store.listEligibleExecutions(Instant.now()).map { it.id })
+    }
+
+    @Test
+    fun `claim and heartbeat respect configured lease durations`() = runTest {
+        val store = createStore()
+        val execution = JobExecution(jobId = "configured-lease-job", scheduledAt = Instant.now())
+        store.saveExecution(execution)
+
+        assertTrue(store.claimExecution(execution.id, "worker-1", Duration.ofMillis(150)))
+        val shortLease = store.getExecution(execution.id)?.expiresAt!!
+        assertTrue(shortLease <= Instant.now().plusMillis(500))
+
+        assertTrue(store.heartbeat(execution.id, Duration.ofSeconds(2)))
+        val extendedLease = store.getExecution(execution.id)?.expiresAt!!
+
+        assertTrue(extendedLease > shortLease.plusMillis(1_000))
     }
 
     @Test

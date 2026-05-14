@@ -22,17 +22,16 @@
 - [x] Implement Production Readiness Hardening (v0.3.2)
 - [x] Add Android SQLite Store implementation plan (v0.7)
 - [x] Add Redis Store implementation plan (v0.4)
-- [ ] Implement Redis Store (v0.4)
+- [x] Implement Redis Store (v0.4)
 - [ ] Implement Admin API & Visibility (v0.5)
 - [ ] Implement Android SQLite Store (v0.7)
 
 ## Current Implementation Status
-- **Redis Store (v0.4):** In progress. The `khrona-store-redis` module exists with Lettuce, Redis Testcontainers coverage, shared `JobStore` contract tests, structured payload tests, namespace isolation coverage, concurrent claim contention coverage, Lua-based atomic `claimExecution` index cleanup, Lua-based atomic supersede cleanup, heartbeat lease-index coverage, and multi-scheduler coverage for interval, cron, one-time, and manual executions. `./gradlew clean test` passes.
-- **Redis remaining work:** Running recovery coverage, FORBID/REPLACE scheduler-level Redis locking scenarios, retry/DLQ/misfire coverage, production config/error handling, and Redis README/operations docs.
+- **Redis Store (v0.4):** Implemented but still **EXPERIMENTAL** until release-readiness review is complete. The `khrona-store-redis` module exists with Lettuce, `RedisJobStoreConfig`, Redis Testcontainers coverage, shared `JobStore` contract tests, structured payload tests, namespace isolation coverage, concurrent claim contention coverage, Lua-based atomic `claimExecution` index cleanup, Lua-based atomic supersede cleanup, heartbeat lease-index coverage, multi-scheduler coverage for interval/cron/one-time/manual executions, explicit five-scheduler Redis contention coverage, running recovery, FORBID/REPLACE locking, retries, dead-lettering, misfires, recurring next-run persistence, and README/architecture operations docs. `./gradlew clean test` passes.
+- **Redis remaining work:** Optional command-latency observability hook and release-readiness review before publishing v0.4.
 
 ## Next Tasks
-- [ ] Continue Redis Store (v0.4): add running recovery coverage, then FORBID/REPLACE scheduler-level Redis locking scenarios
-- [ ] Complete Redis retry/DLQ/misfire, production config, and docs
+- [ ] Run Redis v0.4 release-readiness review
 - [ ] Implement Admin API & Dashboard (v0.5)
 - [ ] Implement Metrics (Micrometer) (v0.5)
 - [ ] Add lock inspection capabilities (v0.5)

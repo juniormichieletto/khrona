@@ -18,6 +18,7 @@ graph TD
         Store[JobStore Interface]
         Memory[MemoryJobStore] --- Store
         JDBC[JdbcJobStore] --- Store
+        Redis[RedisJobStore] --- Store
         
         subgraph "JDBC Dialects"
             JDBC --- Postgres[PostgreSQL]
@@ -34,8 +35,9 @@ graph TD
 
 ## Component Overview
 - **Core:** Job definitions, triggers, execution engine.
-- **Store SPI:** Pluggable storage layer (`MemoryJobStore`, `JdbcJobStore`).
+- **Store SPI:** Pluggable storage layer (`MemoryJobStore`, `JdbcJobStore`, `RedisJobStore`).
 - **JdbcDialect:** Abstraction for database-specific SQL (PostgreSQL, MySQL, H2, etc.).
+- **RedisJobStore:** Redis-backed scheduler state using namespaced hashes, sorted-set lease indexes, lock indexes, and Lua scripts for atomic claim/supersede transitions.
 - **Worker:** Coroutine-based executor polling and heartbeating.
 - **Ktor Plugin:** Integration bridge for Ktor lifecycle and routing.
 

@@ -1,7 +1,7 @@
 # ROADMAP — Khrona
 
 ## Next Tasks
-- [ ] Implement Redis Store (v0.4)
+- [ ] Run Redis v0.4 release-readiness review
 - [ ] Implement Admin API & Dashboard (v0.5)
 - [ ] Implement Metrics (Micrometer/OpenTelemetry) (v0.5)
 - [ ] Add lock inspection capabilities (v0.5)
@@ -56,11 +56,12 @@
 
 ## v0.4: Redis Store
 - Implementation plan: `.specs/features/v0.4-redis-store/`
-- [ ] Add `khrona-store-redis` module
-- [ ] Implement Redis-backed `JobStore`
-- [ ] Add atomic Redis claiming, heartbeat, recovery, and lock semantics
-- [ ] Add Redis Testcontainers integration coverage
-- [ ] Document Redis persistence, eviction, namespace, and cleanup tradeoffs
+- Status: implemented but **EXPERIMENTAL** until the Redis v0.4 release-readiness review is complete.
+- [x] Add `khrona-store-redis` module
+- [x] Implement Redis-backed `JobStore`
+- [x] Add atomic Redis claiming, heartbeat, recovery, and lock semantics
+- [x] Add Redis Testcontainers integration coverage
+- [x] Document Redis persistence, eviction, namespace, and cleanup tradeoffs
 
 ## v0.5: Ops & Visibility
 - [ ] Admin API & Routes
