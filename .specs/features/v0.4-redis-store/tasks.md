@@ -2,7 +2,7 @@
 
 ## Current Implementation Status
 
-Last updated after the Redis namespace and atomic claim slice.
+Last updated after the Redis multi-scheduler coverage slice.
 
 Implemented and verified:
 - `khrona-store-redis` module is included in Gradle.
@@ -11,6 +11,7 @@ Implemented and verified:
 - `RedisJobStore` supports the shared `JobStore` contract for job persistence, execution persistence, bounded eligible lookup, claiming, heartbeat, stale recovery, lock inspection, status updates, and structured payload round trips.
 - Namespace isolation is covered with two Redis stores sharing one Redis instance.
 - `claimExecution` uses a Lua script to atomically validate claimability, move ownership, update lease metadata, and clean pending/claimed/running/lock indexes.
+- Redis multi-scheduler coverage proves two schedulers sharing one Redis namespace do not duplicate interval, cron, one-time, or manual executions.
 - Concurrent claim contention test proves only one worker wins a pending execution claim.
 - Stale Redis claim-lock keys no longer block a pending execution whose persisted state is claimable.
 - Unsupported payload values fail fast like JDBC.
@@ -18,10 +19,10 @@ Implemented and verified:
 
 Important caveats:
 - `supersedeExecutionsByLockKey` is functional for the current store contract but Task 5.2 remains open because it is not yet implemented as an atomic Redis script with dedicated tests.
-- Redis multi-scheduler behavior, retry/DLQ/misfire scenarios, and README/operations docs are still pending.
+- Atomic Redis supersede behavior, retry/DLQ/misfire scenarios, and README/operations docs are still pending.
 
 Next resume step:
-- Start with Task 3.5 or Task 5.2. Recommended path: add Redis multi-scheduler coverage next, then make `supersedeExecutionsByLockKey` atomic with a dedicated Lua script and replacement tests.
+- Start with Task 5.2. Recommended path: make `supersedeExecutionsByLockKey` atomic with a dedicated Lua script and replacement tests.
 
 ## Phase 1: Module and Client Setup
 
@@ -45,7 +46,7 @@ Next resume step:
 - [x] **Task 3.2:** Implement bounded `listEligibleExecutions(now, limit)` using sorted-set score lookup.
 - [x] **Task 3.3:** Implement atomic `claimExecution` Lua script with ownership, lease updates, and index cleanup.
 - [x] **Task 3.4:** Add concurrent claim contention tests proving only one worker claims a pending execution.
-- [ ] **Task 3.5:** Add multi-scheduler tests proving interval, cron, one-time, and manual executions are not duplicated.
+- [x] **Task 3.5:** Add multi-scheduler tests proving interval, cron, one-time, and manual executions are not duplicated.
 
 ## Phase 4: Lease, Heartbeat, and Recovery
 
@@ -88,7 +89,7 @@ Next resume step:
 ## Verification
 
 - [x] Redis store passes shared `JobStore` behavior tests.
-- [ ] Multi-instance scheduler tests pass against Redis.
+- [x] Multi-instance scheduler tests pass against Redis.
 - [x] Namespace isolation works.
 - [x] Bounded polling does not scan all execution keys.
 - [x] Atomic claiming prevents duplicate execution.

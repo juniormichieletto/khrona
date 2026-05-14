@@ -27,11 +27,11 @@
 - [ ] Implement Android SQLite Store (v0.7)
 
 ## Current Implementation Status
-- **Redis Store (v0.4):** In progress. The `khrona-store-redis` module exists with Lettuce, Redis Testcontainers coverage, shared `JobStore` contract tests, structured payload tests, namespace isolation coverage, concurrent claim contention coverage, and Lua-based atomic `claimExecution` index cleanup. `./gradlew clean test` passes.
-- **Redis remaining work:** Multi-scheduler Redis scenarios, atomic supersede behavior, retry/DLQ/misfire coverage, production config/error handling, and Redis README/operations docs.
+- **Redis Store (v0.4):** In progress. The `khrona-store-redis` module exists with Lettuce, Redis Testcontainers coverage, shared `JobStore` contract tests, structured payload tests, namespace isolation coverage, concurrent claim contention coverage, Lua-based atomic `claimExecution` index cleanup, and multi-scheduler coverage for interval, cron, one-time, and manual executions. `./gradlew clean test` passes.
+- **Redis remaining work:** Atomic supersede behavior, retry/DLQ/misfire coverage, production config/error handling, and Redis README/operations docs.
 
 ## Next Tasks
-- [ ] Continue Redis Store (v0.4): add multi-scheduler coverage, then make `supersedeExecutionsByLockKey` atomic
+- [ ] Continue Redis Store (v0.4): make `supersedeExecutionsByLockKey` atomic
 - [ ] Complete Redis lock replacement, retry/DLQ/misfire, production config, and docs
 - [ ] Implement Admin API & Dashboard (v0.5)
 - [ ] Implement Metrics (Micrometer) (v0.5)
