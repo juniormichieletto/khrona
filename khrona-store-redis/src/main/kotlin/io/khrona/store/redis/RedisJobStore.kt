@@ -10,7 +10,6 @@ import io.khrona.core.OneTimeTrigger
 import io.khrona.core.Trigger
 import io.lettuce.core.RedisClient
 import io.lettuce.core.ScriptOutputType
-import io.lettuce.core.SetArgs
 import io.lettuce.core.api.StatefulRedisConnection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -115,36 +114,28 @@ class RedisJobStore private constructor(
 
     override suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: Duration): Boolean = inRedisContext {
         val now = Instant.now()
-        val current = getStoredExecution(id) ?: return@inRedisContext false
-        val status = ExecutionStatus.valueOf(current.status)
-        val expiresAt = current.expiresAt?.let { Instant.parse(it) }
-        val claimable = status == ExecutionStatus.PENDING ||
-            ((status == ExecutionStatus.CLAIMED || status == ExecutionStatus.RUNNING) &&
-                expiresAt != null &&
-                expiresAt <= now)
-
-        if (!claimable) {
-            return@inRedisContext false
-        }
-
-        val lockAcquired = commands.set(
-            keys.claimLock(id.toString()),
+        val expiresAt = now.plus(leaseDuration)
+        val claimed = commands.eval<Long>(
+            CLAIM_EXECUTION_SCRIPT,
+            ScriptOutputType.INTEGER,
+            arrayOf(
+                keys.executions,
+                keys.pending,
+                keys.claimed,
+                keys.running,
+                keys.claimLock(id.toString()),
+                keys.executionLocks(id.toString())
+            ),
+            id.toString(),
             workerId,
-            SetArgs.Builder.nx().px(leaseDuration.toRedisTtlMillis())
-        ) != null
-        if (!lockAcquired) {
-            return@inRedisContext false
-        }
-
-        saveStoredExecution(
-            current.copy(
-                status = ExecutionStatus.CLAIMED.name,
-                workerId = workerId,
-                startedAt = now.toString(),
-                expiresAt = now.plus(leaseDuration).toString()
-            )
+            now.toString(),
+            expiresAt.toString(),
+            now.toEpochMilli().toString(),
+            expiresAt.toEpochMilli().toString(),
+            leaseDuration.toRedisTtlMillis().toString(),
+            keys.lockPrefix
         )
-        true
+        claimed == 1L
     }
 
     override suspend fun heartbeat(id: UUID, leaseDuration: Duration): Boolean = inRedisContext {
@@ -337,6 +328,59 @@ class RedisJobStore private constructor(
             end
             return ids
         """
+
+        private const val CLAIM_EXECUTION_SCRIPT = """
+            local id = ARGV[1]
+            local execution_json = redis.call('HGET', KEYS[1], id)
+            if not execution_json then
+                return 0
+            end
+
+            local execution = cjson.decode(execution_json)
+            local status = execution['status'] or 'PENDING'
+            local claimable = false
+
+            if status == 'PENDING' then
+                claimable = true
+            elseif status == 'CLAIMED' then
+                local score = redis.call('ZSCORE', KEYS[3], id)
+                claimable = score ~= false and tonumber(score) <= tonumber(ARGV[5])
+            elseif status == 'RUNNING' then
+                local score = redis.call('ZSCORE', KEYS[4], id)
+                claimable = score ~= false and tonumber(score) <= tonumber(ARGV[5])
+            end
+
+            if not claimable then
+                return 0
+            end
+
+            redis.call('ZREM', KEYS[2], id)
+            redis.call('ZREM', KEYS[3], id)
+            redis.call('ZREM', KEYS[4], id)
+
+            local lock_indexes = redis.call('SMEMBERS', KEYS[6])
+            for _, lock_index in ipairs(lock_indexes) do
+                redis.call('SREM', lock_index, id)
+            end
+            redis.call('DEL', KEYS[6])
+
+            execution['status'] = 'CLAIMED'
+            execution['workerId'] = ARGV[2]
+            execution['startedAt'] = ARGV[3]
+            execution['expiresAt'] = ARGV[4]
+            redis.call('HSET', KEYS[1], id, cjson.encode(execution))
+            redis.call('ZADD', KEYS[3], ARGV[6], id)
+            redis.call('SET', KEYS[5], ARGV[2], 'PX', ARGV[7])
+
+            local lock_key = execution['lockKey']
+            if lock_key ~= nil and lock_key ~= cjson.null then
+                local lock_index = ARGV[8] .. lock_key
+                redis.call('SADD', lock_index, id)
+                redis.call('SADD', KEYS[6], lock_index)
+            end
+
+            return 1
+        """
     }
 }
 
@@ -399,8 +443,9 @@ private data class RedisKeys(private val namespace: String) {
     val pending = "$namespace:pending"
     val claimed = "$namespace:claimed"
     val running = "$namespace:running"
+    val lockPrefix = "$namespace:locks:"
 
-    fun lock(lockKey: String) = "$namespace:locks:$lockKey"
+    fun lock(lockKey: String) = "$lockPrefix$lockKey"
     fun executionLocks(id: String) = "$namespace:execution-locks:$id"
     fun claimLock(id: String) = "$namespace:claim-locks:$id"
 }

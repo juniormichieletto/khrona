@@ -2,24 +2,26 @@
 
 ## Current Implementation Status
 
-Last updated after the first Redis implementation slice.
+Last updated after the Redis namespace and atomic claim slice.
 
 Implemented and verified:
 - `khrona-store-redis` module is included in Gradle.
 - Lettuce Redis client dependency is configured.
 - Redis Testcontainers test harness is in place.
 - `RedisJobStore` supports the shared `JobStore` contract for job persistence, execution persistence, bounded eligible lookup, claiming, heartbeat, stale recovery, lock inspection, status updates, and structured payload round trips.
+- Namespace isolation is covered with two Redis stores sharing one Redis instance.
+- `claimExecution` uses a Lua script to atomically validate claimability, move ownership, update lease metadata, and clean pending/claimed/running/lock indexes.
 - Concurrent claim contention test proves only one worker wins a pending execution claim.
+- Stale Redis claim-lock keys no longer block a pending execution whose persisted state is claimable.
 - Unsupported payload values fail fast like JDBC.
 - `./gradlew clean test` passes with the Redis module included.
 
 Important caveats:
-- `claimExecution` currently uses a Redis `SET NX` lease guard plus record/index updates. It passes contention tests, but Task 3.3 remains open because the full Lua script contract still needs to move ownership, lease, and index cleanup into one atomic Redis operation.
 - `supersedeExecutionsByLockKey` is functional for the current store contract but Task 5.2 remains open because it is not yet implemented as an atomic Redis script with dedicated tests.
-- Redis multi-scheduler behavior, namespace isolation, retry/DLQ/misfire scenarios, and README/operations docs are still pending.
+- Redis multi-scheduler behavior, retry/DLQ/misfire scenarios, and README/operations docs are still pending.
 
 Next resume step:
-- Start with Task 2.4 or Task 3.3. Recommended TDD path: add the namespace isolation test first because it is small and should pass with the current namespace model, then add a failing Lua-contract test for `claimExecution` atomic index cleanup before replacing the current `SET NX` guarded implementation.
+- Start with Task 3.5 or Task 5.2. Recommended path: add Redis multi-scheduler coverage next, then make `supersedeExecutionsByLockKey` atomic with a dedicated Lua script and replacement tests.
 
 ## Phase 1: Module and Client Setup
 
@@ -34,14 +36,14 @@ Next resume step:
 - [x] **Task 2.1:** Define key namespace conventions for jobs, executions, pending index, lease indexes, status indexes, and lock indexes.
 - [x] **Task 2.2:** Implement job definition save/get/list operations.
 - [x] **Task 2.3:** Implement execution serialization using the same structured JSON payload behavior as JDBC.
-- [ ] **Task 2.4:** Add namespace isolation tests using two stores against one Redis instance.
+- [x] **Task 2.4:** Add namespace isolation tests using two stores against one Redis instance.
 - [x] **Task 2.5:** Document index cleanup rules for each status transition (pending, claimed, running, lock, status sets).
 
 ## Phase 3: Execution Queue and Claiming
 
 - [x] **Task 3.1:** Implement `saveExecution` with deterministic-id upsert behavior and pending sorted-set indexing.
 - [x] **Task 3.2:** Implement bounded `listEligibleExecutions(now, limit)` using sorted-set score lookup.
-- [ ] **Task 3.3:** Implement atomic `claimExecution` Lua script with ownership, lease updates, and index cleanup.
+- [x] **Task 3.3:** Implement atomic `claimExecution` Lua script with ownership, lease updates, and index cleanup.
 - [x] **Task 3.4:** Add concurrent claim contention tests proving only one worker claims a pending execution.
 - [ ] **Task 3.5:** Add multi-scheduler tests proving interval, cron, one-time, and manual executions are not duplicated.
 
@@ -87,7 +89,7 @@ Next resume step:
 
 - [x] Redis store passes shared `JobStore` behavior tests.
 - [ ] Multi-instance scheduler tests pass against Redis.
-- [ ] Namespace isolation works.
+- [x] Namespace isolation works.
 - [x] Bounded polling does not scan all execution keys.
 - [x] Atomic claiming prevents duplicate execution.
 - [x] Heartbeat and stale recovery match existing scheduler semantics.

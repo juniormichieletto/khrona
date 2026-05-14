@@ -3,10 +3,12 @@ package io.khrona.store.redis
 import io.khrona.core.JobStore
 import io.khrona.core.JobExecution
 import io.khrona.core.testing.JobStoreContract
+import io.lettuce.core.RedisClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.test.runTest
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -21,7 +23,7 @@ import java.util.UUID
 
 @Testcontainers
 class RedisJobStoreTest : JobStoreContract {
-    private lateinit var store: RedisJobStore
+    private val stores = mutableListOf<RedisJobStore>()
 
     companion object {
         @Container
@@ -34,9 +36,46 @@ class RedisJobStoreTest : JobStoreContract {
     }
 
     override fun createStore(): JobStore {
-        val redisUri = "redis://${redis.host}:${redis.getMappedPort(6379)}"
-        store = RedisJobStore(redisUri, namespace = "khrona-test-${UUID.randomUUID()}")
+        val store = RedisJobStore(redisUri(), namespace = "khrona-test-${UUID.randomUUID()}")
+        stores.add(store)
         return store
+    }
+
+    @Test
+    fun `isolates jobs and executions by namespace`() = runTest {
+        val namespace = "namespace-isolation-${UUID.randomUUID()}"
+        val firstStore = RedisJobStore(redisUri(), namespace = "$namespace-a")
+        val secondStore = RedisJobStore(redisUri(), namespace = "$namespace-b")
+        stores.add(firstStore)
+        stores.add(secondStore)
+        val firstExecution = JobExecution(jobId = "shared-job-id", scheduledAt = Instant.now().minusSeconds(1))
+        val secondExecution = JobExecution(jobId = "shared-job-id", scheduledAt = Instant.now().minusSeconds(1))
+
+        firstStore.saveExecution(firstExecution)
+        secondStore.saveExecution(secondExecution)
+
+        assertEquals(firstExecution.id, firstStore.getExecution(firstExecution.id)?.id)
+        assertEquals(secondExecution.id, secondStore.getExecution(secondExecution.id)?.id)
+        assertFalse(secondStore.listEligibleExecutions(Instant.now()).any { it.id == firstExecution.id })
+        assertFalse(firstStore.listEligibleExecutions(Instant.now()).any { it.id == secondExecution.id })
+    }
+
+    @Test
+    fun `claim ignores stale redis claim lock when execution state is pending`() = runTest {
+        val namespace = "stale-claim-lock-${UUID.randomUUID()}"
+        val store = RedisJobStore(redisUri(), namespace = namespace)
+        stores.add(store)
+        val execution = JobExecution(jobId = "stale-lock-job", scheduledAt = Instant.now())
+        store.saveExecution(execution)
+
+        RedisClient.create(redisUri()).use { client ->
+            client.connect().use { connection ->
+                connection.sync().set("$namespace:claim-locks:${execution.id}", "stale-worker")
+            }
+        }
+
+        assertTrue(store.claimExecution(execution.id, "worker-1", Duration.ofMinutes(5)))
+        assertEquals("worker-1", store.getExecution(execution.id)?.workerId)
     }
 
     @Test
@@ -95,8 +134,9 @@ class RedisJobStoreTest : JobStoreContract {
 
     @AfterEach
     fun tearDown() {
-        if (::store.isInitialized) {
-            store.close()
-        }
+        stores.forEach { it.close() }
+        stores.clear()
     }
+
+    private fun redisUri(): String = "redis://${redis.host}:${redis.getMappedPort(6379)}"
 }
