@@ -197,24 +197,15 @@ class RedisJobStore private constructor(
     }
 
     override suspend fun supersedeExecutionsByLockKey(lockKey: String, excludeExecutionId: UUID?): List<UUID> = inRedisContext {
-        val superseded = mutableListOf<UUID>()
-        commands.smembers(keys.lock(lockKey)).forEach { id ->
-            val executionId = UUID.fromString(id)
-            if (executionId == excludeExecutionId) return@forEach
-
-            val current = getStoredExecution(executionId) ?: return@forEach
-            val status = ExecutionStatus.valueOf(current.status)
-            if (status == ExecutionStatus.CLAIMED || status == ExecutionStatus.RUNNING) {
-                saveStoredExecution(
-                    current.copy(
-                        status = ExecutionStatus.SUPERSEDED.name,
-                        completedAt = Instant.now().toString()
-                    )
-                )
-                superseded.add(executionId)
-            }
-        }
-        superseded
+        commands.eval<List<String>>(
+            SUPERSEDE_BY_LOCK_SCRIPT,
+            ScriptOutputType.MULTI,
+            arrayOf(keys.executions, keys.lock(lockKey), keys.claimed, keys.running),
+            excludeExecutionId?.toString() ?: "",
+            Instant.now().toString(),
+            keys.executionLocksPrefix,
+            keys.claimLockPrefix
+        ).map { UUID.fromString(it) }
     }
 
     override fun close() {
@@ -381,6 +372,39 @@ class RedisJobStore private constructor(
 
             return 1
         """
+
+        private const val SUPERSEDE_BY_LOCK_SCRIPT = """
+            local superseded = {}
+            local ids = redis.call('SMEMBERS', KEYS[2])
+
+            for _, id in ipairs(ids) do
+                local execution_json = redis.call('HGET', KEYS[1], id)
+                if not execution_json then
+                    redis.call('SREM', KEYS[2], id)
+                elseif id ~= ARGV[1] then
+                    local execution = cjson.decode(execution_json)
+                    local status = execution['status'] or 'PENDING'
+                    if status == 'CLAIMED' or status == 'RUNNING' then
+                        execution['status'] = 'SUPERSEDED'
+                        execution['completedAt'] = ARGV[2]
+                        local execution_locks_key = ARGV[3] .. id
+                        local lock_indexes = redis.call('SMEMBERS', execution_locks_key)
+                        for _, lock_index in ipairs(lock_indexes) do
+                            redis.call('SREM', lock_index, id)
+                        end
+
+                        redis.call('HSET', KEYS[1], id, cjson.encode(execution))
+                        redis.call('ZREM', KEYS[3], id)
+                        redis.call('ZREM', KEYS[4], id)
+                        redis.call('DEL', execution_locks_key)
+                        redis.call('DEL', ARGV[4] .. id)
+                        table.insert(superseded, id)
+                    end
+                end
+            end
+
+            return superseded
+        """
     }
 }
 
@@ -444,10 +468,12 @@ private data class RedisKeys(private val namespace: String) {
     val claimed = "$namespace:claimed"
     val running = "$namespace:running"
     val lockPrefix = "$namespace:locks:"
+    val executionLocksPrefix = "$namespace:execution-locks:"
+    val claimLockPrefix = "$namespace:claim-locks:"
 
     fun lock(lockKey: String) = "$lockPrefix$lockKey"
-    fun executionLocks(id: String) = "$namespace:execution-locks:$id"
-    fun claimLock(id: String) = "$namespace:claim-locks:$id"
+    fun executionLocks(id: String) = "$executionLocksPrefix$id"
+    fun claimLock(id: String) = "$claimLockPrefix$id"
 }
 
 private object RedisPayloadJson {

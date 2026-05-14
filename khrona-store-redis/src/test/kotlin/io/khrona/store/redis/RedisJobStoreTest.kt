@@ -1,6 +1,7 @@
 package io.khrona.store.redis
 
 import io.khrona.core.JobStore
+import io.khrona.core.ExecutionStatus
 import io.khrona.core.JobExecution
 import io.khrona.core.testing.JobStoreContract
 import io.lettuce.core.RedisClient
@@ -79,6 +80,46 @@ class RedisJobStoreTest : JobStoreContract {
     }
 
     @Test
+    fun `heartbeat updates claimed index score`() = runTest {
+        val namespace = "heartbeat-score-${UUID.randomUUID()}"
+        val store = RedisJobStore(redisUri(), namespace = namespace)
+        stores.add(store)
+        val execution = JobExecution(jobId = "heartbeat-score-job", scheduledAt = Instant.now())
+        store.saveExecution(execution)
+
+        assertTrue(store.claimExecution(execution.id, "worker-1", Duration.ofMillis(100)))
+        val firstScore = redisScore(namespace, "claimed", execution.id)
+
+        assertTrue(store.heartbeat(execution.id, Duration.ofMinutes(5)))
+        val secondScore = redisScore(namespace, "claimed", execution.id)
+
+        assertTrue(secondScore > firstScore)
+    }
+
+    @Test
+    fun `supersede atomically marks active executions and cleans stale lock members`() = runTest {
+        val namespace = "supersede-cleanup-${UUID.randomUUID()}"
+        val store = RedisJobStore(redisUri(), namespace = namespace)
+        stores.add(store)
+        val lockKey = "replace-lock"
+        val activeExecution = JobExecution(jobId = "replace-job", scheduledAt = Instant.now(), lockKey = lockKey)
+        val excludedExecution = JobExecution(jobId = "replace-job", scheduledAt = Instant.now(), lockKey = lockKey)
+        val staleExecutionId = UUID.randomUUID()
+        store.saveExecution(activeExecution)
+        store.saveExecution(excludedExecution)
+        assertTrue(store.claimExecution(activeExecution.id, "worker-1", Duration.ofMinutes(5)))
+        assertTrue(store.claimExecution(excludedExecution.id, "worker-2", Duration.ofMinutes(5)))
+        addStaleLockMember(namespace, lockKey, staleExecutionId)
+
+        val superseded = store.supersedeExecutionsByLockKey(lockKey, excludeExecutionId = excludedExecution.id)
+
+        assertEquals(listOf(activeExecution.id), superseded)
+        assertEquals(ExecutionStatus.SUPERSEDED, store.getExecution(activeExecution.id)?.status)
+        assertEquals(ExecutionStatus.CLAIMED, store.getExecution(excludedExecution.id)?.status)
+        assertFalse(redisLockMembers(namespace, lockKey).contains(staleExecutionId.toString()))
+    }
+
+    @Test
     fun `claims execution once under concurrent contention`() = runTest {
         val store = createStore()
         val execution = JobExecution(jobId = "contended-job", scheduledAt = Instant.now())
@@ -139,4 +180,29 @@ class RedisJobStoreTest : JobStoreContract {
     }
 
     private fun redisUri(): String = "redis://${redis.host}:${redis.getMappedPort(6379)}"
+
+    private fun redisScore(namespace: String, index: String, id: UUID): Double {
+        RedisClient.create(redisUri()).use { client ->
+            client.connect().use { connection ->
+                return connection.sync().zscore("$namespace:$index", id.toString())
+            }
+        }
+    }
+
+    private fun addStaleLockMember(namespace: String, lockKey: String, id: UUID) {
+        RedisClient.create(redisUri()).use { client ->
+            client.connect().use { connection ->
+                connection.sync().sadd("$namespace:locks:$lockKey", id.toString())
+                connection.sync().sadd("$namespace:execution-locks:$id", "$namespace:locks:$lockKey")
+            }
+        }
+    }
+
+    private fun redisLockMembers(namespace: String, lockKey: String): Set<String> {
+        RedisClient.create(redisUri()).use { client ->
+            client.connect().use { connection ->
+                return connection.sync().smembers("$namespace:locks:$lockKey")
+            }
+        }
+    }
 }

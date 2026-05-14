@@ -2,7 +2,7 @@
 
 ## Current Implementation Status
 
-Last updated after the Redis multi-scheduler coverage slice.
+Last updated after the Redis atomic supersede slice.
 
 Implemented and verified:
 - `khrona-store-redis` module is included in Gradle.
@@ -11,6 +11,8 @@ Implemented and verified:
 - `RedisJobStore` supports the shared `JobStore` contract for job persistence, execution persistence, bounded eligible lookup, claiming, heartbeat, stale recovery, lock inspection, status updates, and structured payload round trips.
 - Namespace isolation is covered with two Redis stores sharing one Redis instance.
 - `claimExecution` uses a Lua script to atomically validate claimability, move ownership, update lease metadata, and clean pending/claimed/running/lock indexes.
+- `supersedeExecutionsByLockKey` uses a Lua script to atomically mark active executions as `SUPERSEDED`, clean lease indexes, delete claim locks, and remove stale lock members.
+- Heartbeat coverage verifies the claimed sorted-set score moves when a lease is extended.
 - Redis multi-scheduler coverage proves two schedulers sharing one Redis namespace do not duplicate interval, cron, one-time, or manual executions.
 - Concurrent claim contention test proves only one worker wins a pending execution claim.
 - Stale Redis claim-lock keys no longer block a pending execution whose persisted state is claimable.
@@ -18,11 +20,10 @@ Implemented and verified:
 - `./gradlew clean test` passes with the Redis module included.
 
 Important caveats:
-- `supersedeExecutionsByLockKey` is functional for the current store contract but Task 5.2 remains open because it is not yet implemented as an atomic Redis script with dedicated tests.
-- Atomic Redis supersede behavior, retry/DLQ/misfire scenarios, and README/operations docs are still pending.
+- Redis retry/DLQ/misfire scenarios and README/operations docs are still pending.
 
 Next resume step:
-- Start with Task 5.2. Recommended path: make `supersedeExecutionsByLockKey` atomic with a dedicated Lua script and replacement tests.
+- Start with Task 4.3 or Task 5.3. Recommended path: add running execution recovery coverage, then FORBID/REPLACE scheduler-level Redis locking scenarios.
 
 ## Phase 1: Module and Client Setup
 
@@ -58,7 +59,7 @@ Next resume step:
 ## Phase 5: Locking and Replacement
 
 - [x] **Task 5.1:** Implement `isLockHeld(lockKey, excludeExecutionId)` using Redis lock indexes.
-- [ ] **Task 5.2:** Implement `supersedeExecutionsByLockKey` atomically.
+- [x] **Task 5.2:** Implement `supersedeExecutionsByLockKey` atomically.
 - [ ] **Task 5.3:** Add tests for `FORBID` overlap prevention across scheduler instances.
 - [ ] **Task 5.4:** Add tests for `REPLACE` superseding active executions without superseding the newly claimed execution.
 
