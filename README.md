@@ -119,7 +119,7 @@ install(Khrona) {
 
 ## Persistent Storage (Redis)
 
-> **Experimental:** `RedisJobStore` is implemented and covered by integration tests, but it is still marked experimental until the v0.4 release-readiness review is complete. Validate it under your own Redis persistence, eviction, failover, and load settings before using it for critical production workloads.
+> **Experimental:** `RedisJobStore` is fully implemented and covered by integration tests, but it is currently marked as **experimental for production workloads**. Please validate it under your own Redis persistence, eviction, failover, and load settings before relying on it for critical scheduling.
 
 Redis can be used as a full `JobStore` when low-latency distributed coordination is preferred over JDBC. The Redis store persists job definitions and executions, uses sorted sets for bounded polling and lease recovery, and uses Lua scripts for atomic claim and replacement transitions.
 
@@ -453,7 +453,7 @@ Use Kotlin's `Duration` for human-readable intervals:
 - [x] **v0.2:** Persistence support (Postgres, H2), retries, and dead-letter handling.
 - [x] **v0.3:** Distributed execution, lease-based claiming, and concurrency policies.
 - [x] **v0.3.3:** Reliability hardening (Registry, Timeouts, Atomic REPLACE).
-- [x] **v0.4:** Redis-backed `JobStore` with atomic claiming, heartbeat, recovery, and lock semantics. **Experimental until release-readiness review is complete.**
+- [x] **v0.4:** Redis-backed `JobStore` with atomic claiming, heartbeat, recovery, and lock semantics. **(Experimental for production use)**
 - [ ] **v0.5:** Admin UI & Dashboard, Metrics (Micrometer/OpenTelemetry), lock inspection.
 - [ ] **v0.6:** Production hardening, testkit improvements, adaptive delay, and operator ergonomics.
 - [ ] **v0.7:** Android SQLite storage support.

@@ -1,6 +1,6 @@
 # Spec: v0.4 - Redis Store
 
-Status: **EXPERIMENTAL** until the Redis v0.4 release-readiness review is complete.
+Status: **EXPERIMENTAL for production workloads.**
 
 ## Overview
 

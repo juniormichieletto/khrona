@@ -4,7 +4,7 @@
 
 Last updated after completing Redis behavior coverage and operations docs.
 
-Status: implemented but **EXPERIMENTAL** until the Redis v0.4 release-readiness review is complete.
+Status: implemented but **EXPERIMENTAL for production workloads.**
 
 Implemented and verified:
 - `khrona-store-redis` module is included in Gradle.

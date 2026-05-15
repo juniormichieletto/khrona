@@ -56,7 +56,7 @@
 
 ## v0.4: Redis Store
 - Implementation plan: `.specs/features/v0.4-redis-store/`
-- Status: implemented but **EXPERIMENTAL** until the Redis v0.4 release-readiness review is complete.
+- Status: Fully implemented. **EXPERIMENTAL for production workloads.**
 - [x] Add `khrona-store-redis` module
 - [x] Implement Redis-backed `JobStore`
 - [x] Add atomic Redis claiming, heartbeat, recovery, and lock semantics

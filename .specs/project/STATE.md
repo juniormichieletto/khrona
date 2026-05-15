@@ -27,17 +27,16 @@
 - [ ] Implement Android SQLite Store (v0.7)
 
 ## Current Implementation Status
-- **Redis Store (v0.4):** Implemented but still **EXPERIMENTAL** until release-readiness review is complete. The `khrona-store-redis` module exists with Lettuce, `RedisJobStoreConfig`, Redis Testcontainers coverage, shared `JobStore` contract tests, structured payload tests, namespace isolation coverage, concurrent claim contention coverage, Lua-based atomic `claimExecution` index cleanup, Lua-based atomic supersede cleanup, heartbeat lease-index coverage, multi-scheduler coverage for interval/cron/one-time/manual executions, explicit five-scheduler Redis contention coverage, running recovery, FORBID/REPLACE locking, retries, dead-lettering, misfires, recurring next-run persistence, and README/architecture operations docs. `./gradlew clean test` passes.
-- **Redis remaining work:** Optional command-latency observability hook and release-readiness review before publishing v0.4.
-
+- **Redis Store (v0.4):** Fully implemented but marked as **EXPERIMENTAL** for production workloads. The `khrona-store-redis` module exists with Lettuce, `RedisJobStoreConfig`, Redis Testcontainers coverage, shared `JobStore` contract tests, structured payload tests, namespace isolation coverage, concurrent claim contention coverage, Lua-based atomic `claimExecution` index cleanup, Lua-based atomic supersede cleanup, heartbeat lease-index coverage, multi-scheduler coverage for interval/cron/one-time/manual executions, explicit five-scheduler Redis contention coverage, running recovery, FORBID/REPLACE locking, retries, dead-lettering, misfires, recurring next-run persistence, and README/architecture operations docs. `./gradlew clean test` passes.
+- **Redis remaining work:** Optional command-latency observability hook and long-term production hardening.
 ## Next Tasks
-- [ ] Run Redis v0.4 release-readiness review
 - [ ] Implement Admin API & Dashboard (v0.5)
 - [ ] Implement Metrics (Micrometer) (v0.5)
 - [ ] Add lock inspection capabilities (v0.5)
 - [ ] Implement Android SQLite Store (v0.7)
 - [ ] Add shutdown/cancellation contract hardening to a future reliability release
 - [ ] Add timezone support, DLQ tooling enhancements, and job pause/disable to future production features
+
 
 ## Deferred Ideas
 - Payload versioning/evolution (tracked in Future Considerations).
