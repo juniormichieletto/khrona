@@ -61,12 +61,12 @@ graph TD
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("io.github.juniormichieletto:khrona-ktor:0.3.3")
+    implementation("io.github.juniormichieletto:khrona-ktor:0.4.0")
     
     // Choose your storage:
-    implementation("io.github.juniormichieletto:khrona-store-memory:0.3.3") // For dev/testing
-    implementation("io.github.juniormichieletto:khrona-store-jdbc:0.3.3")   // For production
-    // implementation("io.github.juniormichieletto:khrona-store-redis:<v0.4+>") // Experimental Redis coordination
+    implementation("io.github.juniormichieletto:khrona-store-memory:0.4.0") // For dev/testing
+    implementation("io.github.juniormichieletto:khrona-store-jdbc:0.4.0")   // For production
+    // implementation("io.github.juniormichieletto:khrona-store-redis:0.4.0") // Experimental Redis coordination
 }
 ```
 
