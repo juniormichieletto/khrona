@@ -47,6 +47,8 @@ graph TD
             JDBC --- Oracle[Oracle]
             JDBC --- H2[H2]
         end
+
+        Redis --- RedisDB[Redis]
     end
 
     DSL --> Sch
