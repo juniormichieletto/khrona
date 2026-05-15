@@ -75,6 +75,7 @@
 - [ ] Harden claimed-before-active shutdown edge so newly claimed executions cannot rely only on lease expiry
 - [ ] Documentation & Samples
 - [ ] Performance Tuning
+- [ ] Establish Performance Test CI Pipeline to prevent regressions
 - [ ] Timezone-aware cron scheduling
 - [ ] Dead-letter queue tooling enhancements for inspection, replay, and cleanup
 - [ ] Job pause/disable support
@@ -91,7 +92,9 @@
 - [ ] Document Android lifecycle and WorkManager integration boundaries
 
 ## Future Considerations
-- **Cross-Database Adaptive Delay Scheduler:** Replace fixed idle polling with a hybrid adaptive loop that sleeps until the next known execution, stale recovery deadline, or a configurable max polling interval. The baseline must work across Memory, H2, PostgreSQL, MySQL, and Oracle without database-specific notifications. Native database wake-up mechanisms may be added later as optional optimizations.
+- **Performance CI Pipeline:** Integrate the preserved `@Disabled` performance tests into the CI/CD pipeline (e.g., as a scheduled nightly job) to monitor for significant CPU or memory utilization regressions across all storage engines.
+- **Cross-Database Adaptive Delay Scheduler:** Replace fixed idle polling with a hybrid adaptive loop that sleeps until the next known execution, stale recovery deadline, or a configurable max polling interval.
+ The baseline must work across Memory, H2, PostgreSQL, MySQL, and Oracle without database-specific notifications. Native database wake-up mechanisms may be added later as optional optimizations.
 - **Shutdown contract hardening:** Add focused tests for timeout, shutdown cancellation, cancellation propagation, and the claimed-before-active edge so the documented lifecycle remains enforceable.
 - **Timezone support:** Add timezone-aware cron scheduling while preserving UTC as the portable default behavior.
 - **Dead-letter queue tooling:** Expand current terminal `DEAD_LETTERED` status into operator-friendly inspection, replay, and cleanup workflows.
