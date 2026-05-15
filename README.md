@@ -145,17 +145,10 @@ install(Khrona) {
 
 ### Local Redis for Development
 
-Start a Redis container with settings that match Khrona's scheduler durability expectations:
+Start Redis with the included scripts. It uses settings that match Khrona's scheduler durability expectations: append-only persistence, periodic snapshots, `noeviction`, and a local development password.
 
 ```bash
-docker run -d --name khrona-redis \
-  -p 6379:6379 \
-  -v khrona-redis-data:/data \
-  redis:7-alpine redis-server \
-    --appendonly yes \
-    --save 60 1 \
-    --maxmemory-policy noeviction \
-    --requirepass khrona_dev_password
+./docker-start.sh
 ```
 
 Use this URI with the container above:
@@ -171,17 +164,20 @@ val store = RedisJobStore(
 )
 ```
 
-Check and clean up the local container:
+Check logs or stop the container:
 
 ```bash
-docker logs khrona-redis
-docker exec -it khrona-redis redis-cli -a khrona_dev_password PING
-docker stop khrona-redis
-docker rm khrona-redis
-docker volume rm khrona-redis-data
+docker compose logs redis
+./docker-stop.sh
 ```
 
-For a no-password quick smoke test, omit `--requirepass` and use `redis://localhost:6379/0`. Do not use that setup for shared environments.
+For a full cleanup (removing volumes and data):
+
+```bash
+docker compose down -v
+```
+
+For a no-password quick smoke test, remove `--requirepass` from `docker-compose.yml` and use `redis://localhost:6379/0`. Do not use that setup for shared environments.
 
 Use Redis URI features for security and topology:
 

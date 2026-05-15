@@ -1,0 +1,27 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: khrona-redis
+    ports:
+      - "6379:6379"
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --save
+      - "60"
+      - "1"
+      - --maxmemory-policy
+      - noeviction
+      - --requirepass
+      - khrona_dev_password
+    volumes:
+      - khrona-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "khrona_dev_password", "PING"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  khrona-redis-data:
