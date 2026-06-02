@@ -152,7 +152,9 @@ class Scheduler(
             // Check for misfire
             if (Duration.between(execution.scheduledAt, now) > config.misfireThreshold) {
                 if (jobDef.misfirePolicy == MisfirePolicy.IGNORE) {
-                    handleMisfire(execution, jobDef)
+                    if (store.claimExecution(execution.id, workerId, config.executionLeaseDuration)) {
+                        handleMisfire(execution, jobDef, now)
+                    }
                     return@forEach
                 } else {
                     log.info("[${execution.jobId}] Misfire detected (scheduled at ${execution.scheduledAt}), firing now due to FIRE_NOW policy")
@@ -210,21 +212,26 @@ class Scheduler(
         return store.isLockHeld(lockKey, excludeExecutionId = currentExecutionId)
     }
 
-    private suspend fun handleMisfire(execution: JobExecution, jobDef: JobDefinition) {
+    private suspend fun handleMisfire(execution: JobExecution, jobDef: JobDefinition, now: Instant) {
         log.info("[${execution.jobId}] Misfire detected (scheduled at ${execution.scheduledAt}), ignoring due to IGNORE policy")
         store.updateExecutionStatus(execution.id, ExecutionStatus.MISFIRED, "Misfire threshold exceeded")
         
         // Schedule next run
-        val next = jobDef.trigger.nextExecutionTime(Instant.now(clock))
+        val next = jobDef.trigger.nextExecutionTime(now)
+            ?.truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
         if (next != null) {
-            store.saveExecution(
-                JobExecution(
-                    jobId = jobDef.id,
-                    scheduledAt = next,
-                    lockKey = jobDef.lockKey
-                    // Do NOT propagate correlationId to next recurring run
+            val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
+            if (store.getExecution(deterministicId) == null) {
+                store.saveExecution(
+                    JobExecution(
+                        id = deterministicId,
+                        jobId = jobDef.id,
+                        scheduledAt = next,
+                        lockKey = jobDef.lockKey
+                        // Do NOT propagate correlationId to next recurring run
+                    )
                 )
-            )
+            }
         }
     }
 

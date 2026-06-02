@@ -1,11 +1,15 @@
 package io.khrona.core
 
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.time.Instant
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class MisfireTest {
@@ -209,5 +213,53 @@ class MisfireTest {
         }
         val expectedNext = CronTrigger("0 9 * * *", timeZone = "America/New_York").nextExecutionTime(now)
         assertEquals(expectedNext, nextExec?.scheduledAt)
+    }
+
+    @Test
+    fun `concurrent schedulers should persist one next execution when ignoring the same misfire`() = runTest {
+        val clock = SchedulerTest.TestClock(testScheduler)
+        val bothSchedulersFetchedExecution = CompletableDeferred<Unit>()
+        val eligibleFetchCount = AtomicInteger()
+        val store = object : MockJobStore(clock) {
+            override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> {
+                val eligible = super.listEligibleExecutions(now, limit)
+                if (eligibleFetchCount.incrementAndGet() == 2) {
+                    bothSchedulersFetchedExecution.complete(Unit)
+                }
+                bothSchedulersFetchedExecution.await()
+                return eligible
+            }
+        }
+        val now = Instant.now(clock)
+        val config = KhronaConfig().apply {
+            this.store = store
+            this.misfireThreshold = Duration.ofSeconds(30)
+            job("concurrent-misfire-ignore") {
+                every(Duration.ofMinutes(1))
+                misfirePolicy = MisfirePolicy.IGNORE
+                execute {}
+            }
+        }
+        val firstScheduler = Scheduler(config, this, clock)
+        val secondScheduler = Scheduler(config, this, clock)
+        val execution = JobExecution(
+            jobId = "concurrent-misfire-ignore",
+            scheduledAt = now.minus(Duration.ofMinutes(10))
+        )
+        store.saveExecution(execution)
+        store.saveJob(config.jobs.first())
+
+        val firstPoll = launch { firstScheduler.pollAndExecute() }
+        val secondPoll = launch { secondScheduler.pollAndExecute() }
+        firstPoll.join()
+        secondPoll.join()
+
+        val pendingExecutions = store.executions.values.filter {
+            it.jobId == execution.jobId && it.status == ExecutionStatus.PENDING
+        }
+        assertEquals(1, pendingExecutions.size)
+        val expectedNext = now.plus(Duration.ofMinutes(1))
+        val expectedId = UUID.nameUUIDFromBytes("${execution.jobId}:$expectedNext".toByteArray())
+        assertEquals(expectedId, pendingExecutions.single().id)
     }
 }
