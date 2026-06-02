@@ -6,6 +6,33 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
 
 > **Etymology:** The name **Khrona** is inspired by **Chronos** (Ancient Greek: χρόνος, “time”), the personification of time and the root of modern terms like “chronology.” The stylized spelling reflects a modern, system-oriented interpretation of temporal control and scheduling.
 
+## Table of Contents
+
+- [Features](#features)
+- [Architecture at a Glance](#architecture-at-a-glance)
+- [Job Execution Flow](#job-execution-flow)
+- [Installation](#installation)
+- [Quick Start (In-Memory)](#quick-start-in-memory)
+- [Persistent Storage (JDBC)](#persistent-storage-jdbc)
+- [Persistent Storage (Redis)](#persistent-storage-redis)
+  - [Local Redis for Development](#local-redis-for-development)
+- [MySQL 8 & Multi-Node Testing](#mysql-8--multi-node-testing)
+  - [Local Multi-Instance Setup](#local-multi-instance-setup)
+- [Advanced Configuration](#advanced-configuration)
+  - [Retry Policies](#retry-policies)
+  - [Concurrency & Locking](#concurrency--locking)
+  - [Long-Running Jobs, Timeouts, and Restarts](#long-running-jobs-timeouts-and-restarts)
+  - [Graceful Shutdown and Cancellation](#graceful-shutdown-and-cancellation)
+  - [Structured Payloads](#structured-payloads)
+  - [Misfire Policies](#misfire-policies)
+  - [Correlation ID & Observability](#correlation-id--observability)
+- [Manual Control (Standalone)](#manual-control-standalone)
+- [Trigger Formats](#trigger-formats)
+  - [Cron Trigger (Unix Format)](#cron-trigger-unix-format)
+  - [Interval Trigger](#interval-trigger)
+- [Roadmap](#roadmap)
+- [License](#license)
+
 ## Features
 
 - **🚀 Coroutine-native:** Built on Kotlin coroutines for efficient, non-blocking execution.
