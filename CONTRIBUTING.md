@@ -49,7 +49,7 @@ When preparing a new release, follow these steps:
 3. **Roadmap:** Update `.specs/project/ROADMAP.md` and the roadmap section in `README.md` to mark completed versions.
 4. **Commit:** Commit all documentation and version changes with a message like `release: vX.Y.Z`.
 5. **Tag:** Create an annotated git tag: `git tag -a vX.Y.Z -m "Release vX.Y.Z - Brief summary"`.
-6. **Push:** Push both the branch and the tags: `git push origin main --tags`.
+6. **Push:** Push both the branch and the tags: `git push origin main --tags`. The tag workflow publishes the modules to Maven Central and uses JReleaser to create a GitHub release without attaching JAR files.
 
 ## Performance Standards
 

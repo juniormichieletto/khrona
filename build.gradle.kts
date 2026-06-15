@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.kotlin.jvm) apply false
     alias(libs.plugins.kotlin.serialization) apply false
+    id("org.jreleaser") version "1.24.0"
     id("signing")
     id("maven-publish")
 }
@@ -12,6 +13,11 @@ allprojects {
     repositories {
         mavenCentral()
     }
+}
+
+jreleaser {
+    configFile.set(layout.projectDirectory.file("jreleaser.yml"))
+    dependsOnAssemble.set(false)
 }
 
 subprojects {

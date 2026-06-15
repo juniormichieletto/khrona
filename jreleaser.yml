@@ -1,0 +1,25 @@
+project:
+  name: khrona
+  description: Coroutine-native job scheduling for Kotlin and Ktor
+  authors:
+    - AJ
+  license: Apache-2.0
+  links:
+    homepage: https://github.com/juniormichieletto/khrona
+  inceptionYear: "2026"
+
+release:
+  github:
+    owner: juniormichieletto
+    name: khrona
+    skipTag: true
+    uploadAssets: NEVER
+    files: false
+    artifacts: false
+    checksums: false
+    signatures: false
+    catalogs: false
+    changelog:
+      enabled: true
+      formatted: ALWAYS
+      preset: conventional-commits

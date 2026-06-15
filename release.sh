@@ -30,4 +30,4 @@ git tag -a "$TAG" -m "Release $TAG"
 echo "Pushing tag $TAG..."
 git push origin "$TAG"
 
-echo "Tag $TAG pushed successfully. The GitHub Action will now handle the publishing to Maven Central."
+echo "Tag $TAG pushed successfully. The GitHub Action will publish to Maven Central and create the GitHub release."
