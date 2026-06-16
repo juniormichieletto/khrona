@@ -55,12 +55,12 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("io.github.juniormichieletto:khrona-ktor:0.4.0")
+    implementation("io.github.juniormichieletto:khrona-ktor:0.5.0")
     
     // Choose your storage:
-    implementation("io.github.juniormichieletto:khrona-store-memory:0.4.0") // For dev/testing
-    implementation("io.github.juniormichieletto:khrona-store-jdbc:0.4.0")   // For production
-    // implementation("io.github.juniormichieletto:khrona-store-redis:0.4.0") // Experimental Redis coordination
+    implementation("io.github.juniormichieletto:khrona-store-memory:0.5.0") // For dev/testing
+    implementation("io.github.juniormichieletto:khrona-store-jdbc:0.5.0")   // For production
+    // implementation("io.github.juniormichieletto:khrona-store-redis:0.5.0") // Experimental Redis coordination
 }
 ```
 

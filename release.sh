@@ -1,8 +1,8 @@
 #!/bin/bash
 set -e
 
-# Extract version from build.gradle.kts
-VERSION=$(grep "version =" build.gradle.kts | head -n 1 | awk -F'"' '{print $2}')
+# Extract the default release version from build.gradle.kts
+VERSION=$(sed -n 's/.*releaseVersion = providers.gradleProperty("releaseVersion").orElse("\([^"]*\)").*/\1/p' build.gradle.kts | head -n 1)
 
 if [ -z "$VERSION" ]; then
     echo "Error: Could not find version in build.gradle.kts"

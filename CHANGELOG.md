@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-06-16
+
+### Added
+- **GitHub Releases:** Added JReleaser-based GitHub release creation with generated release notes and no attached JAR assets.
+- **Release Backfill Tooling:** Added a dry-run-first helper for backfilling historical GitHub releases from existing tags.
+- **Release Process Notes:** Documented the normal release flow, historical backfill process, and verification commands in `docs/release-process.md`.
+- **Flyway Setup Docs:** Added README guidance for using the built-in JDBC schema with Flyway-managed migrations.
+
+### Changed
+- Reorganized README getting-started and architecture sections for clearer onboarding.
+- Serialized JDBC tests to reduce contention in integration test runs.
+
+### Fixed
+- Prevented duplicate schedules when concurrent schedulers handle ignored misfires.
+
 ## [0.4.0] - 2026-05-15
 
 ### Added
