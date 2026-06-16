@@ -51,6 +51,22 @@ When preparing a new release, follow these steps:
 5. **Tag:** Create an annotated git tag: `git tag -a vX.Y.Z -m "Release vX.Y.Z - Brief summary"`.
 6. **Push:** Push both the branch and the tags: `git push origin main --tags`. The tag workflow publishes the modules to Maven Central and uses JReleaser to create a GitHub release without attaching JAR files.
 
+### Backfilling GitHub Releases
+
+Historical tags can be backfilled with JReleaser by running:
+
+```bash
+./scripts/backfill-releases.sh
+```
+
+The script defaults to dry-run mode and does not create GitHub releases. After reviewing the generated output, create the releases with:
+
+```bash
+JRELEASER_GITHUB_TOKEN=... ./scripts/backfill-releases.sh --execute
+```
+
+Execution mode requires a clean working tree and keeps release asset uploads disabled.
+
 ## Performance Standards
 
 - **CPU Efficiency:** Polling overhead should remain below 1% CPU for a moderate number of jobs (e.g., 10-100) across all storage engines.

@@ -6,9 +6,11 @@ plugins {
     id("maven-publish")
 }
 
+val releaseVersion = providers.gradleProperty("releaseVersion").orElse("0.4.0")
+
 allprojects {
     group = "io.github.juniormichieletto"
-    version = "0.4.0"
+    version = releaseVersion.get()
 
     repositories {
         mavenCentral()
@@ -16,7 +18,8 @@ allprojects {
 }
 
 jreleaser {
-    configFile.set(layout.projectDirectory.file("jreleaser.yml"))
+    val jreleaserConfigFile = providers.gradleProperty("jreleaserConfigFile").orElse("jreleaser.yml")
+    configFile.set(layout.projectDirectory.file(jreleaserConfigFile.get()))
     dependsOnAssemble.set(false)
 }
 
