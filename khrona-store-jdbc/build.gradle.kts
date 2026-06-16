@@ -21,3 +21,14 @@ dependencies {
     testImplementation(libs.testcontainers.junit)
     "testRuntimeOnly"("org.junit.platform:junit-platform-launcher")
 }
+
+tasks.withType<Test>().configureEach {
+    // JDBC tests start heavyweight database containers; keep them serialized to avoid memory spikes.
+    maxParallelForks = 1
+    systemProperty("junit.jupiter.execution.parallel.enabled", "false")
+    mustRunAfter(
+        rootProject.subprojects
+            .filter { it.path != project.path }
+            .map { "${it.path}:test" }
+    )
+}
