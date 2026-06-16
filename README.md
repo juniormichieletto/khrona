@@ -12,6 +12,7 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
 - [Installation](#installation)
 - [Quick Start (In-Memory)](#quick-start-in-memory)
 - [Persistent Storage (JDBC)](#persistent-storage-jdbc)
+  - [Flyway-managed schema](#flyway-managed-schema)
 - [Persistent Storage (Redis)](#persistent-storage-redis)
   - [Local Redis for Development](#local-redis-for-development)
 - [MySQL 8 & Multi-Node Testing](#mysql-8--multi-node-testing)
@@ -109,6 +110,59 @@ install(Khrona) {
 ```
 
 `migrate()` is suspend and fail-fast: schema errors are surfaced during startup instead of being silently ignored. Re-running migration is idempotent for the built-in schema and indexes.
+
+### Flyway-managed schema
+
+If your application already uses Flyway, create Khrona's JDBC tables through a normal Flyway migration and skip `store.migrate()` during startup. This keeps schema ownership in one place while still using `JdbcJobStore` at runtime.
+
+Create a migration such as `src/main/resources/db/migration/V1__create_khrona_tables.sql`:
+
+```sql
+CREATE TABLE IF NOT EXISTS khrona_jobs (
+    id VARCHAR(255) PRIMARY KEY,
+    definition_json TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS khrona_executions (
+    id VARCHAR(36) PRIMARY KEY,
+    job_id VARCHAR(255) NOT NULL,
+    status VARCHAR(50) NOT NULL,
+    scheduled_at TIMESTAMP NOT NULL,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    claimed_at TIMESTAMP,
+    claimed_by VARCHAR(255),
+    expires_at TIMESTAMP,
+    attempt INT DEFAULT 0,
+    error TEXT,
+    payload_json TEXT,
+    lock_key VARCHAR(255),
+    correlation_id VARCHAR(255),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_khrona_executions_status_scheduled
+    ON khrona_executions(status, scheduled_at);
+
+CREATE INDEX IF NOT EXISTS idx_khrona_executions_lock_status_expires
+    ON khrona_executions(lock_key, status, expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_khrona_executions_status_expires
+    ON khrona_executions(status, expires_at);
+```
+
+Run Flyway before installing `Khrona`, then construct the store without calling `migrate()`:
+
+```kotlin
+val store = JdbcJobStore(dataSource, PostgresDialect())
+
+install(Khrona) {
+    this.store = store
+}
+```
+
+The SQL above matches the built-in `khrona_schema.sql` resource used by `store.migrate()`. Adapt the column types for databases that need dialect-specific changes, such as using `CLOB` instead of `TEXT` on Oracle.
 
 ## Persistent Storage (Redis)
 
