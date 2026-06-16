@@ -9,8 +9,6 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
 ## Table of Contents
 
 - [Features](#features)
-- [Architecture at a Glance](#architecture-at-a-glance)
-- [Job Execution Flow](#job-execution-flow)
 - [Installation](#installation)
 - [Quick Start (In-Memory)](#quick-start-in-memory)
 - [Persistent Storage (JDBC)](#persistent-storage-jdbc)
@@ -30,6 +28,8 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
 - [Trigger Formats](#trigger-formats)
   - [Cron Trigger (Unix Format)](#cron-trigger-unix-format)
   - [Interval Trigger](#interval-trigger)
+- [Architecture at a Glance](#architecture-at-a-glance)
+- [Job Execution Flow](#job-execution-flow)
 - [Roadmap](#roadmap)
 - [License](#license)
 
@@ -48,128 +48,6 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
 - **⚡ Redis Store (Experimental):** Redis-backed coordination with atomic claiming, leases, recovery, and lock replacement.
 - **🌐 Distributed Ready:** Multi-node deployment support with deterministic IDs and distributed locking.
 - **🔌 Ktor Integration:** First-class Ktor plugin with seamless lifecycle management.
-
-## Architecture at a Glance
-
-```mermaid
-graph TD
-    subgraph "Client Layer"
-        DSL[Kotlin DSL] --> Ktor[Ktor Plugin]
-    end
-
-    subgraph "Core Engine"
-        Sch[Scheduler] --> Workers[Execution Coroutines]
-        Workers --> Heartbeat[Heartbeat Manager]
-    end
-
-    subgraph "Storage Layer (SPI)"
-        Store[JobStore Interface]
-        Memory[MemoryJobStore] --- Store
-        JDBC[JdbcJobStore] --- Store
-        Redis[RedisJobStore] --- Store
-        
-        subgraph "JDBC Dialects"
-            JDBC --- Postgres[PostgreSQL]
-            JDBC --- MySql[MySQL 8]
-            JDBC --- Oracle[Oracle]
-            JDBC --- H2[H2]
-        end
-
-        Redis --- RedisDB[Redis]
-    end
-
-    DSL --> Sch
-    Sch <--> Store
-    Workers <--> Store
-```
-
-> For a detailed breakdown of the execution flow and sequence diagrams, see the [Full Architecture Document](.specs/codebase/ARCHITECTURE.md). For scheduler and database load guidance, see the [Performance Guide](.specs/codebase/PERFORMANCE.md).
-
-## Job Execution Flow
-
-The scheduler coordinates every execution through the configured `JobStore`. With `JdbcJobStore`, each store call shown below becomes a database query or update against `khrona_jobs` or `khrona_executions`. With `RedisJobStore`, the same contract is implemented with hashes, sorted sets, lock sets, and Lua scripts.
-
-```mermaid
-flowchart TD
-    Start["Scheduler starts or job is registered"] --> SaveJob["Store job definition<br/>saveJob"]
-    SaveJob --> FindFirst["Calculate first scheduled time"]
-    FindFirst --> Existing{"Execution ID already exists?<br/>getExecution"}
-    Existing -- "No" --> SavePending["Persist PENDING execution<br/>saveExecution"]
-    Existing -- "Yes" --> PollWait
-    SavePending --> PollWait["Wait for fixed polling interval"]
-    Manual["Manual trigger(jobId, payload)"] --> LoadManual["Load job definition<br/>getJob"]
-    LoadManual --> SaveManual["Persist immediate PENDING execution<br/>with a random ID<br/>saveExecution"]
-    SaveManual --> PollWait
-
-    PollWait --> RecoveryDue{"Stale recovery due?<br/>checked about once per minute"}
-    RecoveryDue -- "Yes" --> Recover["Reset expired CLAIMED or RUNNING<br/>executions to PENDING<br/>resetExpiredExecutions"]
-    RecoveryDue -- "No" --> Fetch
-    Recover --> Fetch["Fetch due work up to pollBatchSize<br/>PENDING or expired CLAIMED/RUNNING<br/>listEligibleExecutions"]
-
-    Fetch --> Eligible{"Eligible execution found?"}
-    Eligible -- "No" --> PollWait
-    Eligible -- "Yes" --> Handler{"Local handler registered?"}
-    Handler -- "No: another node may own the handler" --> NextEligible["Check next fetched execution"]
-    Handler -- "Yes" --> FreshJob["Re-fetch latest job definition<br/>getJob"]
-
-    FreshJob --> JobFound{"Job definition exists?"}
-    JobFound -- "No" --> NextEligible
-    JobFound -- "Yes" --> Misfire{"Older than misfireThreshold?"}
-    Misfire -- "Yes + IGNORE" --> ClaimMisfire["Atomically claim ignored misfire<br/>claimExecution"]
-    ClaimMisfire -- "Won claim" --> MarkMisfire["Mark MISFIRED and persist deterministic<br/>next run calculated from current time<br/>updateExecutionStatus + saveExecution"]
-    ClaimMisfire -- "Lost claim" --> NextEligible
-    Misfire -- "No or FIRE_NOW" --> Policy{"Concurrency policy"}
-    MarkMisfire --> NextEligible
-
-    Policy -- "ALLOW or REPLACE" --> Claim
-    Policy -- "FORBID" --> PreLock{"Active unexpired lock exists?<br/>isLockHeld"}
-    PreLock -- "Yes" --> NextEligible
-    PreLock -- "No" --> Claim["Atomically claim with worker ID and lease<br/>PENDING or expired active -> CLAIMED<br/>claimExecution"]
-
-    Claim --> Claimed{"Claim succeeded?"}
-    Claimed -- "No: another node won" --> NextEligible
-    Claimed -- "Yes + REPLACE" --> Supersede["Mark older active executions with same lock<br/>as SUPERSEDED and cancel local coroutines<br/>supersedeExecutionsByLockKey"]
-    Claimed -- "Yes + ALLOW" --> Launch
-    Claimed -- "Yes + FORBID" --> PostLock{"Does another active execution<br/>hold the same lock?<br/>isLockHeld excluding current ID"}
-    Supersede --> Launch
-    PostLock -- "Yes: race detected" --> Release["Release current claim back to PENDING<br/>updateExecutionStatus"]
-    PostLock -- "No" --> Launch["Launch execution coroutine"]
-    Release --> NextEligible
-
-    Launch --> Running["Mark RUNNING<br/>updateExecutionStatus"]
-    Running --> Heartbeat["While handler runs, extend lease periodically<br/>heartbeat"]
-    Running --> Execute["Run handler<br/>optionally within timeout"]
-    Heartbeat -- "Lease update rejected" --> Cancel["Cancel handler: execution was reclaimed<br/>or superseded"]
-
-    Execute -- "Success" --> Success["Mark SUCCESS<br/>updateExecutionStatus"]
-    Execute -- "Failure or timeout" --> Retry{"Retry attempts remain?"}
-    Execute -- "Cancellation" --> Cancel
-    Retry -- "Yes" --> Failed["Mark FAILED and persist a new<br/>PENDING retry with backoff"]
-    Retry -- "No" --> Dead["Mark DEAD_LETTERED"]
-    Success --> Recurring{"Recurring trigger has a next run?"}
-    Dead --> Recurring
-    Failed --> NextEligible
-    Recurring -- "Yes" --> SaveNext["Persist next deterministic<br/>PENDING execution if absent"]
-    Recurring -- "No" --> NextEligible
-    SaveNext --> NextEligible
-    Cancel --> NextEligible
-    NextEligible --> MoreFetched{"More fetched executions?"}
-    MoreFetched -- "Yes" --> Eligible
-    MoreFetched -- "No: batch exhausted" --> PollWait
-```
-
-The lock is represented by active execution state, not by a separate scheduler-owned mutex. An execution holds its `lockKey` while it is `CLAIMED` or `RUNNING` and its lease is still valid. Heartbeats extend that lease. If a worker crashes or stops heartbeating, the execution expires and can be reclaimed; periodic stale recovery also moves expired active executions back to `PENDING`.
-
-Recurring scheduling intentionally uses two reference points. When `MisfirePolicy.IGNORE` skips an overdue execution, Khrona calculates the replacement from the current time so it does not replay the missed cadence. After `SUCCESS` or terminal `DEAD_LETTERED` failure, Khrona calculates the next run from the previous `scheduledAt` value to preserve the recurring cadence.
-
-For JDBC, the main database access points are:
-
-- `listEligibleExecutions`: reads due `PENDING` rows and expired `CLAIMED` or `RUNNING` rows, ordered by `scheduled_at` and bounded by `pollBatchSize`.
-- `claimExecution`: performs an atomic conditional update to `CLAIMED`; PostgreSQL and MySQL use `FOR UPDATE SKIP LOCKED` so only one competing worker wins.
-- `isLockHeld`: checks for another unexpired `CLAIMED` or `RUNNING` row with the same `lock_key`.
-- `heartbeat`: updates `expires_at` only while the row remains `CLAIMED` or `RUNNING`.
-- `resetExpiredExecutions`: returns expired active rows to `PENDING` so work can resume after a crash or lost worker.
-- `supersedeExecutionsByLockKey`: transactionally marks older active rows as `SUPERSEDED` for `ConcurrencyPolicy.REPLACE`.
 
 ## Installation
 
@@ -561,6 +439,128 @@ Khrona still stores and compares scheduled executions as UTC `Instant`s. The tim
 Use Kotlin's `Duration` for human-readable intervals:
 - `every(30.seconds)`
 - `every(1.hours)`
+
+## Architecture at a Glance
+
+```mermaid
+graph TD
+    subgraph "Client Layer"
+        DSL[Kotlin DSL] --> Ktor[Ktor Plugin]
+    end
+
+    subgraph "Core Engine"
+        Sch[Scheduler] --> Workers[Execution Coroutines]
+        Workers --> Heartbeat[Heartbeat Manager]
+    end
+
+    subgraph "Storage Layer (SPI)"
+        Store[JobStore Interface]
+        Memory[MemoryJobStore] --- Store
+        JDBC[JdbcJobStore] --- Store
+        Redis[RedisJobStore] --- Store
+
+        subgraph "JDBC Dialects"
+            JDBC --- Postgres[PostgreSQL]
+            JDBC --- MySql[MySQL 8]
+            JDBC --- Oracle[Oracle]
+            JDBC --- H2[H2]
+        end
+
+        Redis --- RedisDB[Redis]
+    end
+
+    DSL --> Sch
+    Sch <--> Store
+    Workers <--> Store
+```
+
+> For a detailed breakdown of the execution flow and sequence diagrams, see the [Full Architecture Document](.specs/codebase/ARCHITECTURE.md). For scheduler and database load guidance, see the [Performance Guide](.specs/codebase/PERFORMANCE.md).
+
+## Job Execution Flow
+
+The scheduler coordinates every execution through the configured `JobStore`. With `JdbcJobStore`, each store call shown below becomes a database query or update against `khrona_jobs` or `khrona_executions`. With `RedisJobStore`, the same contract is implemented with hashes, sorted sets, lock sets, and Lua scripts.
+
+```mermaid
+flowchart TD
+    Start["Scheduler starts or job is registered"] --> SaveJob["Store job definition<br/>saveJob"]
+    SaveJob --> FindFirst["Calculate first scheduled time"]
+    FindFirst --> Existing{"Execution ID already exists?<br/>getExecution"}
+    Existing -- "No" --> SavePending["Persist PENDING execution<br/>saveExecution"]
+    Existing -- "Yes" --> PollWait
+    SavePending --> PollWait["Wait for fixed polling interval"]
+    Manual["Manual trigger(jobId, payload)"] --> LoadManual["Load job definition<br/>getJob"]
+    LoadManual --> SaveManual["Persist immediate PENDING execution<br/>with a random ID<br/>saveExecution"]
+    SaveManual --> PollWait
+
+    PollWait --> RecoveryDue{"Stale recovery due?<br/>checked about once per minute"}
+    RecoveryDue -- "Yes" --> Recover["Reset expired CLAIMED or RUNNING<br/>executions to PENDING<br/>resetExpiredExecutions"]
+    RecoveryDue -- "No" --> Fetch
+    Recover --> Fetch["Fetch due work up to pollBatchSize<br/>PENDING or expired CLAIMED/RUNNING<br/>listEligibleExecutions"]
+
+    Fetch --> Eligible{"Eligible execution found?"}
+    Eligible -- "No" --> PollWait
+    Eligible -- "Yes" --> Handler{"Local handler registered?"}
+    Handler -- "No: another node may own the handler" --> NextEligible["Check next fetched execution"]
+    Handler -- "Yes" --> FreshJob["Re-fetch latest job definition<br/>getJob"]
+
+    FreshJob --> JobFound{"Job definition exists?"}
+    JobFound -- "No" --> NextEligible
+    JobFound -- "Yes" --> Misfire{"Older than misfireThreshold?"}
+    Misfire -- "Yes + IGNORE" --> ClaimMisfire["Atomically claim ignored misfire<br/>claimExecution"]
+    ClaimMisfire -- "Won claim" --> MarkMisfire["Mark MISFIRED and persist deterministic<br/>next run calculated from current time<br/>updateExecutionStatus + saveExecution"]
+    ClaimMisfire -- "Lost claim" --> NextEligible
+    Misfire -- "No or FIRE_NOW" --> Policy{"Concurrency policy"}
+    MarkMisfire --> NextEligible
+
+    Policy -- "ALLOW or REPLACE" --> Claim
+    Policy -- "FORBID" --> PreLock{"Active unexpired lock exists?<br/>isLockHeld"}
+    PreLock -- "Yes" --> NextEligible
+    PreLock -- "No" --> Claim["Atomically claim with worker ID and lease<br/>PENDING or expired active -> CLAIMED<br/>claimExecution"]
+
+    Claim --> Claimed{"Claim succeeded?"}
+    Claimed -- "No: another node won" --> NextEligible
+    Claimed -- "Yes + REPLACE" --> Supersede["Mark older active executions with same lock<br/>as SUPERSEDED and cancel local coroutines<br/>supersedeExecutionsByLockKey"]
+    Claimed -- "Yes + ALLOW" --> Launch
+    Claimed -- "Yes + FORBID" --> PostLock{"Does another active execution<br/>hold the same lock?<br/>isLockHeld excluding current ID"}
+    Supersede --> Launch
+    PostLock -- "Yes: race detected" --> Release["Release current claim back to PENDING<br/>updateExecutionStatus"]
+    PostLock -- "No" --> Launch["Launch execution coroutine"]
+    Release --> NextEligible
+
+    Launch --> Running["Mark RUNNING<br/>updateExecutionStatus"]
+    Running --> Heartbeat["While handler runs, extend lease periodically<br/>heartbeat"]
+    Running --> Execute["Run handler<br/>optionally within timeout"]
+    Heartbeat -- "Lease update rejected" --> Cancel["Cancel handler: execution was reclaimed<br/>or superseded"]
+
+    Execute -- "Success" --> Success["Mark SUCCESS<br/>updateExecutionStatus"]
+    Execute -- "Failure or timeout" --> Retry{"Retry attempts remain?"}
+    Execute -- "Cancellation" --> Cancel
+    Retry -- "Yes" --> Failed["Mark FAILED and persist a new<br/>PENDING retry with backoff"]
+    Retry -- "No" --> Dead["Mark DEAD_LETTERED"]
+    Success --> Recurring{"Recurring trigger has a next run?"}
+    Dead --> Recurring
+    Failed --> NextEligible
+    Recurring -- "Yes" --> SaveNext["Persist next deterministic<br/>PENDING execution if absent"]
+    Recurring -- "No" --> NextEligible
+    SaveNext --> NextEligible
+    Cancel --> NextEligible
+    NextEligible --> MoreFetched{"More fetched executions?"}
+    MoreFetched -- "Yes" --> Eligible
+    MoreFetched -- "No: batch exhausted" --> PollWait
+```
+
+The lock is represented by active execution state, not by a separate scheduler-owned mutex. An execution holds its `lockKey` while it is `CLAIMED` or `RUNNING` and its lease is still valid. Heartbeats extend that lease. If a worker crashes or stops heartbeating, the execution expires and can be reclaimed; periodic stale recovery also moves expired active executions back to `PENDING`.
+
+Recurring scheduling intentionally uses two reference points. When `MisfirePolicy.IGNORE` skips an overdue execution, Khrona calculates the replacement from the current time so it does not replay the missed cadence. After `SUCCESS` or terminal `DEAD_LETTERED` failure, Khrona calculates the next run from the previous `scheduledAt` value to preserve the recurring cadence.
+
+For JDBC, the main database access points are:
+
+- `listEligibleExecutions`: reads due `PENDING` rows and expired `CLAIMED` or `RUNNING` rows, ordered by `scheduled_at` and bounded by `pollBatchSize`.
+- `claimExecution`: performs an atomic conditional update to `CLAIMED`; PostgreSQL and MySQL use `FOR UPDATE SKIP LOCKED` so only one competing worker wins.
+- `isLockHeld`: checks for another unexpired `CLAIMED` or `RUNNING` row with the same `lock_key`.
+- `heartbeat`: updates `expires_at` only while the row remains `CLAIMED` or `RUNNING`.
+- `resetExpiredExecutions`: returns expired active rows to `PENDING` so work can resume after a crash or lost worker.
+- `supersedeExecutionsByLockKey`: transactionally marks older active rows as `SUPERSEDED` for `ConcurrencyPolicy.REPLACE`.
 
 ## Roadmap
 
