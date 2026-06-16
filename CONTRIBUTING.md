@@ -53,19 +53,7 @@ When preparing a new release, follow these steps:
 
 ### Backfilling GitHub Releases
 
-Historical tags can be backfilled with JReleaser by running:
-
-```bash
-./scripts/backfill-releases.sh
-```
-
-The script defaults to dry-run mode and does not create GitHub releases. After reviewing the generated output, create the releases with:
-
-```bash
-JRELEASER_GITHUB_TOKEN=... ./scripts/backfill-releases.sh --execute
-```
-
-Execution mode requires a clean working tree and keeps release asset uploads disabled.
+Historical tags can be backfilled with JReleaser. See `docs/release-process.md` for the rationale, safety checks, and verification steps.
 
 ## Performance Standards
 
