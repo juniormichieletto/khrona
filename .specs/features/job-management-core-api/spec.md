@@ -1,0 +1,36 @@
+# Job Management Core API
+
+## Goal
+
+Expose reusable core functions for applications to inspect and control Khrona jobs without requiring a built-in REST API. Host applications should be able to wrap these functions in REST endpoints, admin screens, CLIs, or internal health tooling.
+
+## Requirements
+
+- **REQ-JM1: Job Listing:** Applications can list registered and persisted jobs through `khrona-core`.
+- **REQ-JM2: Job Overview:** Applications can retrieve a single job overview by job ID, including definition metadata and derived runtime state.
+- **REQ-JM3: Status-Derived Progress:** Applications can inspect job progress using persisted execution state: latest execution, active executions, next pending execution, status counts, timestamps, attempt, worker, and error fields.
+- **REQ-JM4: History Listing:** Applications can list execution history for a job using bounded query options.
+- **REQ-JM5: Manual Start:** Applications can manually start a registered job with an optional payload.
+- **REQ-JM6: Pause And Resume:** Applications can pause and resume a job without deleting its definition or execution history.
+- **REQ-JM7: Paused Scheduling:** Paused jobs must not claim or execute pending work. Pending executions remain persisted while paused.
+- **REQ-JM8: Resume Behavior:** Resumed jobs process existing pending work through the normal scheduler and misfire rules.
+- **REQ-JM9: Local Stop:** Applications can stop executions that are active in the current scheduler process.
+- **REQ-JM10: Stop Status:** A successful manual stop must persist an explicit terminal execution status.
+- **REQ-JM11: Store Portability:** Management queries must work across Memory, JDBC, Redis, and test stores.
+- **REQ-JM12: Core-Only First Pass:** The first implementation is core-only. Ktor routes and REST security policy are deferred.
+
+## Non-Goals
+
+- Built-in REST routes or admin UI.
+- RBAC, authentication, authorization, or tenant policy.
+- Cross-node stop commands.
+- Handler-reported percent, checkpoint, or message progress.
+- Deleting, compacting, replaying, or cleaning up old history.
+- Database-specific notification or wake-up integrations.
+
+## Success Criteria
+
+- A host app can call Khrona core APIs to list jobs, inspect status, start a job, pause/resume a job, stop local active work, and list history.
+- Pause state is persisted in the shared job definition so all scheduler instances using the same store observe it.
+- Stop behavior is explicit about being local to the current scheduler instance.
+- The shared store contract tests cover the execution query behavior for every built-in store.

@@ -26,6 +26,7 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
   - [Misfire Policies](#misfire-policies)
   - [Correlation ID & Observability](#correlation-id--observability)
 - [Manual Control (Standalone)](#manual-control-standalone)
+  - [Planned Job Management API](#planned-job-management-api)
 - [Trigger Formats](#trigger-formats)
   - [Cron Trigger (Unix Format)](#cron-trigger-unix-format)
   - [Interval Trigger](#interval-trigger)
@@ -456,6 +457,33 @@ runBlocking {
     scheduler.stop()
 }
 ```
+
+### Planned Job Management API
+
+Khrona's planned core job management API will expose reusable functions that host applications can wrap in REST routes, admin pages, CLIs, or internal tooling.
+
+The planned API shape is:
+
+```kotlin
+val jobs = scheduler.listJobOverviews()
+val report = scheduler.getJobOverview("daily-report")
+val history = scheduler.listJobHistory("daily-report", limit = 50)
+
+scheduler.startJob("daily-report", payload = mapOf("source" to "admin"))
+
+scheduler.pauseJob("daily-report")
+// Pending work is retained but not executed while paused.
+scheduler.resumeJob("daily-report")
+
+val stopped = scheduler.stopJob("daily-report")
+// Stop is local to this scheduler instance.
+```
+
+Progress will be derived from persisted execution state: latest execution, active executions, next pending execution, status counts, timestamps, attempts, worker ownership, and errors. Handler-reported percentage or checkpoint progress is deferred to application-owned state.
+
+Pause will be persisted in the job definition, so all scheduler instances sharing the same store can observe it. Stop will only affect executions active in the current process because Khrona does not currently have a cross-node command channel.
+
+The implementation plan is tracked in `.specs/features/job-management-core-api/`.
 
 ## Trigger Formats
 
