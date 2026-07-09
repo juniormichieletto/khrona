@@ -16,7 +16,7 @@ Suggested fields:
 - `JobProgress`: `latestExecution`, `nextPendingExecution`, `activeExecutions`, `countsByStatus`.
 - `JobControlResult`: success flag, affected execution IDs, and a short reason for no-op or failure cases.
 
-Add scheduler management functions:
+Add scheduler management functions that host applications can wrap in their own operational surfaces:
 
 - `listJobOverviews()`
 - `getJobOverview(jobId)`
@@ -79,3 +79,4 @@ Add `CANCELLED` as a terminal `ExecutionStatus`.
 - Existing store schemas do not need a new column if `paused` remains inside serialized `JobDefinition`.
 - JDBC execution query can use existing `khrona_executions` columns and indexes.
 - Redis does not need a new index for the first pass because the portable baseline can scan the stored execution hash.
+- Khrona must not add Ktor routes, REST endpoint paths, dashboard components, or admin UI as part of this feature. Applications own those integration surfaces.

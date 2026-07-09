@@ -2,7 +2,7 @@
 
 ## Next Tasks
 - [ ] Run Redis v0.4 release-readiness review
-- [ ] Implement Admin API & Dashboard (v0.5)
+- [ ] Implement Core Job Management API (v0.5)
 - [ ] Implement Metrics (Micrometer/OpenTelemetry) (v0.5)
 - [ ] Add lock inspection capabilities (v0.5)
 - [ ] Implement Android SQLite Store (v0.7)
@@ -64,7 +64,7 @@
 - [x] Document Redis persistence, eviction, namespace, and cleanup tradeoffs
 
 ## v0.5: Ops & Visibility
-- [ ] Admin API & Routes
+- [ ] Core Job Management API
 - [ ] Metrics & Tracing (Micrometer/OpenTelemetry)
 - [x] Misfire Policies
 - [ ] Lock Inspection

@@ -23,14 +23,14 @@
 - [x] Add Android SQLite Store implementation plan (v0.7)
 - [x] Add Redis Store implementation plan (v0.4)
 - [x] Implement Redis Store (v0.4)
-- [ ] Implement Admin API & Visibility (v0.5)
+- [ ] Implement Core Job Management API & Visibility (v0.5)
 - [ ] Implement Android SQLite Store (v0.7)
 
 ## Current Implementation Status
 - **Redis Store (v0.4):** Fully implemented but marked as **EXPERIMENTAL** for production workloads. The `khrona-store-redis` module exists with Lettuce, `RedisJobStoreConfig`, Redis Testcontainers coverage, shared `JobStore` contract tests, structured payload tests, namespace isolation coverage, concurrent claim contention coverage, Lua-based atomic `claimExecution` index cleanup, Lua-based atomic supersede cleanup, heartbeat lease-index coverage, multi-scheduler coverage for interval/cron/one-time/manual executions, explicit five-scheduler Redis contention coverage, running recovery, FORBID/REPLACE locking, retries, dead-lettering, misfires, recurring next-run persistence, and README/architecture operations docs. `./gradlew clean test` passes.
 - **Redis remaining work:** Optional command-latency observability hook and long-term production hardening.
 ## Next Tasks
-- [ ] Implement Admin API & Dashboard (v0.5)
+- [ ] Implement Core Job Management API (v0.5)
 - [ ] Implement Metrics (Micrometer) (v0.5)
 - [ ] Add lock inspection capabilities (v0.5)
 - [ ] Implement Android SQLite Store (v0.7)
@@ -40,7 +40,7 @@
 
 ## Deferred Ideas
 - Payload versioning/evolution (tracked in Future Considerations).
-- Advanced RBAC for Admin API.
+- Host-owned management security patterns for applications that expose Khrona operations.
 - Dynamic Lock Keys.
 - Shutdown/cancellation contract tests and claimed-before-active edge hardening.
 - Timezone-aware cron scheduling.

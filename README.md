@@ -460,7 +460,7 @@ runBlocking {
 
 ### Planned Job Management API
 
-Khrona's planned core job management API will expose reusable functions that host applications can wrap in REST routes, admin pages, CLIs, or internal tooling.
+Khrona's planned core job management API will expose reusable functions that host applications can wrap in their own REST routes, admin tools, CLIs, or internal tooling. Khrona itself does not plan to ship built-in admin routes, dashboards, or UI.
 
 The planned API shape is:
 
@@ -651,7 +651,7 @@ For JDBC, the main database access points are:
 - [x] **v0.3:** Distributed execution, lease-based claiming, and concurrency policies.
 - [x] **v0.3.3:** Reliability hardening (Registry, Timeouts, Atomic REPLACE).
 - [x] **v0.4:** Redis-backed `JobStore` with atomic claiming, heartbeat, recovery, and lock semantics. **(Experimental for production use)**
-- [ ] **v0.5:** Admin UI & Dashboard, Metrics (Micrometer/OpenTelemetry), lock inspection.
+- [ ] **v0.5:** Core job management API, Metrics (Micrometer/OpenTelemetry), lock inspection.
 - [ ] **v0.6:** Production hardening, testkit improvements, adaptive delay, and operator ergonomics.
 - [ ] **v0.7:** Android SQLite storage support.
 

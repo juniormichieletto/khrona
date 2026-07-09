@@ -2,7 +2,7 @@
 
 ## Goal
 
-Expose reusable core functions for applications to inspect and control Khrona jobs without requiring a built-in REST API. Host applications should be able to wrap these functions in REST endpoints, admin screens, CLIs, or internal health tooling.
+Expose reusable core functions for applications to inspect and control Khrona jobs. Khrona itself must not ship built-in REST routes, admin UI, dashboards, or route security policy. Host applications can wrap these functions in their own endpoints, screens, CLIs, or internal health tooling when they choose to expose them.
 
 ## Requirements
 
@@ -17,12 +17,12 @@ Expose reusable core functions for applications to inspect and control Khrona jo
 - **REQ-JM9: Local Stop:** Applications can stop executions that are active in the current scheduler process.
 - **REQ-JM10: Stop Status:** A successful manual stop must persist an explicit terminal execution status.
 - **REQ-JM11: Store Portability:** Management queries must work across Memory, JDBC, Redis, and test stores.
-- **REQ-JM12: Core-Only First Pass:** The first implementation is core-only. Ktor routes and REST security policy are deferred.
+- **REQ-JM12: Core-Only Boundary:** The implementation is core-only. Ktor routes, REST endpoints, dashboards, admin UI, and route security policy are owned by host applications, not Khrona.
 
 ## Non-Goals
 
-- Built-in REST routes or admin UI.
-- RBAC, authentication, authorization, or tenant policy.
+- Built-in REST routes, Ktor route helpers, dashboards, or admin UI.
+- RBAC, authentication, authorization, tenant policy, or route security guidance beyond stating that host applications own it.
 - Cross-node stop commands.
 - Handler-reported percent, checkpoint, or message progress.
 - Deleting, compacting, replaying, or cleaning up old history.

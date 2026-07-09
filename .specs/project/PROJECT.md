@@ -33,7 +33,7 @@ Provide a reliable, idiomatic, production-capable background execution platform 
 - persistence and recovery
 - distributed-safe coordination
 - schedule configuration externalization
-- observability and admin APIs
+- observability and reusable core management APIs
 
 ---
 
@@ -510,7 +510,7 @@ job("nightly-report") {
 
 ### 9.9 Effective trigger introspection
 
-The admin API and logs must expose the effective resolved schedule and the source of the resolved value.
+The core management API and logs must expose the effective resolved schedule and the source of the resolved value.
 
 Example:
 
@@ -842,17 +842,12 @@ Scheduler startup must align with Ktor lifecycle.
 - begin worker loops and schedule processing
 - stop gracefully on `ApplicationStopping`
 
-### 17.3 Admin routes
+### 17.3 Management integration boundary
 
-Khrona must expose optional admin routes that integrate with Ktor auth.
-
-```kotlin
-routing {
-    authenticate("admin") {
-        schedulerAdminRoutes()
-    }
-}
-```
+Khrona must not ship built-in admin routes or UI. Host applications that need
+HTTP endpoints, admin screens, CLIs, or internal tooling should build those
+surfaces on top of Khrona's reusable core management APIs and own their own
+authentication, authorization, routing, and presentation policy.
 
 ---
 
@@ -967,27 +962,31 @@ Structured logs should include:
 
 ---
 
-## 21. Administrative API
+## 21. Core Management API
 
-### 21.1 Read endpoints
+### 21.1 Read functions
 
-- `GET /_scheduler/jobs`
-- `GET /_scheduler/executions`
-- `GET /_scheduler/executions/{id}`
-- `GET /_scheduler/dead-letter`
-- `GET /_scheduler/locks`
+Khrona must expose reusable core functions that host applications can wrap in
+their own routes, admin tools, dashboards, CLIs, or health checks:
 
-### 21.2 Action endpoints
+- list registered jobs and derived runtime overviews
+- inspect a single job overview
+- list bounded execution history
+- inspect current execution state
+- expose lock and dead-letter visibility through core data models
 
-- `POST /_scheduler/jobs/{id}/trigger`
-- `POST /_scheduler/executions/{id}/cancel`
-- `POST /_scheduler/executions/{id}/retry`
-- `POST /_scheduler/dead-letter/{id}/requeue`
-- `DELETE /_scheduler/dead-letter/{id}`
+### 21.2 Action functions
 
-### 21.3 Admin API requirements
+Khrona must expose reusable core functions for operational control:
 
-The admin API must expose the resolved trigger and config source, current execution state, lock state, and dead-letter visibility.
+- manually start a registered job
+- pause or resume a job definition
+- stop locally active executions
+- support future dead-letter replay or cleanup through core functions when that feature is designed
+
+### 21.3 Integration boundary
+
+Khrona must not define HTTP paths, Ktor routes, admin UI, route security, RBAC, or tenant policy. Applications decide whether and how to expose the core management functions. The core API must provide enough information for applications to expose the resolved trigger and config source, current execution state, lock state, and dead-letter visibility.
 
 ---
 
@@ -1121,7 +1120,7 @@ Khrona does **not** guarantee:
 - Redis persistence, eviction, namespace, and cleanup documentation
 
 ### v0.5
-- admin API
+- core management API
 - metrics and tracing
 - misfire policies
 - lock inspection
@@ -1191,8 +1190,8 @@ The following items are identified for future discussion and refinement:
 ### 29.11 Multi-tenancy
 - Context propagation for tenant-aware applications (e.g., `TenantId` in `CoroutineContext` or MDC).
 
-### 29.12 Admin API Security
-- Role-Based Access Control (RBAC) for the Admin API to distinguish between read-only monitoring and destructive operations (e.g., deleting dead-letter jobs).
+### 29.12 Host-Owned Management Security
+- Applications that expose Khrona management operations over HTTP, UI, CLI, or internal tooling own their authentication, authorization, tenant policy, and destructive-operation safeguards.
 
 ### 29.13 Memory Efficiency & History Pruning
 - **Execution History Growth:** Implement pruning or TTL (Time-To-Live) policies for `JobExecution` records in memory and persistent stores to prevent unbounded memory growth over time.

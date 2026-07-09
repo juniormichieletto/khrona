@@ -40,7 +40,8 @@
 ## Task 6: Documentation And Verification
 
 - [ ] Update README examples when the API is implemented.
-- [ ] Keep planned API docs clearly marked as planned until code exists.
+- [ ] Keep planned core API docs clearly marked as planned until code exists.
+- [ ] Verify docs do not promise Khrona-owned admin routes, REST endpoints, dashboards, or UI.
 - [ ] Run focused module tests during development.
 - [ ] Run the required full suite:
 
