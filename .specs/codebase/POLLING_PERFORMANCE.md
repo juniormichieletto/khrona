@@ -3,7 +3,7 @@
 > [!IMPORTANT]
 > **Performance Scope Note:** These benchmarks are intended to provide high-level, measurable numbers to verify that the scheduler and storage engines are operating efficiently under baseline conditions. They serve as an architectural "sanity check" rather than an exhaustive stress test or absolute performance limit. Actual production performance will vary based on hardware, network latency, and the complexity of job handlers.
 
-This document records the results and methodology of a performance analysis conducted on May 15, 2026, to evaluate the resource overhead of the Khrona scheduler across various polling intervals and storage engines.
+This document records dated performance analysis runs used to evaluate the resource overhead of the Khrona scheduler across various polling intervals and storage engines.
 
 ## Methodology
 
@@ -21,7 +21,9 @@ The benchmarks were conducted using a series of automated JUnit tests. For each 
 
 Tests conducted with 10 recurring jobs over 10-second measurement windows.
 
-### In-Memory / Local
+### 2026-05-15 Baseline
+
+#### In-Memory / Local
 | Polling Interval | Minimal Store (CPU/Mem) | H2 In-Memory (CPU/Mem) |
 | :--- | :--- | :--- |
 | **100ms** (PT0.1S) | 0.08% / 22 MB | 0.41% / 31 MB |
@@ -29,13 +31,33 @@ Tests conducted with 10 recurring jobs over 10-second measurement windows.
 | **10s** (PT10S) | 0.03% / 7 MB | 0.08% / 16 MB |
 | **1m** (PT1M) | 0.05% / 6 MB | 0.06% / 16 MB |
 
-### Distributed / Persistent
+#### Distributed / Persistent
 | Polling Interval | PostgreSQL (CPU/Mem) | MySQL (CPU/Mem) | Redis (CPU/Mem) |
 | :--- | :--- | :--- | :--- |
 | **100ms** (PT0.1S) | 1.01% / 45 MB | 1.26% / 30 MB | 0.88% / 28 MB |
 | **1s** (PT1S) | 0.10% / 19 MB | 0.14% / 19 MB | 0.16% / 16 MB |
 | **10s** (PT10S) | 0.08% / 16 MB | 0.11% / 19 MB | 0.13% / 14 MB |
 | **1m** (PT1M) | 0.08% / 16 MB | 0.08% / 19 MB | 0.13% / 14 MB |
+
+### 2026-06-16 Follow-Up Run
+
+This run was performed after the `v0.5.0` release setup. The disabled benchmark tests were enabled with a temporary Gradle init script. The first Redis run was discarded because stale `khrona-perf:*` keys caused old jobs to replay; only the clean rerun after clearing that benchmark namespace is recorded below.
+
+#### In-Memory / Local
+| Polling Interval | Minimal Store (CPU/Mem) | H2 In-Memory (CPU/Mem) |
+| :--- | :--- | :--- |
+| **100ms** (PT0.1S) | 0.11% / 22 MB | 0.39% / 31 MB |
+| **1s** (PT1S) | 0.09% / 7 MB | 0.08% / 17 MB |
+| **10s** (PT10S) | 0.03% / 7 MB | 0.08% / 17 MB |
+| **1m** (PT1M) | 0.05% / 6 MB | 0.07% / 16 MB |
+
+#### Distributed / Persistent
+| Polling Interval | PostgreSQL (CPU/Mem) | MySQL (CPU/Mem) | Redis (CPU/Mem) |
+| :--- | :--- | :--- | :--- |
+| **100ms** (PT0.1S) | 1.11% / 45 MB | 1.42% / 28 MB | 1.06% / 29 MB |
+| **1s** (PT1S) | 0.11% / 16 MB | 0.14% / 19 MB | 0.19% / 16 MB |
+| **10s** (PT10S) | 0.05% / 16 MB | 0.12% / 19 MB | 0.11% / 14 MB |
+| **1m** (PT1M) | 0.07% / 16 MB | 0.07% / 19 MB | 0.13% / 13 MB |
 
 ## Key Observations
 
@@ -63,9 +85,21 @@ The performance tests are preserved as `@Disabled` JUnit tests in the following 
 To run these tests manually:
 1. Ensure Docker is running (for Postgres/MySQL/Redis).
 2. Start the local Redis via `./docker-start.sh`.
-3. Enable the `@Disabled` annotation or run via Gradle filter:
+3. Enable the `@Disabled` tests with a temporary Gradle init script:
+   ```groovy
+   allprojects {
+       tasks.withType(Test).configureEach {
+           systemProperty "junit.jupiter.conditions.deactivate", "org.junit.jupiter.engine.extension.DisabledCondition"
+       }
+   }
+   ```
+4. Run the desired benchmark task with the init script:
    ```bash
-   ./gradlew :khrona-store-jdbc:test --tests "io.khrona.store.jdbc.JdbcPollingPerfTest" --info
+   ./gradlew --init-script /tmp/khrona-enable-disabled-tests.gradle :khrona-store-jdbc:test --tests "io.khrona.store.jdbc.JdbcPollingPerfTest" --rerun-tasks --info
+   ```
+5. Before rerunning the Redis benchmark against a reused local Redis container, clear only the benchmark namespace to avoid replaying stale jobs:
+   ```bash
+   docker exec khrona-redis redis-cli -a khrona_dev_password DEL khrona-perf:jobs khrona-perf:executions khrona-perf:pending
    ```
 
 ## Future Testing
