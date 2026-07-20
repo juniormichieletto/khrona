@@ -17,7 +17,9 @@ Expose reusable core functions for applications to inspect and control Khrona jo
 - **REQ-JM9: Local Stop:** Applications can stop executions that are active in the current scheduler process.
 - **REQ-JM10: Stop Status:** A successful manual stop must persist an explicit terminal execution status.
 - **REQ-JM11: Store Portability:** Management queries must work across Memory, JDBC, Redis, and test stores.
-- **REQ-JM12: Core-Only Boundary:** The implementation is core-only. Ktor routes, REST endpoints, dashboards, admin UI, and route security policy are owned by host applications, not Khrona.
+- **REQ-JM12: Shutdown Checkpoint:** Job handlers can call a Khrona-provided checkpoint function at safe points. When scheduler shutdown has started, the checkpoint prevents the handler from continuing past that point.
+- **REQ-JM13: Checkpoint Persistence Semantics:** A handler stopped by a shutdown checkpoint must not be marked `SUCCESS` or terminal `CANCELLED`. Khrona must persist or release the execution so durable stores can run it again after restart according to the existing at-least-once model.
+- **REQ-JM14: Core-Only Boundary:** The implementation is core-only. Ktor routes, REST endpoints, dashboards, admin UI, and route security policy are owned by host applications, not Khrona.
 
 ## Non-Goals
 
@@ -33,4 +35,5 @@ Expose reusable core functions for applications to inspect and control Khrona jo
 - A host app can call Khrona core APIs to list jobs, inspect status, start a job, pause/resume a job, stop local active work, and list history.
 - Pause state is persisted in the shared job definition so all scheduler instances using the same store observe it.
 - Stop behavior is explicit about being local to the current scheduler instance.
+- Long-running handlers can opt into graceful-shutdown safe points without depending directly on Kotlin coroutine cancellation timing.
 - The shared store contract tests cover the execution query behavior for every built-in store.

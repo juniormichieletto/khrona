@@ -29,6 +29,13 @@ Add scheduler management functions that host applications can wrap in their own 
 
 `startJob` should use the existing manual trigger semantics. Keep `trigger` intact for compatibility and expose `startJob` as the clearer management-oriented name.
 
+Add a handler-side cooperative shutdown checkpoint API. Preferred naming:
+
+- `checkpoint()` on an execution context available inside job handlers, if the handler API is expanded to receive context.
+- `KhronaCheckpoint.checkpoint()` or similar top-level suspend function only if context propagation can be implemented without making handler code awkward.
+
+The name should stay short for handler code, but the documentation must describe it as a shutdown checkpoint or safe point, not as persisted progress tracking. The API is not for reporting percentage progress or saving business checkpoints.
+
 ## Storage Contract
 
 Extend `JobStore` with:
@@ -64,6 +71,36 @@ Progress is derived from execution state only:
 - timestamps, attempt, worker, and error fields
 
 Manual handler progress reporting is intentionally deferred. Applications that need detailed percent/checkpoint reporting should keep that state in application-owned storage and link it to Khrona execution IDs.
+
+## Shutdown Checkpoint Semantics
+
+Khrona should expose an explicit checkpoint/safe-point function that handlers can call between units of irreversible work:
+
+```kotlin
+job("sync-orders") {
+    every(1.minutes)
+    execute { context ->
+        fetchBatch()
+        context.checkpoint()
+        writeBatch()
+        context.checkpoint()
+        publishEvents()
+    }
+}
+```
+
+During normal execution, `checkpoint()` is a cheap suspend function that returns immediately.
+
+When `scheduler.stop()` or Ktor `ApplicationStopping` starts graceful shutdown, Khrona marks the scheduler as stopping before waiting for active jobs. After that point, `checkpoint()` must stop the handler from continuing. The expected implementation is to throw a Khrona-specific `CancellationException` subtype so normal coroutine cancellation tools still work while Khrona can distinguish shutdown checkpoints from failures.
+
+Checkpoint interruption should preserve at-least-once semantics:
+
+- Do not mark the execution `SUCCESS`.
+- Do not mark the execution terminal `CANCELLED`; reserve `CANCELLED` for explicit local management stop.
+- Release the execution back to `PENDING`, or otherwise persist a retryable/interrupted state that existing stores can recover without waiting for lease expiry.
+- Keep the handler responsible for idempotency around any side effects completed before the checkpoint.
+
+This checkpoint complements `ensureActive()` and `yield()`. Coroutine cancellation still matters for timeout, `REPLACE`, manual stop, and forced shutdown after `shutdownTimeout`; the checkpoint adds an earlier graceful-shutdown signal before forced cancellation.
 
 ## Stop Semantics
 

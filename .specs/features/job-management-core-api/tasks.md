@@ -13,6 +13,7 @@
 - [ ] Add `CANCELLED` terminal status.
 - [ ] Ensure Memory, JDBC, Redis, and mocks treat `CANCELLED` as terminal for completion timestamps and index cleanup.
 - [ ] Add serialization/backward-compatibility coverage for new `JobDefinition.paused`.
+- [ ] Define the handler execution context API shape, including a shutdown checkpoint function.
 
 ## Task 3: Pause And Resume
 
@@ -37,7 +38,15 @@
 - [ ] Return a clear non-success result for non-local or unknown executions.
 - [ ] Document that cross-node stop requires a later command-channel design.
 
-## Task 6: Documentation And Verification
+## Task 6: Shutdown Checkpoint
+
+- [ ] Add failing scheduler tests proving a handler calling the checkpoint stops during graceful shutdown before executing later handler code.
+- [ ] Add a test proving checkpoint interruption does not mark the execution `SUCCESS` or terminal `CANCELLED`.
+- [ ] Add a durable-store-oriented test proving checkpoint interruption releases or persists the execution so it can run again after restart without waiting for lease expiry.
+- [ ] Implement scheduler stopping-state propagation to the checkpoint API.
+- [ ] Document the distinction between shutdown checkpoints, coroutine cancellation checks such as `ensureActive()`, and application-owned progress persistence.
+
+## Task 7: Documentation And Verification
 
 - [ ] Update README examples when the API is implemented.
 - [ ] Keep planned core API docs clearly marked as planned until code exists.
@@ -56,4 +65,5 @@
 3. Scheduler pause/resume behavior.
 4. Overview/history/start facade.
 5. Local stop behavior.
-6. README docs, full test suite, and final review.
+6. Shutdown checkpoint behavior.
+7. README docs, full test suite, and final review.
