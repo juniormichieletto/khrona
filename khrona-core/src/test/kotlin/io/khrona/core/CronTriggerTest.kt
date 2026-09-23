@@ -27,6 +27,15 @@ class CronTriggerTest {
     }
 
     @Test
+    fun `impossible cron date returns null for next execution time`() {
+        val trigger = CronTrigger("0 0 30 2 *")
+        val now = Instant.parse("2026-01-01T00:00:00Z")
+
+        val next = trigger.nextExecutionTime(now)
+        assertNull(next)
+    }
+
+    @Test
     fun `cron trigger defaults to UTC`() {
         val trigger = CronTrigger("0 9 * * *")
         val now = Instant.parse("2026-04-25T08:30:00Z")
@@ -49,9 +58,18 @@ class CronTriggerTest {
 
     @Test
     fun `should fail during construction for invalid timezone`() {
-        assertThrows(IllegalArgumentException::class.java) {
+        val exception = assertThrows(IllegalArgumentException::class.java) {
             CronTrigger("0 9 * * *", timeZone = "Not/AZone")
         }
+        assertTrue(exception.message!!.startsWith("Invalid time zone"))
+    }
+
+    @Test
+    fun `invalid timezone message includes job context when provided`() {
+        val exception = assertThrows(IllegalArgumentException::class.java) {
+            CronTrigger("0 9 * * *", "timezone-job", "Not/AZone")
+        }
+        assertTrue(exception.message!!.startsWith("Job 'timezone-job' has an invalid time zone"))
     }
 
     @Test
@@ -71,9 +89,10 @@ class CronTriggerTest {
 
     @Test
     fun `should fail during construction for invalid cron expressions`() {
-        assertThrows(IllegalArgumentException::class.java) {
+        val exception = assertThrows(IllegalArgumentException::class.java) {
             CronTrigger("invalid cron")
         }
+        assertTrue(exception.message!!.startsWith("Invalid Unix cron expression"))
     }
 
     @Test

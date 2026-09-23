@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.kotlin.jvm) apply false
     alias(libs.plugins.kotlin.serialization) apply false
+    jacoco
     id("org.jreleaser") version "1.24.0"
     id("signing")
     id("maven-publish")
@@ -25,8 +26,13 @@ jreleaser {
 
 subprojects {
     apply(plugin = "org.jetbrains.kotlin.jvm")
+    apply(plugin = "jacoco")
     apply(plugin = "maven-publish")
     apply(plugin = "signing")
+
+    configure<JacocoPluginExtension> {
+        toolVersion = "0.8.13"
+    }
 
     configure<JavaPluginExtension> {
         toolchain {
@@ -45,6 +51,19 @@ subprojects {
 
     tasks.named<Test>("test") {
         useJUnitPlatform()
+    }
+
+    tasks.named<org.gradle.testing.jacoco.tasks.JacocoReport>("jacocoTestReport") {
+        dependsOn(tasks.named<Test>("test"))
+
+        sourceDirectories.setFrom(layout.projectDirectory.dir("src/main/kotlin"))
+        classDirectories.setFrom(layout.buildDirectory.dir("classes/kotlin/main"))
+
+        reports {
+            xml.required.set(true)
+            html.required.set(true)
+            csv.required.set(false)
+        }
     }
 
     configure<PublishingExtension> {
@@ -95,5 +114,22 @@ subprojects {
                 logger.warn("⚠️ GPG_PRIVATE_KEY is missing! Artifacts will NOT be signed and Sonatype will reject them.")
             }
         }
+    }
+}
+
+tasks.register<org.gradle.testing.jacoco.tasks.JacocoReport>("jacocoRootReport") {
+    group = LifecycleBasePlugin.VERIFICATION_GROUP
+    description = "Generates an aggregate JaCoCo coverage report for all Khrona modules."
+
+    dependsOn(subprojects.map { "${it.path}:test" })
+
+    executionData.from(subprojects.map { it.layout.buildDirectory.file("jacoco/test.exec") })
+    sourceDirectories.from(subprojects.map { it.layout.projectDirectory.dir("src/main/kotlin") })
+    classDirectories.from(subprojects.map { it.layout.buildDirectory.dir("classes/kotlin/main") })
+
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+        csv.required.set(false)
     }
 }
