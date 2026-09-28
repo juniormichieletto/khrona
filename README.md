@@ -62,6 +62,11 @@ dependencies {
     implementation("io.github.juniormichieletto:khrona-store-memory:0.5.0") // For dev/testing
     implementation("io.github.juniormichieletto:khrona-store-jdbc:0.5.0")   // For production
     // implementation("io.github.juniormichieletto:khrona-store-redis:0.5.0") // Experimental Redis coordination
+
+    // When using JDBC, add the driver for your database:
+    runtimeOnly("org.postgresql:postgresql:42.7.5")           // PostgreSQL
+    // runtimeOnly("com.mysql:mysql-connector-j:9.2.0")       // MySQL
+    // runtimeOnly("com.oracle.database.jdbc:ojdbc11:23.6.0.24.10") // Oracle
 }
 ```
 

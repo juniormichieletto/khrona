@@ -8,6 +8,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertInstanceOf
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -325,4 +326,124 @@ class JdbcCoverageTest : AbstractJdbcJobStoreTest() {
         var committed: Boolean = false
         var rolledBack: Boolean = false
     }
+
+    @Test
+    fun `should apply queryTimeoutSeconds to PreparedStatements`() = runBlocking {
+        val observedTimeouts = java.util.concurrent.CopyOnWriteArrayList<Int>()
+
+        // Wrap the real dataSource to intercept setQueryTimeout calls
+        val spyDataSource = Proxy.newProxyInstance(
+            DataSource::class.java.classLoader,
+            arrayOf(DataSource::class.java)
+        ) { _, method, _ ->
+            when (method.name) {
+                "getConnection" -> {
+                    val realConn = dataSource.connection
+                    Proxy.newProxyInstance(
+                        Connection::class.java.classLoader,
+                        arrayOf(Connection::class.java)
+                    ) { _, connMethod, connArgs ->
+                        when (connMethod.name) {
+                            "prepareStatement" -> {
+                                val realStmt = realConn.prepareStatement(connArgs!![0] as String)
+                                Proxy.newProxyInstance(
+                                    java.sql.PreparedStatement::class.java.classLoader,
+                                    arrayOf(java.sql.PreparedStatement::class.java)
+                                ) { _, stmtMethod, stmtArgs ->
+                                    if (stmtMethod.name == "setQueryTimeout") {
+                                        observedTimeouts.add(stmtArgs!![0] as Int)
+                                    }
+                                    if (stmtArgs != null) stmtMethod.invoke(realStmt, *stmtArgs)
+                                    else stmtMethod.invoke(realStmt)
+                                }
+                            }
+                            "close" -> realConn.close()
+                            else -> {
+                                if (connArgs != null) connMethod.invoke(realConn, *connArgs)
+                                else connMethod.invoke(realConn)
+                            }
+                        }
+                    }
+                }
+                else -> null
+            }
+        } as DataSource
+
+        val timeoutStore = JdbcJobStore(spyDataSource, H2Dialect(), queryTimeoutSeconds = 7)
+
+        val job = io.khrona.core.JobDefinition(
+            id = "timeout-test-job",
+            handler = {},
+            trigger = io.khrona.core.IntervalTrigger(java.time.Duration.ofMinutes(1))
+        )
+        timeoutStore.saveJob(job)
+
+        assertTrue(observedTimeouts.isNotEmpty(), "queryTimeout should have been set on at least one PreparedStatement")
+        assertTrue(observedTimeouts.all { it == 7 }, "All query timeouts should be 7, but got: $observedTimeouts")
+    }
+
+    @Test
+    fun `should default queryTimeoutSeconds to 30`() = runBlocking {
+        val observedTimeouts = java.util.concurrent.CopyOnWriteArrayList<Int>()
+
+        val spyDataSource = Proxy.newProxyInstance(
+            DataSource::class.java.classLoader,
+            arrayOf(DataSource::class.java)
+        ) { _, method, _ ->
+            when (method.name) {
+                "getConnection" -> {
+                    val realConn = dataSource.connection
+                    Proxy.newProxyInstance(
+                        Connection::class.java.classLoader,
+                        arrayOf(Connection::class.java)
+                    ) { _, connMethod, connArgs ->
+                        when (connMethod.name) {
+                            "prepareStatement" -> {
+                                val realStmt = realConn.prepareStatement(connArgs!![0] as String)
+                                Proxy.newProxyInstance(
+                                    java.sql.PreparedStatement::class.java.classLoader,
+                                    arrayOf(java.sql.PreparedStatement::class.java)
+                                ) { _, stmtMethod, stmtArgs ->
+                                    if (stmtMethod.name == "setQueryTimeout") {
+                                        observedTimeouts.add(stmtArgs!![0] as Int)
+                                    }
+                                    if (stmtArgs != null) stmtMethod.invoke(realStmt, *stmtArgs)
+                                    else stmtMethod.invoke(realStmt)
+                                }
+                            }
+                            "close" -> realConn.close()
+                            else -> {
+                                if (connArgs != null) connMethod.invoke(realConn, *connArgs)
+                                else connMethod.invoke(realConn)
+                            }
+                        }
+                    }
+                }
+                else -> null
+            }
+        } as DataSource
+
+        val defaultStore = JdbcJobStore(spyDataSource, H2Dialect())
+        val job = io.khrona.core.JobDefinition(
+            id = "default-timeout-job",
+            handler = {},
+            trigger = io.khrona.core.IntervalTrigger(java.time.Duration.ofMinutes(1))
+        )
+        defaultStore.saveJob(job)
+
+        assertTrue(observedTimeouts.isNotEmpty(), "queryTimeout should have been set")
+        assertTrue(observedTimeouts.all { it == JdbcJobStore.DEFAULT_QUERY_TIMEOUT_SECONDS })
+        assertEquals(30, JdbcJobStore.DEFAULT_QUERY_TIMEOUT_SECONDS)
+    }
+
+    @Test
+    fun `should reject non-positive queryTimeoutSeconds`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            JdbcJobStore(dataSource, queryTimeoutSeconds = 0)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            JdbcJobStore(dataSource, queryTimeoutSeconds = -5)
+        }
+    }
 }
+

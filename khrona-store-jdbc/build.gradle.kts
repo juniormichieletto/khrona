@@ -5,9 +5,9 @@ plugins {
 
 dependencies {
     api(project(":khrona-core"))
-    implementation(libs.postgresql)
-    implementation(libs.mysql)
-    implementation(libs.oracle)
+    compileOnly(libs.postgresql)
+    compileOnly(libs.mysql)
+    compileOnly(libs.oracle)
     implementation(libs.hikaricp)
     
     testImplementation(libs.junit.jupiter)
@@ -19,6 +19,9 @@ dependencies {
     testImplementation(libs.testcontainers.mysql)
     testImplementation(libs.testcontainers.oracle)
     testImplementation(libs.testcontainers.junit)
+    testRuntimeOnly(libs.postgresql)
+    testRuntimeOnly(libs.mysql)
+    testRuntimeOnly(libs.oracle)
     "testRuntimeOnly"("org.junit.platform:junit-platform-launcher")
 }
 

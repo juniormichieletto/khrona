@@ -21,9 +21,14 @@ import javax.sql.DataSource
 class JdbcJobStore(
     private val dataSource: DataSource,
     dialect: JdbcDialect? = null,
+    private val queryTimeoutSeconds: Int = DEFAULT_QUERY_TIMEOUT_SECONDS,
     private val dispatcher: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.IO
 ) : JobStore {
     private val log = LoggerFactory.getLogger(JdbcJobStore::class.java)
+
+    init {
+        require(queryTimeoutSeconds > 0) { "queryTimeoutSeconds must be positive" }
+    }
     
     private var _dialect: JdbcDialect? = dialect
     private val dialectMutex = Mutex()
@@ -54,6 +59,12 @@ class JdbcJobStore(
         return kotlinx.coroutines.withContext(dispatcher) {
             block()
         }
+    }
+
+    private fun java.sql.Connection.prepareStatementWithTimeout(sql: String): java.sql.PreparedStatement {
+        val stmt = prepareStatement(sql)
+        stmt.queryTimeout = queryTimeoutSeconds
+        return stmt
     }
 
     suspend fun migrate() = inJdbcContext {
@@ -115,7 +126,7 @@ class JdbcJobStore(
     override suspend fun saveJob(job: JobDefinition): Unit = inJdbcContext {
         val dialect = getDialect()
         dataSource.connection.use { conn ->
-            conn.prepareStatement(dialect.upsertJobSql()).use { stmt ->
+            conn.prepareStatementWithTimeout(dialect.upsertJobSql()).use { stmt ->
                 stmt.setString(1, job.id)
                 stmt.setString(2, json.encodeToString(job))
                 stmt.executeUpdate()
@@ -126,7 +137,7 @@ class JdbcJobStore(
     override suspend fun getJob(jobId: String): JobDefinition? = inJdbcContext {
         dataSource.connection.use { conn ->
             val sql = "SELECT definition_json FROM khrona_jobs WHERE id = ?"
-            conn.prepareStatement(sql).use { stmt ->
+            conn.prepareStatementWithTimeout(sql).use { stmt ->
                 stmt.setString(1, jobId)
                 val rs = stmt.executeQuery()
                 if (rs.next()) {
@@ -141,7 +152,7 @@ class JdbcJobStore(
         val jobs = mutableListOf<JobDefinition>()
         dataSource.connection.use { conn ->
             val sql = "SELECT definition_json FROM khrona_jobs"
-            conn.prepareStatement(sql).use { stmt ->
+            conn.prepareStatementWithTimeout(sql).use { stmt ->
                 val rs = stmt.executeQuery()
                 while (rs.next()) {
                     jobs.add(json.decodeFromString<JobDefinition>(rs.getString("definition_json")))
@@ -154,7 +165,7 @@ class JdbcJobStore(
     override suspend fun saveExecution(execution: JobExecution): Unit = inJdbcContext {
         val dialect = getDialect()
         dataSource.connection.use { conn ->
-            conn.prepareStatement(dialect.upsertExecutionSql()).use { stmt ->
+            conn.prepareStatementWithTimeout(dialect.upsertExecutionSql()).use { stmt ->
                 stmt.setString(1, execution.id.toString())
                 stmt.setString(2, execution.jobId)
                 stmt.setString(3, execution.status.name)
@@ -175,7 +186,7 @@ class JdbcJobStore(
     override suspend fun updateExecutionStatus(id: UUID, status: ExecutionStatus, error: String?): Unit = inJdbcContext {
         dataSource.connection.use { conn ->
             val sql = "UPDATE khrona_executions SET status = ?, error = ?, completed_at = ? WHERE id = ?"
-            conn.prepareStatement(sql).use { stmt ->
+            conn.prepareStatementWithTimeout(sql).use { stmt ->
                 stmt.setString(1, status.name)
                 stmt.setString(2, error)
                 val isTerminal = status == ExecutionStatus.SUCCESS || 
@@ -193,7 +204,7 @@ class JdbcJobStore(
     override suspend fun getExecution(id: UUID): JobExecution? = inJdbcContext {
         dataSource.connection.use { conn ->
             val sql = "SELECT * FROM khrona_executions WHERE id = ?"
-            conn.prepareStatement(sql).use { stmt ->
+            conn.prepareStatementWithTimeout(sql).use { stmt ->
                 stmt.setString(1, id.toString())
                 val rs = stmt.executeQuery()
                 if (rs.next()) {
@@ -208,7 +219,7 @@ class JdbcJobStore(
         val dialect = getDialect()
         val executions = mutableListOf<JobExecution>()
         dataSource.connection.use { conn ->
-            conn.prepareStatement(dialect.listEligibleExecutionsSql()).use { stmt ->
+            conn.prepareStatementWithTimeout(dialect.listEligibleExecutionsSql()).use { stmt ->
                 stmt.setTimestamp(1, Timestamp.from(now))
                 stmt.setTimestamp(2, Timestamp.from(now))
                 stmt.setInt(3, limit)
@@ -224,7 +235,7 @@ class JdbcJobStore(
     override suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: Duration): Boolean = inJdbcContext {
         val dialect = getDialect()
         dataSource.connection.use { conn ->
-            conn.prepareStatement(dialect.claimExecutionSql()).use { stmt ->
+            conn.prepareStatementWithTimeout(dialect.claimExecutionSql()).use { stmt ->
                 val now = Instant.now()
                 val expiresAt = now.plus(leaseDuration)
                 stmt.setTimestamp(1, Timestamp.from(now))
@@ -241,7 +252,7 @@ class JdbcJobStore(
     override suspend fun heartbeat(id: UUID, leaseDuration: Duration): Boolean = inJdbcContext {
         val dialect = getDialect()
         dataSource.connection.use { conn ->
-            conn.prepareStatement(dialect.heartbeatSql()).use { stmt ->
+            conn.prepareStatementWithTimeout(dialect.heartbeatSql()).use { stmt ->
                 val expiresAt = Instant.now().plus(leaseDuration)
                 stmt.setTimestamp(1, Timestamp.from(expiresAt))
                 stmt.setString(2, id.toString())
@@ -254,7 +265,7 @@ class JdbcJobStore(
         val dialect = getDialect()
         dataSource.connection.use { conn ->
             val sql = dialect.isLockHeldSql(excludeExecutionId != null)
-            conn.prepareStatement(sql).use { stmt ->
+            conn.prepareStatementWithTimeout(sql).use { stmt ->
                 stmt.setString(1, lockKey)
                 stmt.setTimestamp(2, Timestamp.from(Instant.now()))
                 if (excludeExecutionId != null) {
@@ -269,7 +280,7 @@ class JdbcJobStore(
     override suspend fun resetExpiredExecutions(now: Instant): Int = inJdbcContext {
         val dialect = getDialect()
         dataSource.connection.use { conn ->
-            conn.prepareStatement(dialect.resetExpiredExecutionsSql()).use { stmt ->
+            conn.prepareStatementWithTimeout(dialect.resetExpiredExecutionsSql()).use { stmt ->
                 stmt.setTimestamp(1, Timestamp.from(now))
                 return@inJdbcContext stmt.executeUpdate()
             }
@@ -287,7 +298,7 @@ class JdbcJobStore(
                     if (excludeExecutionId != null) append(" AND id != ?")
                     append(" FOR UPDATE")
                 }
-                conn.prepareStatement(selectSql).use { stmt ->
+                conn.prepareStatementWithTimeout(selectSql).use { stmt ->
                     stmt.setString(1, lockKey)
                     if (excludeExecutionId != null) {
                         stmt.setString(2, excludeExecutionId.toString())
@@ -301,7 +312,7 @@ class JdbcJobStore(
                 if (superseded.isNotEmpty()) {
                     val placeholders = superseded.joinToString(",") { "?" }
                     val updateSql = "UPDATE khrona_executions SET status = ?, completed_at = ? WHERE id IN ($placeholders)"
-                    conn.prepareStatement(updateSql).use { stmt ->
+                    conn.prepareStatementWithTimeout(updateSql).use { stmt ->
                         stmt.setString(1, ExecutionStatus.SUPERSEDED.name)
                         stmt.setTimestamp(2, Timestamp.from(Instant.now()))
                         superseded.forEachIndexed { index, id ->
@@ -390,6 +401,8 @@ class JdbcJobStore(
     }
 
     companion object {
+        const val DEFAULT_QUERY_TIMEOUT_SECONDS = 30
+
         fun resolveDialect(dataSource: DataSource): JdbcDialect {
             return dataSource.connection.use { conn ->
                 val name = conn.metaData.databaseProductName.lowercase()
