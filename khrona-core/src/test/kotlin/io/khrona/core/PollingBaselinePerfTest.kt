@@ -88,5 +88,6 @@ class PollingBaselinePerfTest {
         override suspend fun isLockHeld(lockKey: String, excludeExecutionId: UUID?): Boolean = false
         override suspend fun resetExpiredExecutions(now: Instant): Int = 0
         override suspend fun supersedeExecutionsByLockKey(lockKey: String, excludeExecutionId: UUID?): List<UUID> = emptyList()
+        override suspend fun cleanupCompletedExecutions(before: Instant, statuses: Set<ExecutionStatus>, limit: Int): Int = 0
     }
 }

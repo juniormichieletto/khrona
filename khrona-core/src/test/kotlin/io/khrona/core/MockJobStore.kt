@@ -23,7 +23,18 @@ open class MockJobStore(private val clock: java.time.Clock = java.time.Clock.sys
     }
 
     override suspend fun updateExecutionStatus(id: UUID, status: ExecutionStatus, error: String?) {
-        executions.computeIfPresent(id) { _, exec -> exec.copy(status = status, error = error) }
+        val isTerminal = status == ExecutionStatus.SUCCESS ||
+            status == ExecutionStatus.FAILED ||
+            status == ExecutionStatus.DEAD_LETTERED ||
+            status == ExecutionStatus.MISFIRED ||
+            status == ExecutionStatus.SUPERSEDED
+        executions.computeIfPresent(id) { _, exec ->
+            exec.copy(
+                status = status,
+                error = error,
+                completedAt = if (isTerminal) Instant.now(clock) else exec.completedAt
+            )
+        }
         updatedStatuses.add(id to status)
     }
 
@@ -114,5 +125,20 @@ open class MockJobStore(private val clock: java.time.Clock = java.time.Clock.sys
             }
         }
         return superseded
+    }
+
+    override suspend fun cleanupCompletedExecutions(
+        before: Instant,
+        statuses: Set<ExecutionStatus>,
+        limit: Int
+    ): Int {
+        if (statuses.isEmpty() || limit <= 0) return 0
+        val toRemove = executions.values.asSequence()
+            .filter { it.status in statuses && it.completedAt != null && it.completedAt < before }
+            .take(limit)
+            .map { it.id }
+            .toList()
+        toRemove.forEach { executions.remove(it) }
+        return toRemove.size
     }
 }

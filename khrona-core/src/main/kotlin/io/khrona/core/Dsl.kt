@@ -145,6 +145,33 @@ class KhronaConfig {
         builder.block()
         jobs.add(builder.build())
     }
+
+    val retentionPolicy = RetentionPolicy()
+
+    fun retention(block: RetentionPolicy.() -> Unit) {
+        retentionPolicy.block()
+    }
+}
+
+class RetentionPolicy {
+    var enabled: Boolean = true
+    var maxAge: java.time.Duration = java.time.Duration.ofDays(14)
+    var cleanupInterval: java.time.Duration = java.time.Duration.ofHours(1)
+    var batchSize: Int = 1000
+    var statuses: Set<ExecutionStatus> = setOf(
+        ExecutionStatus.SUCCESS,
+        ExecutionStatus.FAILED,
+        ExecutionStatus.MISFIRED,
+        ExecutionStatus.SUPERSEDED
+    )
+
+    fun maxAge(duration: kotlin.time.Duration) {
+        this.maxAge = java.time.Duration.ofMillis(duration.inWholeMilliseconds)
+    }
+
+    fun cleanupInterval(interval: kotlin.time.Duration) {
+        this.cleanupInterval = java.time.Duration.ofMillis(interval.inWholeMilliseconds)
+    }
 }
 
 fun Khrona(block: KhronaConfig.() -> Unit): KhronaConfig {

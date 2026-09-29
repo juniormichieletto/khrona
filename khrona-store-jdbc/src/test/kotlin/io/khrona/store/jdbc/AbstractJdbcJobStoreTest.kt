@@ -30,7 +30,15 @@ abstract class AbstractJdbcJobStoreTest : JobStoreContract {
     fun setup() {
         dataSource = createDataSource()
         store = JdbcJobStore(dataSource)
-        runBlocking { store.migrate() }
+        runBlocking {
+            store.migrate()
+            dataSource.connection.use { conn ->
+                conn.createStatement().use { stmt ->
+                    stmt.executeUpdate("DELETE FROM khrona_executions")
+                    stmt.executeUpdate("DELETE FROM khrona_jobs")
+                }
+            }
+        }
     }
 
     @AfterEach

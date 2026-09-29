@@ -8,6 +8,7 @@ interface JdbcDialect {
     fun heartbeatSql(): String
     fun isLockHeldSql(excludeId: Boolean = false): String
     fun resetExpiredExecutionsSql(): String
+    fun cleanupCompletedExecutionsSql(statusCount: Int): String
 }
 
 class PostgresDialect : JdbcDialect {
@@ -66,6 +67,18 @@ class PostgresDialect : JdbcDialect {
         SET status = 'PENDING', claimed_at = NULL, claimed_by = NULL, expires_at = NULL, started_at = NULL
         WHERE (status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?
     """.trimIndent()
+
+    override fun cleanupCompletedExecutionsSql(statusCount: Int): String {
+        val placeholders = (1..statusCount).joinToString(",") { "?" }
+        return """
+            DELETE FROM khrona_executions
+            WHERE id IN (
+                SELECT id FROM khrona_executions
+                WHERE status IN ($placeholders) AND completed_at < ?
+                LIMIT ?
+            )
+        """.trimIndent()
+    }
 }
 
 class H2Dialect : JdbcDialect {
@@ -108,6 +121,18 @@ class H2Dialect : JdbcDialect {
         SET status = 'PENDING', claimed_at = NULL, claimed_by = NULL, expires_at = NULL, started_at = NULL
         WHERE (status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?
     """.trimIndent()
+
+    override fun cleanupCompletedExecutionsSql(statusCount: Int): String {
+        val placeholders = (1..statusCount).joinToString(",") { "?" }
+        return """
+            DELETE FROM khrona_executions
+            WHERE id IN (
+                SELECT id FROM khrona_executions
+                WHERE status IN ($placeholders) AND completed_at < ?
+                LIMIT ?
+            )
+        """.trimIndent()
+    }
 }
 
 class MySqlDialect : JdbcDialect {
@@ -168,6 +193,20 @@ class MySqlDialect : JdbcDialect {
         SET status = 'PENDING', claimed_at = NULL, claimed_by = NULL, expires_at = NULL, started_at = NULL
         WHERE (status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?
     """.trimIndent()
+
+    override fun cleanupCompletedExecutionsSql(statusCount: Int): String {
+        val placeholders = (1..statusCount).joinToString(",") { "?" }
+        return """
+            DELETE FROM khrona_executions
+            WHERE id IN (
+                SELECT id FROM (
+                    SELECT id FROM khrona_executions
+                    WHERE status IN ($placeholders) AND completed_at < ?
+                    LIMIT ?
+                ) as t
+            )
+        """.trimIndent()
+    }
 }
 
 class OracleDialect : JdbcDialect {
@@ -223,4 +262,16 @@ class OracleDialect : JdbcDialect {
         SET status = 'PENDING', claimed_at = NULL, claimed_by = NULL, expires_at = NULL, started_at = NULL
         WHERE (status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?
     """.trimIndent()
+
+    override fun cleanupCompletedExecutionsSql(statusCount: Int): String {
+        val placeholders = (1..statusCount).joinToString(",") { "?" }
+        return """
+            DELETE FROM khrona_executions
+            WHERE id IN (
+                SELECT id FROM khrona_executions
+                WHERE status IN ($placeholders) AND completed_at < ?
+                FETCH FIRST ? ROWS ONLY
+            )
+        """.trimIndent()
+    }
 }

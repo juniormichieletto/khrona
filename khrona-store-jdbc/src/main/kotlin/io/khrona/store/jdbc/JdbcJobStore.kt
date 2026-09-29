@@ -333,6 +333,28 @@ class JdbcJobStore(
         return@inJdbcContext superseded
     }
 
+    override suspend fun cleanupCompletedExecutions(
+        before: Instant,
+        statuses: Set<ExecutionStatus>,
+        limit: Int
+    ): Int = inJdbcContext {
+        if (statuses.isEmpty() || limit <= 0) return@inJdbcContext 0
+        val dialect = getDialect()
+        val statusList = statuses.toList()
+        val sql = dialect.cleanupCompletedExecutionsSql(statusList.size)
+        dataSource.connection.use { conn ->
+            conn.prepareStatementWithTimeout(sql).use { stmt ->
+                var paramIdx = 1
+                statusList.forEach { status ->
+                    stmt.setString(paramIdx++, status.name)
+                }
+                stmt.setTimestamp(paramIdx++, Timestamp.from(before))
+                stmt.setInt(paramIdx, limit)
+                return@inJdbcContext stmt.executeUpdate()
+            }
+        }
+    }
+
     private fun Any?.toJsonElement(path: String): kotlinx.serialization.json.JsonElement {
         return when (this) {
             null -> kotlinx.serialization.json.JsonNull

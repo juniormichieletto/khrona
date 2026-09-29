@@ -44,6 +44,17 @@ class Scheduler(
         if (config.pollBatchSize <= 0) {
             throw IllegalArgumentException("pollBatchSize must be positive")
         }
+        if (config.retentionPolicy.enabled) {
+            if (config.retentionPolicy.maxAge.isNegative || config.retentionPolicy.maxAge.isZero) {
+                throw IllegalArgumentException("retentionPolicy.maxAge must be positive")
+            }
+            if (config.retentionPolicy.cleanupInterval.isNegative || config.retentionPolicy.cleanupInterval.isZero) {
+                throw IllegalArgumentException("retentionPolicy.cleanupInterval must be positive")
+            }
+            if (config.retentionPolicy.batchSize <= 0) {
+                throw IllegalArgumentException("retentionPolicy.batchSize must be positive")
+            }
+        }
     }
 
     fun start() {
@@ -86,6 +97,7 @@ class Scheduler(
             }
 
             var lastRecovery = Instant.MIN
+            var lastCleanup = Instant.MIN
             while (isActive) {
                 try {
                     val now = Instant.now(clock)
@@ -94,6 +106,25 @@ class Scheduler(
                         val recovered = store.resetExpiredExecutions(now)
                         if (recovered > 0) log.info("Recovered $recovered stale executions")
                         lastRecovery = now
+                    }
+
+                    // Periodic cleanup of completed executions
+                    if (config.retentionPolicy.enabled && Duration.between(lastCleanup, now) > config.retentionPolicy.cleanupInterval) {
+                        val cutoff = now.minus(config.retentionPolicy.maxAge)
+                        var totalCleaned = 0
+                        var batchCount = 0
+                        while (batchCount < 5) {
+                            val cleaned = store.cleanupCompletedExecutions(
+                                before = cutoff,
+                                statuses = config.retentionPolicy.statuses,
+                                limit = config.retentionPolicy.batchSize
+                            )
+                            totalCleaned += cleaned
+                            batchCount++
+                            if (cleaned < config.retentionPolicy.batchSize) break
+                        }
+                        if (totalCleaned > 0) log.info("Cleaned up $totalCleaned completed executions older than $cutoff")
+                        lastCleanup = now
                     }
 
                     pollAndExecute()

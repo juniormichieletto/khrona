@@ -247,5 +247,7 @@ class ConcurrencyReplaceTest {
             }
             return superseded
         }
+
+        override suspend fun cleanupCompletedExecutions(before: Instant, statuses: Set<ExecutionStatus>, limit: Int): Int = 0
     }
 }

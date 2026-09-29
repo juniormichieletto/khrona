@@ -383,4 +383,86 @@ class SchedulerTest {
         val next = trigger.nextExecutionTime(now)
         assertEquals(Instant.parse("2026-04-25T11:00:00Z"), next)
     }
+
+    @Test
+    fun `scheduler config should validate retention policy`() {
+        val store = MockJobStore()
+        assertThrows(IllegalArgumentException::class.java) {
+            val config = KhronaConfig().apply {
+                this.store = store
+                retention {
+                    maxAge = Duration.ofSeconds(-1)
+                }
+            }
+            Scheduler(config)
+        }
+
+        assertThrows(IllegalArgumentException::class.java) {
+            val config = KhronaConfig().apply {
+                this.store = store
+                retention {
+                    cleanupInterval = Duration.ofSeconds(0)
+                }
+            }
+            Scheduler(config)
+        }
+
+        assertThrows(IllegalArgumentException::class.java) {
+            val config = KhronaConfig().apply {
+                this.store = store
+                retention {
+                    batchSize = 0
+                }
+            }
+            Scheduler(config)
+        }
+    }
+
+    @Test
+    fun `scheduler should periodically clean up completed executions according to retention policy`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
+        val config = KhronaConfig().apply {
+            this.store = store
+            pollingInterval = Duration.ofMillis(500)
+            retention {
+                enabled = true
+                maxAge = Duration.ofMinutes(10)
+                cleanupInterval = Duration.ofMinutes(1)
+                batchSize = 10
+            }
+        }
+
+        val scheduler = Scheduler(config, backgroundScope, clock)
+
+        // T = 0
+        val oldSuccess = JobExecution(jobId = "old-succ", scheduledAt = Instant.now(clock))
+        val oldDead = JobExecution(jobId = "old-dead", scheduledAt = Instant.now(clock))
+        store.saveExecution(oldSuccess)
+        store.saveExecution(oldDead)
+        store.updateExecutionStatus(oldSuccess.id, ExecutionStatus.SUCCESS)
+        store.updateExecutionStatus(oldDead.id, ExecutionStatus.DEAD_LETTERED)
+
+        scheduler.start()
+
+        // Advance 11 minutes (so executions become older than maxAge of 10m)
+        advanceTimeBy(11 * 60 * 1000L)
+
+        // A new recent success at T = 11m
+        val recentSuccess = JobExecution(jobId = "recent-succ", scheduledAt = Instant.now(clock))
+        store.saveExecution(recentSuccess)
+        store.updateExecutionStatus(recentSuccess.id, ExecutionStatus.SUCCESS)
+
+        // Advance 1 more minute so cleanup interval triggers again
+        advanceTimeBy(60 * 1000L)
+
+        // Old success should have been cleaned up
+        assertNull(store.getExecution(oldSuccess.id), "Old success should be cleaned up")
+        // Dead lettered execution should be preserved by default
+        assertNotNull(store.getExecution(oldDead.id), "Dead lettered execution should be preserved")
+        // Recent success should be preserved
+        assertNotNull(store.getExecution(recentSuccess.id), "Recent success should be preserved")
+
+        scheduler.stop()
+    }
 }

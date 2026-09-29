@@ -156,6 +156,9 @@ CREATE INDEX IF NOT EXISTS idx_khrona_executions_lock_status_expires
 
 CREATE INDEX IF NOT EXISTS idx_khrona_executions_status_expires
     ON khrona_executions(status, expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_khrona_executions_status_completed
+    ON khrona_executions(status, completed_at);
 ```
 
 Run Flyway before installing `Khrona`, then construct the store without calling `migrate()`:
@@ -243,8 +246,7 @@ Operational requirements:
 - Enable Redis persistence (`AOF` or appropriate `RDB`) if scheduled state must survive Redis restarts.
 - Do not use an eviction policy that can evict Khrona keys. Prefer dedicated Redis memory or `noeviction` for scheduler data.
 - Keep `namespace` unique per environment or tenant to avoid cross-application key collisions.
-- Use `pollBatchSize` on `KhronaConfig` and `requestQueueSize` on `RedisJobStoreConfig` as the scheduler and client-side backpressure boundaries.
-- v0.4 does not include automatic terminal-execution cleanup. Use operator-owned cleanup scripts for old `SUCCESS`, `FAILED`, `MISFIRED`, and `SUPERSEDED` records after your retention window. Do not delete `PENDING`, `CLAIMED`, `RUNNING`, or `DEAD_LETTERED` executions unless you intentionally want to remove work or investigation data.
+- Automated terminal-execution cleanup runs in the background according to your configured `retention` policy (default: 14 days, purging `SUCCESS`, `FAILED`, `MISFIRED`, and `SUPERSEDED` records). `DEAD_LETTERED` records are preserved by default for operator review.
 
 ## MySQL 8 & Multi-Node Testing
 
@@ -392,6 +394,48 @@ scheduler.trigger("report-job", payload = mapOf(
 execute { payload ->
     val data = payload as Map<*, *>
     val id = data["id"] as Long
+}
+```
+
+### Automated Retention and Execution Cleanup
+In production, persistent stores continuously accumulate completed executions. To prevent database bloat and performance degradation, Khrona includes automated, bounded execution cleanup enabled by default.
+
+- **Default retention period:** 14 days (`maxAge = 14.days`).
+- **Cleanup interval:** Runs once per hour (`cleanupInterval = 1.hours`).
+- **Batch limit:** 1000 records per batch (`batchSize = 1000`) to prevent large database locks and replication lag.
+- **Default statuses purged:** `SUCCESS`, `FAILED` (intermediate retries), `MISFIRED`, and `SUPERSEDED`.
+- **Audit safety:** `DEAD_LETTERED` records are **never deleted automatically by default**, ensuring permanent failures remain available for operator diagnosis.
+
+Configure or disable retention in `Khrona`:
+
+```kotlin
+val config = Khrona {
+    store = JdbcJobStore(dataSource)
+
+    retention {
+        enabled = true                       // true by default
+        maxAge(7.days)                       // purge older than 7 days
+        cleanupInterval(30.minutes)          // run cleanup every 30 minutes
+        batchSize = 500                      // bounded batch size
+
+        // Optionally include DEAD_LETTERED if you wish to purge dead-lettered jobs:
+        // statuses = setOf(
+        //     ExecutionStatus.SUCCESS,
+        //     ExecutionStatus.FAILED,
+        //     ExecutionStatus.MISFIRED,
+        //     ExecutionStatus.SUPERSEDED,
+        //     ExecutionStatus.DEAD_LETTERED
+        // )
+    }
+}
+```
+
+To disable automatic cleanup (e.g. if using external table partitioning or custom database maintenance jobs):
+
+```kotlin
+val config = Khrona {
+    store = JdbcJobStore(dataSource)
+    retention { enabled = false }
 }
 ```
 
