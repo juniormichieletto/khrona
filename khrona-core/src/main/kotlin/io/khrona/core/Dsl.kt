@@ -2,6 +2,10 @@ package io.khrona.core
 
 import java.time.Duration
 import java.time.ZoneId
+import kotlin.time.Duration.Companion.days
+import kotlin.time.Duration.Companion.hours
+import kotlin.time.toJavaDuration
+import kotlin.time.toKotlinDuration
 
 class JobBuilder(val id: String) {
     var description: String? = null
@@ -12,6 +16,14 @@ class JobBuilder(val id: String) {
     var misfirePolicy: MisfirePolicy = MisfirePolicy.FIRE_NOW
     var lockKey: String? = null
     var timeout: Duration? = null
+
+    fun timeout(duration: kotlin.time.Duration) {
+        this.timeout = duration.toJavaDuration()
+    }
+
+    fun timeout(duration: java.time.Duration) {
+        this.timeout = duration
+    }
 
     fun retry(block: RetryPolicyBuilder.() -> Unit) {
         val builder = RetryPolicyBuilder()
@@ -99,6 +111,22 @@ class RetryPolicyBuilder {
     var factor: Double = 2.0
     var jitter: Double = 0.1
 
+    fun initialDelay(delay: kotlin.time.Duration) {
+        this.initialDelay = java.time.Duration.ofMillis(delay.inWholeMilliseconds)
+    }
+
+    fun initialDelay(delay: java.time.Duration) {
+        this.initialDelay = delay
+    }
+
+    fun maxDelay(delay: kotlin.time.Duration) {
+        this.maxDelay = java.time.Duration.ofMillis(delay.inWholeMilliseconds)
+    }
+
+    fun maxDelay(delay: java.time.Duration) {
+        this.maxDelay = delay
+    }
+
     fun build(): RetryPolicy {
         return RetryPolicy(
             maxAttempts = maxAttempts,
@@ -144,6 +172,41 @@ class KhronaConfig {
         val builder = JobBuilder(id)
         builder.block()
         jobs.add(builder.build())
+    }
+
+    val retentionPolicy = RetentionPolicy()
+
+    fun retention(block: RetentionPolicy.() -> Unit) {
+        retentionPolicy.block()
+    }
+}
+
+class RetentionPolicy {
+    var enabled: Boolean = true
+    var maxAge: kotlin.time.Duration = 14.days
+    var cleanupInterval: kotlin.time.Duration = 1.hours
+    var batchSize: Int = 1000
+    var statuses: Set<ExecutionStatus> = setOf(
+        ExecutionStatus.SUCCESS,
+        ExecutionStatus.FAILED,
+        ExecutionStatus.MISFIRED,
+        ExecutionStatus.SUPERSEDED
+    )
+
+    fun maxAge(duration: kotlin.time.Duration) {
+        this.maxAge = duration
+    }
+
+    fun maxAge(duration: java.time.Duration) {
+        this.maxAge = duration.toKotlinDuration()
+    }
+
+    fun cleanupInterval(interval: kotlin.time.Duration) {
+        this.cleanupInterval = interval
+    }
+
+    fun cleanupInterval(interval: java.time.Duration) {
+        this.cleanupInterval = interval.toKotlinDuration()
     }
 }
 

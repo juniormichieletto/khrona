@@ -11,6 +11,7 @@ graph TD
     subgraph "Core Engine"
         Sch[Scheduler] --> Triggers[Interval / Cron Triggers]
         Sch --> Workers[Execution Coroutines]
+        Sch --> Retention[Retention & Cleanup Drainer]
         Workers --> Heartbeat[Heartbeat Manager]
     end
 
@@ -32,15 +33,17 @@ graph TD
 
     DSL --> Sch
     Sch <--> Store
+    Retention --> Store
     Workers <--> Store
 ```
 
 ## Component Overview
-- **Core:** Job definitions, triggers, execution engine.
+- **Core:** Job definitions, triggers, execution engine, and periodic execution retention/cleanup.
 - **Store SPI:** Pluggable storage layer (`MemoryJobStore`, `JdbcJobStore`, `RedisJobStore`).
 - **JdbcDialect:** Abstraction for database-specific SQL (PostgreSQL, MySQL, H2, etc.).
 - **RedisJobStore:** Redis-backed scheduler state using namespaced hashes, sorted-set lease indexes, lock indexes, and Lua scripts for atomic claim/supersede transitions.
 - **Worker:** Coroutine-based executor polling and heartbeating.
+- **Retention:** Periodic background draining of aged terminal executions (`SUCCESS`, `FAILED`, `MISFIRED`, `SUPERSEDED`).
 - **Ktor Plugin:** Integration bridge for Ktor lifecycle and routing.
 
 ## Execution Flow
@@ -52,6 +55,12 @@ sequenceDiagram
     participant W as Worker Coroutine
     
     loop Every pollingInterval
+        opt Stale Recovery Due (~1m)
+            S->>ST: resetExpiredExecutions(now)
+        end
+        opt Retention Cleanup Due (cleanupInterval)
+            S->>ST: cleanupCompletedExecutions(cutoff, statuses, batchSize)
+        end
         S->>ST: listEligibleExecutions(now)
         ST-->>S: List<JobExecution>
         loop For each execution

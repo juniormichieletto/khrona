@@ -24,4 +24,19 @@ interface JobStore {
      * Returns the list of UUIDs that were superseded.
      */
     suspend fun supersedeExecutionsByLockKey(lockKey: String, excludeExecutionId: UUID? = null): List<UUID>
+
+    /**
+     * Purges terminal executions completed before [before] matching [statuses], up to [limit] rows.
+     * Returns the number of deleted executions.
+     */
+    suspend fun cleanupCompletedExecutions(
+        before: Instant,
+        statuses: Set<ExecutionStatus> = setOf(
+            ExecutionStatus.SUCCESS,
+            ExecutionStatus.FAILED,
+            ExecutionStatus.MISFIRED,
+            ExecutionStatus.SUPERSEDED
+        ),
+        limit: Int = 1000
+    ): Int
 }

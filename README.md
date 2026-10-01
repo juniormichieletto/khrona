@@ -53,32 +53,52 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
 
 ## Installation
 
+Ensure `mavenCentral()` is present in your repositories:
+
 ```kotlin
 // build.gradle.kts
+repositories {
+    mavenCentral()
+}
+
 dependencies {
+    // For Ktor integration:
     implementation("io.github.juniormichieletto:khrona-ktor:0.5.0")
     
-    // Choose your storage:
-    implementation("io.github.juniormichieletto:khrona-store-memory:0.5.0") // For dev/testing
-    implementation("io.github.juniormichieletto:khrona-store-jdbc:0.5.0")   // For production
+    // OR for Standalone Kotlin apps (without Ktor):
+    // implementation("io.github.juniormichieletto:khrona-core:0.5.0")
+
+    // Choose your storage backend:
+    implementation("io.github.juniormichieletto:khrona-store-memory:0.5.0") // Dev / testing
+    implementation("io.github.juniormichieletto:khrona-store-jdbc:0.5.0")   // Production JDBC
     // implementation("io.github.juniormichieletto:khrona-store-redis:0.5.0") // Experimental Redis coordination
 
     // When using JDBC, add the driver for your database:
     runtimeOnly("org.postgresql:postgresql:42.7.5")           // PostgreSQL
     // runtimeOnly("com.mysql:mysql-connector-j:9.2.0")       // MySQL
     // runtimeOnly("com.oracle.database.jdbc:ojdbc11:23.6.0.24.10") // Oracle
+    // runtimeOnly("com.h2database:h2:2.3.232")               // H2
 }
 ```
 
 ## Quick Start (In-Memory)
 
-The fastest way to get started with Ktor using ephemeral in-memory storage.
+The fastest way to get started with Ktor using ephemeral in-memory storage. This snippet is self-contained and ready to run:
 
 ```kotlin
+package com.example
+
 import io.khrona.ktor.*
 import io.khrona.store.memory.MemoryJobStore
+import io.ktor.server.application.*
+import io.ktor.server.engine.*
+import io.ktor.server.netty.*
 import kotlinx.coroutines.launch
 import kotlin.time.Duration.Companion.minutes
+
+fun main() {
+    embeddedServer(Netty, port = 8080, module = Application::module).start(wait = true)
+}
 
 fun Application.module() {
     install(Khrona) {
@@ -103,8 +123,10 @@ fun Application.module() {
 For production use, jobs should persist across application restarts.
 
 ```kotlin
+import io.khrona.ktor.*
 import io.khrona.store.jdbc.JdbcJobStore
-import io.khrona.store.jdbc.PostgresDialect // Or MySqlDialect, H2Dialect, etc.
+import io.khrona.store.jdbc.PostgresDialect // Or MySqlDialect, H2Dialect, OracleDialect
+import io.ktor.server.application.*
 import kotlinx.coroutines.runBlocking
 
 val store = JdbcJobStore(dataSource, PostgresDialect())
@@ -156,6 +178,9 @@ CREATE INDEX IF NOT EXISTS idx_khrona_executions_lock_status_expires
 
 CREATE INDEX IF NOT EXISTS idx_khrona_executions_status_expires
     ON khrona_executions(status, expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_khrona_executions_status_completed
+    ON khrona_executions(status, completed_at);
 ```
 
 Run Flyway before installing `Khrona`, then construct the store without calling `migrate()`:
@@ -243,8 +268,7 @@ Operational requirements:
 - Enable Redis persistence (`AOF` or appropriate `RDB`) if scheduled state must survive Redis restarts.
 - Do not use an eviction policy that can evict Khrona keys. Prefer dedicated Redis memory or `noeviction` for scheduler data.
 - Keep `namespace` unique per environment or tenant to avoid cross-application key collisions.
-- Use `pollBatchSize` on `KhronaConfig` and `requestQueueSize` on `RedisJobStoreConfig` as the scheduler and client-side backpressure boundaries.
-- v0.4 does not include automatic terminal-execution cleanup. Use operator-owned cleanup scripts for old `SUCCESS`, `FAILED`, `MISFIRED`, and `SUPERSEDED` records after your retention window. Do not delete `PENDING`, `CLAIMED`, `RUNNING`, or `DEAD_LETTERED` executions unless you intentionally want to remove work or investigation data.
+- Automated terminal-execution cleanup runs in the background according to your configured `retention` policy (default: 14 days, purging `SUCCESS`, `FAILED`, `MISFIRED`, and `SUPERSEDED` records). `DEAD_LETTERED` records are preserved by default for operator review.
 
 ## MySQL 8 & Multi-Node Testing
 
@@ -395,6 +419,48 @@ execute { payload ->
 }
 ```
 
+### Automated Retention and Execution Cleanup
+In production, persistent stores continuously accumulate completed executions. To prevent database bloat and performance degradation, Khrona includes automated, bounded execution cleanup enabled by default.
+
+- **Default retention period:** 14 days (`maxAge = 14.days`).
+- **Cleanup interval:** Runs once per hour (`cleanupInterval = 1.hours`).
+- **Batch limit:** 1000 records per batch (`batchSize = 1000`) to prevent large database locks and replication lag.
+- **Default statuses purged:** `SUCCESS`, `FAILED` (intermediate retries), `MISFIRED`, and `SUPERSEDED`.
+- **Audit safety:** `DEAD_LETTERED` records are **never deleted automatically by default**, ensuring permanent failures remain available for operator diagnosis.
+
+Configure or disable retention in `Khrona`:
+
+```kotlin
+val config = Khrona {
+    store = JdbcJobStore(dataSource)
+
+    retention {
+        enabled = true                       // true by default
+        maxAge = 7.days                      // purge older than 7 days
+        cleanupInterval = 30.minutes         // run cleanup every 30 minutes
+        batchSize = 500                      // bounded batch size
+
+        // Optionally include DEAD_LETTERED if you wish to purge dead-lettered jobs:
+        // statuses = setOf(
+        //     ExecutionStatus.SUCCESS,
+        //     ExecutionStatus.FAILED,
+        //     ExecutionStatus.MISFIRED,
+        //     ExecutionStatus.SUPERSEDED,
+        //     ExecutionStatus.DEAD_LETTERED
+        // )
+    }
+}
+```
+
+To disable automatic cleanup (e.g. if using external table partitioning or custom database maintenance jobs):
+
+```kotlin
+val config = Khrona {
+    store = JdbcJobStore(dataSource)
+    retention { enabled = false }
+}
+```
+
 ### Misfire Policies
 Define what happens if a job misses its scheduled time (e.g., due to downtime).
 
@@ -440,6 +506,11 @@ To show the ID in your logs, update your `logback.xml` pattern to include `%X{co
 You can also run Khrona outside of Ktor. Note that registration and triggering are **suspend** functions for better error handling and observability.
 
 ```kotlin
+import io.khrona.core.*
+import io.khrona.store.memory.MemoryJobStore
+import kotlinx.coroutines.runBlocking
+import kotlin.time.Duration.Companion.seconds
+
 val config = Khrona {
     store = MemoryJobStore()
     pollingInterval(5.seconds)
@@ -537,6 +608,7 @@ graph TD
 
     subgraph "Core Engine"
         Sch[Scheduler] --> Workers[Execution Coroutines]
+        Sch --> Retention[Retention & Cleanup]
         Workers --> Heartbeat[Heartbeat Manager]
     end
 
@@ -558,6 +630,7 @@ graph TD
 
     DSL --> Sch
     Sch <--> Store
+    Retention --> Store
     Workers <--> Store
 ```
 
@@ -581,8 +654,11 @@ flowchart TD
 
     PollWait --> RecoveryDue{"Stale recovery due?<br/>checked about once per minute"}
     RecoveryDue -- "Yes" --> Recover["Reset expired CLAIMED or RUNNING<br/>executions to PENDING<br/>resetExpiredExecutions"]
-    RecoveryDue -- "No" --> Fetch
-    Recover --> Fetch["Fetch due work up to pollBatchSize<br/>PENDING or expired CLAIMED/RUNNING<br/>listEligibleExecutions"]
+    RecoveryDue -- "No" --> CleanupDue{"Retention cleanup due?<br/>retentionPolicy.enabled & interval elapsed"}
+    Recover --> CleanupDue
+    CleanupDue -- "Yes" --> CleanupExec["Purge executions older than maxAge<br/>up to batchSize rows (max 5 batches)<br/>cleanupCompletedExecutions"]
+    CleanupDue -- "No" --> Fetch
+    CleanupExec --> Fetch["Fetch due work up to pollBatchSize<br/>PENDING or expired CLAIMED/RUNNING<br/>listEligibleExecutions"]
 
     Fetch --> Eligible{"Eligible execution found?"}
     Eligible -- "No" --> PollWait
@@ -648,6 +724,7 @@ For JDBC, the main database access points are:
 - `heartbeat`: updates `expires_at` only while the row remains `CLAIMED` or `RUNNING`.
 - `resetExpiredExecutions`: returns expired active rows to `PENDING` so work can resume after a crash or lost worker.
 - `supersedeExecutionsByLockKey`: transactionally marks older active rows as `SUPERSEDED` for `ConcurrencyPolicy.REPLACE`.
+- `cleanupCompletedExecutions`: purges terminal executions older than `maxAge` matching the configured retention statuses in bounded batches.
 
 ## Roadmap
 

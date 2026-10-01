@@ -123,6 +123,15 @@ class JdbcCoverageTest : AbstractJdbcJobStoreTest() {
     }
 
     @Test
+    fun `dialects cover cleanup completed executions sql`() {
+        listOf(PostgresDialect(), H2Dialect(), MySqlDialect(), OracleDialect()).forEach { dialect ->
+            val sql = dialect.cleanupCompletedExecutionsSql(3)
+            assertTrue(sql.contains("DELETE FROM khrona_executions"))
+            assertTrue(sql.contains("completed_at < ?"))
+        }
+    }
+
+    @Test
     fun `resolveDialect covers known and fallback database products`() {
         assertInstanceOf(PostgresDialect::class.java, JdbcJobStore.resolveDialect(dataSource("PostgreSQL")))
         assertInstanceOf(MySqlDialect::class.java, JdbcJobStore.resolveDialect(dataSource("MySQL")))

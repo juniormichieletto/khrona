@@ -257,6 +257,41 @@ class RedisJobStore private constructor(
         ).map { UUID.fromString(it) }
     }
 
+    override suspend fun cleanupCompletedExecutions(
+        before: Instant,
+        statuses: Set<ExecutionStatus>,
+        limit: Int
+    ): Int = inRedisContext {
+        if (statuses.isEmpty() || limit <= 0) return@inRedisContext 0
+        var cursor = io.lettuce.core.ScanCursor.INITIAL
+        val toDelete = mutableListOf<String>()
+        val statusNames = statuses.map { it.name }.toSet()
+        do {
+            val scanResult = commands.hscan(
+                keys.executions,
+                cursor,
+                io.lettuce.core.ScanArgs.Builder.limit(limit.toLong().coerceAtLeast(100))
+            )
+            cursor = scanResult
+            for ((id, jsonStr) in scanResult.map) {
+                val stored = try { json.decodeFromString<StoredExecution>(jsonStr) } catch (_: Exception) { null }
+                if (stored != null && stored.status in statusNames) {
+                    val completedAt = stored.completedAt?.let { try { Instant.parse(it) } catch (_: Exception) { null } }
+                    if (completedAt != null && completedAt < before) {
+                        toDelete.add(id)
+                        if (toDelete.size >= limit) break
+                    }
+                }
+            }
+        } while (!cursor.isFinished && toDelete.size < limit)
+
+        if (toDelete.isNotEmpty()) {
+            commands.hdel(keys.executions, *toDelete.toTypedArray())
+            toDelete.forEach { removeFromIndexes(it) }
+        }
+        toDelete.size
+    }
+
     override fun close() {
         connection.close()
         if (ownsClient) {

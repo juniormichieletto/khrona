@@ -127,4 +127,22 @@ class MemoryJobStore : JobStore {
         }
         return superseded
     }
+
+    override suspend fun cleanupCompletedExecutions(
+        before: Instant,
+        statuses: Set<ExecutionStatus>,
+        limit: Int
+    ): Int {
+        if (statuses.isEmpty() || limit <= 0) return 0
+        val toRemove = executions.values.asSequence()
+            .filter {
+                val completedAt = it.completedAt
+                it.status in statuses && completedAt != null && completedAt < before
+            }
+            .take(limit)
+            .map { it.id }
+            .toList()
+        toRemove.forEach { executions.remove(it) }
+        return toRemove.size
+    }
 }

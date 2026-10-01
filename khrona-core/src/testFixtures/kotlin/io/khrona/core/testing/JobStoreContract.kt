@@ -138,4 +138,57 @@ interface JobStoreContract {
         assertNotNull(secondExpiry)
         assertTrue(secondExpiry!! > firstExpiry!!)
     }
+
+    @Test
+    fun `purges terminal executions completed before cutoff up to limit`() = runTest {
+        val store = createStore()
+        val testRunId = UUID.randomUUID()
+        val cutoff = Instant.parse("2030-01-01T12:00:00Z")
+        store.cleanupCompletedExecutions(before = Instant.now().plusSeconds(3600), limit = 100_000)
+
+        val oldSuccess = JobExecution(jobId = "cleanup-succ-$testRunId", scheduledAt = cutoff.minusSeconds(100))
+        val oldSuperseded = JobExecution(jobId = "cleanup-super-$testRunId", scheduledAt = cutoff.minusSeconds(90))
+        val oldMisfired = JobExecution(jobId = "cleanup-misfired-$testRunId", scheduledAt = cutoff.minusSeconds(80))
+        val oldDeadLetter = JobExecution(jobId = "cleanup-dead-$testRunId", scheduledAt = cutoff.minusSeconds(70))
+        val activePending = JobExecution(jobId = "cleanup-pending-$testRunId", scheduledAt = cutoff.minusSeconds(60))
+
+        val all = listOf(oldSuccess, oldSuperseded, oldMisfired, oldDeadLetter, activePending)
+        all.forEach { store.saveExecution(it) }
+
+        store.updateExecutionStatus(oldSuccess.id, ExecutionStatus.SUCCESS)
+        store.updateExecutionStatus(oldSuperseded.id, ExecutionStatus.SUPERSEDED)
+        store.updateExecutionStatus(oldMisfired.id, ExecutionStatus.MISFIRED)
+        store.updateExecutionStatus(oldDeadLetter.id, ExecutionStatus.DEAD_LETTERED)
+
+        // Cutoff is set in the future of the completion times, so old executions are older than cutoff.
+        val futureCutoff = Instant.now().plusSeconds(60)
+
+        // Clean up only SUCCESS, SUPERSEDED, MISFIRED with limit = 2
+        val cleanedBatch1 = store.cleanupCompletedExecutions(
+            before = futureCutoff,
+            statuses = setOf(ExecutionStatus.SUCCESS, ExecutionStatus.SUPERSEDED, ExecutionStatus.MISFIRED),
+            limit = 2
+        )
+        assertEquals(2, cleanedBatch1)
+
+        // Clean up remaining
+        val cleanedBatch2 = store.cleanupCompletedExecutions(
+            before = futureCutoff,
+            statuses = setOf(ExecutionStatus.SUCCESS, ExecutionStatus.SUPERSEDED, ExecutionStatus.MISFIRED),
+            limit = 10
+        )
+        assertEquals(1, cleanedBatch2)
+
+        // Ensure target old executions were removed
+        val deletedCount = listOf(oldSuccess, oldSuperseded, oldMisfired).count { store.getExecution(it.id) == null }
+        assertEquals(3, deletedCount)
+
+        // Ensure DEAD_LETTERED and PENDING were preserved
+        assertNotNull(store.getExecution(oldDeadLetter.id), "DEAD_LETTERED execution should not be cleaned up")
+        assertNotNull(store.getExecution(activePending.id), "PENDING execution should not be cleaned up")
+
+        // Zero limit or empty statuses should do nothing
+        assertEquals(0, store.cleanupCompletedExecutions(before = futureCutoff, statuses = emptySet()))
+        assertEquals(0, store.cleanupCompletedExecutions(before = futureCutoff, statuses = setOf(ExecutionStatus.DEAD_LETTERED), limit = 0))
+    }
 }
