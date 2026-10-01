@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.5.0] - 2026-06-16
 
 ### Added
+- **Execution Retention & Cleanup:** Added automatic bounded execution retention and cleanup across core scheduler and all storage backends (JDBC, Memory, Redis) with configurable `retention { ... }` DSL block and `idx_khrona_executions_status_completed` index.
+- **Kotlin Duration DSL Support:** Supported `kotlin.time.Duration` throughout the DSL (`RetentionPolicy`, `JobBuilder.timeout`, `RetryPolicyBuilder`, `IntervalTrigger`) with full backward compatibility for `java.time.Duration`.
 - **GitHub Releases:** Added JReleaser-based GitHub release creation with generated release notes and no attached JAR assets.
 - **Release Backfill Tooling:** Added a dry-run-first helper for backfilling historical GitHub releases from existing tags.
 - **Release Process Notes:** Documented the normal release flow, historical backfill process, and verification commands in `docs/release-process.md`.

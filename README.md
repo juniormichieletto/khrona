@@ -608,6 +608,7 @@ graph TD
 
     subgraph "Core Engine"
         Sch[Scheduler] --> Workers[Execution Coroutines]
+        Sch --> Retention[Retention & Cleanup]
         Workers --> Heartbeat[Heartbeat Manager]
     end
 
@@ -629,6 +630,7 @@ graph TD
 
     DSL --> Sch
     Sch <--> Store
+    Retention --> Store
     Workers <--> Store
 ```
 
@@ -652,8 +654,11 @@ flowchart TD
 
     PollWait --> RecoveryDue{"Stale recovery due?<br/>checked about once per minute"}
     RecoveryDue -- "Yes" --> Recover["Reset expired CLAIMED or RUNNING<br/>executions to PENDING<br/>resetExpiredExecutions"]
-    RecoveryDue -- "No" --> Fetch
-    Recover --> Fetch["Fetch due work up to pollBatchSize<br/>PENDING or expired CLAIMED/RUNNING<br/>listEligibleExecutions"]
+    RecoveryDue -- "No" --> CleanupDue{"Retention cleanup due?<br/>retentionPolicy.enabled & interval elapsed"}
+    Recover --> CleanupDue
+    CleanupDue -- "Yes" --> CleanupExec["Purge executions older than maxAge<br/>up to batchSize rows (max 5 batches)<br/>cleanupCompletedExecutions"]
+    CleanupDue -- "No" --> Fetch
+    CleanupExec --> Fetch["Fetch due work up to pollBatchSize<br/>PENDING or expired CLAIMED/RUNNING<br/>listEligibleExecutions"]
 
     Fetch --> Eligible{"Eligible execution found?"}
     Eligible -- "No" --> PollWait
@@ -719,6 +724,7 @@ For JDBC, the main database access points are:
 - `heartbeat`: updates `expires_at` only while the row remains `CLAIMED` or `RUNNING`.
 - `resetExpiredExecutions`: returns expired active rows to `PENDING` so work can resume after a crash or lost worker.
 - `supersedeExecutionsByLockKey`: transactionally marks older active rows as `SUPERSEDED` for `ConcurrencyPolicy.REPLACE`.
+- `cleanupCompletedExecutions`: purges terminal executions older than `maxAge` matching the configured retention statuses in bounded batches.
 
 ## Roadmap
 
