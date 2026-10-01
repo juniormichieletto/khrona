@@ -53,32 +53,52 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
 
 ## Installation
 
+Ensure `mavenCentral()` is present in your repositories:
+
 ```kotlin
 // build.gradle.kts
+repositories {
+    mavenCentral()
+}
+
 dependencies {
+    // For Ktor integration:
     implementation("io.github.juniormichieletto:khrona-ktor:0.5.0")
     
-    // Choose your storage:
-    implementation("io.github.juniormichieletto:khrona-store-memory:0.5.0") // For dev/testing
-    implementation("io.github.juniormichieletto:khrona-store-jdbc:0.5.0")   // For production
+    // OR for Standalone Kotlin apps (without Ktor):
+    // implementation("io.github.juniormichieletto:khrona-core:0.5.0")
+
+    // Choose your storage backend:
+    implementation("io.github.juniormichieletto:khrona-store-memory:0.5.0") // Dev / testing
+    implementation("io.github.juniormichieletto:khrona-store-jdbc:0.5.0")   // Production JDBC
     // implementation("io.github.juniormichieletto:khrona-store-redis:0.5.0") // Experimental Redis coordination
 
     // When using JDBC, add the driver for your database:
     runtimeOnly("org.postgresql:postgresql:42.7.5")           // PostgreSQL
     // runtimeOnly("com.mysql:mysql-connector-j:9.2.0")       // MySQL
     // runtimeOnly("com.oracle.database.jdbc:ojdbc11:23.6.0.24.10") // Oracle
+    // runtimeOnly("com.h2database:h2:2.3.232")               // H2
 }
 ```
 
 ## Quick Start (In-Memory)
 
-The fastest way to get started with Ktor using ephemeral in-memory storage.
+The fastest way to get started with Ktor using ephemeral in-memory storage. This snippet is self-contained and ready to run:
 
 ```kotlin
+package com.example
+
 import io.khrona.ktor.*
 import io.khrona.store.memory.MemoryJobStore
+import io.ktor.server.application.*
+import io.ktor.server.engine.*
+import io.ktor.server.netty.*
 import kotlinx.coroutines.launch
 import kotlin.time.Duration.Companion.minutes
+
+fun main() {
+    embeddedServer(Netty, port = 8080, module = Application::module).start(wait = true)
+}
 
 fun Application.module() {
     install(Khrona) {
@@ -103,8 +123,10 @@ fun Application.module() {
 For production use, jobs should persist across application restarts.
 
 ```kotlin
+import io.khrona.ktor.*
 import io.khrona.store.jdbc.JdbcJobStore
-import io.khrona.store.jdbc.PostgresDialect // Or MySqlDialect, H2Dialect, etc.
+import io.khrona.store.jdbc.PostgresDialect // Or MySqlDialect, H2Dialect, OracleDialect
+import io.ktor.server.application.*
 import kotlinx.coroutines.runBlocking
 
 val store = JdbcJobStore(dataSource, PostgresDialect())
@@ -484,6 +506,11 @@ To show the ID in your logs, update your `logback.xml` pattern to include `%X{co
 You can also run Khrona outside of Ktor. Note that registration and triggering are **suspend** functions for better error handling and observability.
 
 ```kotlin
+import io.khrona.core.*
+import io.khrona.store.memory.MemoryJobStore
+import kotlinx.coroutines.runBlocking
+import kotlin.time.Duration.Companion.seconds
+
 val config = Khrona {
     store = MemoryJobStore()
     pollingInterval(5.seconds)
