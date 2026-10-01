@@ -64,9 +64,11 @@
 - [x] Document Redis persistence, eviction, namespace, and cleanup tradeoffs
 
 ## v0.5: Ops & Visibility
+- [x] Execution Retention & Cleanup (v0.5.1)
+- [x] Kotlin Duration DSL Support (v0.5.1)
+- [x] Misfire Policies (v0.5.0)
 - [ ] Core Job Management API
 - [ ] Metrics & Tracing (Micrometer/OpenTelemetry)
-- [x] Misfire Policies
 - [ ] Lock Inspection
 
 ## v0.6: Hardening

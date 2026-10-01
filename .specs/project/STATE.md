@@ -8,6 +8,7 @@
 - **v0.2 Completion:** Implemented JDBC/Postgres store, retries, and durable scheduling.
 - **v0.3 Completion:** Implemented lease-based claiming, distributed locking (FORBID), and stale worker recovery.
 - **v0.3.1 Hardening:** Implemented handler registry, resilient recurring schedules, enforced timeouts, suspendable APIs, structured JDBC payloads, fail-fast migrations, and safer REPLACE ordering.
+- **v0.5.1 Release:** Implemented automatic execution retention and cleanup across all stores (JDBC, Redis, Memory), supported Kotlin Duration throughout the DSL with full backward compatibility, and updated documentation with runnable, self-contained examples.
 
 ## Blockers
 - None. v0.3.2 hardening addresses previously identified production-readiness blockers, including validation and lifecycle isolation gaps found in review.

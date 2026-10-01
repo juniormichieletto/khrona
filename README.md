@@ -63,15 +63,15 @@ repositories {
 
 dependencies {
     // For Ktor integration:
-    implementation("io.github.juniormichieletto:khrona-ktor:0.5.0")
+    implementation("io.github.juniormichieletto:khrona-ktor:0.5.1")
     
     // OR for Standalone Kotlin apps (without Ktor):
-    // implementation("io.github.juniormichieletto:khrona-core:0.5.0")
+    // implementation("io.github.juniormichieletto:khrona-core:0.5.1")
 
     // Choose your storage backend:
-    implementation("io.github.juniormichieletto:khrona-store-memory:0.5.0") // Dev / testing
-    implementation("io.github.juniormichieletto:khrona-store-jdbc:0.5.0")   // Production JDBC
-    // implementation("io.github.juniormichieletto:khrona-store-redis:0.5.0") // Experimental Redis coordination
+    implementation("io.github.juniormichieletto:khrona-store-memory:0.5.1") // Dev / testing
+    implementation("io.github.juniormichieletto:khrona-store-jdbc:0.5.1")   // Production JDBC
+    // implementation("io.github.juniormichieletto:khrona-store-redis:0.5.1") // Experimental Redis coordination
 
     // When using JDBC, add the driver for your database:
     runtimeOnly("org.postgresql:postgresql:42.7.5")           // PostgreSQL
@@ -733,7 +733,9 @@ For JDBC, the main database access points are:
 - [x] **v0.3:** Distributed execution, lease-based claiming, and concurrency policies.
 - [x] **v0.3.3:** Reliability hardening (Registry, Timeouts, Atomic REPLACE).
 - [x] **v0.4:** Redis-backed `JobStore` with atomic claiming, heartbeat, recovery, and lock semantics. **(Experimental for production use)**
-- [ ] **v0.5:** Core job management API, Metrics (Micrometer/OpenTelemetry), lock inspection.
+- [x] **v0.5.0:** JReleaser release flow, Flyway setup docs, misfire policy hardening.
+- [x] **v0.5.1:** Execution retention & cleanup, Kotlin Duration DSL, streamlined quick-start docs.
+- [ ] **v0.5.2:** Core job management API, Metrics (Micrometer/OpenTelemetry), lock inspection.
 - [ ] **v0.6:** Production hardening, testkit improvements, adaptive delay, and operator ergonomics.
 - [ ] **v0.7:** Android SQLite storage support.
 

@@ -5,11 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.0] - 2026-06-16
+## [0.5.1] - 2026-10-01
 
 ### Added
 - **Execution Retention & Cleanup:** Added automatic bounded execution retention and cleanup across core scheduler and all storage backends (JDBC, Memory, Redis) with configurable `retention { ... }` DSL block and `idx_khrona_executions_status_completed` index.
 - **Kotlin Duration DSL Support:** Supported `kotlin.time.Duration` throughout the DSL (`RetentionPolicy`, `JobBuilder.timeout`, `RetryPolicyBuilder`, `IntervalTrigger`) with full backward compatibility for `java.time.Duration`.
+
+### Changed
+- **Documentation & Quick Start:** Streamlined README installation and added complete, runnable copy-paste snippets for both Ktor and Standalone Kotlin applications.
+- **Architecture Diagrams:** Updated component and sequence/flowchart diagrams in `README.md` and `.specs/codebase/ARCHITECTURE.md` to reflect the retention and cleanup lifecycle.
+
+## [0.5.0] - 2026-06-16
+
+### Added
 - **GitHub Releases:** Added JReleaser-based GitHub release creation with generated release notes and no attached JAR assets.
 - **Release Backfill Tooling:** Added a dry-run-first helper for backfilling historical GitHub releases from existing tags.
 - **Release Process Notes:** Documented the normal release flow, historical backfill process, and verification commands in `docs/release-process.md`.
