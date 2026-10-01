@@ -414,8 +414,8 @@ val config = Khrona {
 
     retention {
         enabled = true                       // true by default
-        maxAge(7.days)                       // purge older than 7 days
-        cleanupInterval(30.minutes)          // run cleanup every 30 minutes
+        maxAge = 7.days                      // purge older than 7 days
+        cleanupInterval = 30.minutes         // run cleanup every 30 minutes
         batchSize = 500                      // bounded batch size
 
         // Optionally include DEAD_LETTERED if you wish to purge dead-lettered jobs:

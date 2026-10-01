@@ -13,6 +13,8 @@ import java.time.Instant
 import java.time.ZoneId
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 
 class SchedulerTest {
 
@@ -391,7 +393,7 @@ class SchedulerTest {
             val config = KhronaConfig().apply {
                 this.store = store
                 retention {
-                    maxAge = Duration.ofSeconds(-1)
+                    maxAge = (-1).seconds
                 }
             }
             Scheduler(config)
@@ -401,7 +403,18 @@ class SchedulerTest {
             val config = KhronaConfig().apply {
                 this.store = store
                 retention {
-                    cleanupInterval = Duration.ofSeconds(0)
+                    cleanupInterval = 0.seconds
+                }
+            }
+            Scheduler(config)
+        }
+
+        assertThrows(IllegalArgumentException::class.java) {
+            val config = KhronaConfig().apply {
+                this.store = store
+                retention {
+                    // Test Java duration overload
+                    maxAge(java.time.Duration.ofSeconds(-5))
                 }
             }
             Scheduler(config)
@@ -427,8 +440,8 @@ class SchedulerTest {
             pollingInterval = Duration.ofMillis(500)
             retention {
                 enabled = true
-                maxAge = Duration.ofMinutes(10)
-                cleanupInterval = Duration.ofMinutes(1)
+                maxAge = 10.minutes
+                cleanupInterval = 1.minutes
                 batchSize = 10
             }
         }
@@ -465,4 +478,34 @@ class SchedulerTest {
 
         scheduler.stop()
     }
+
+    @Test
+    fun `job builder should support kotlin time duration for timeout`() {
+        val builder = JobBuilder("timeout-job").apply {
+            every(1.minutes)
+            timeout(5.minutes)
+            execute {}
+        }
+        val jobDef = builder.build()
+        assertEquals(Duration.ofMinutes(5), jobDef.timeout)
+    }
+
+    @Test
+    fun `retry policy builder should support kotlin time duration`() {
+        val builder = RetryPolicyBuilder().apply {
+            initialDelay(2.seconds)
+            maxDelay(10.minutes)
+        }
+        val retryPolicy = builder.build()
+        assertEquals(Duration.ofSeconds(2), retryPolicy.initialDelay)
+        assertEquals(Duration.ofMinutes(10), retryPolicy.maxDelay)
+    }
+
+    @Test
+    fun `interval trigger should support kotlin time duration constructor`() {
+        val trigger = IntervalTrigger(5.minutes, 10.seconds)
+        assertEquals(Duration.ofMinutes(5), trigger.interval)
+        assertEquals(Duration.ofSeconds(10), trigger.initialDelay)
+    }
 }
+

@@ -9,6 +9,7 @@ import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.time.toJavaDuration
 
 class Scheduler(
     val config: KhronaConfig,
@@ -45,10 +46,10 @@ class Scheduler(
             throw IllegalArgumentException("pollBatchSize must be positive")
         }
         if (config.retentionPolicy.enabled) {
-            if (config.retentionPolicy.maxAge.isNegative || config.retentionPolicy.maxAge.isZero) {
+            if (!config.retentionPolicy.maxAge.isPositive()) {
                 throw IllegalArgumentException("retentionPolicy.maxAge must be positive")
             }
-            if (config.retentionPolicy.cleanupInterval.isNegative || config.retentionPolicy.cleanupInterval.isZero) {
+            if (!config.retentionPolicy.cleanupInterval.isPositive()) {
                 throw IllegalArgumentException("retentionPolicy.cleanupInterval must be positive")
             }
             if (config.retentionPolicy.batchSize <= 0) {
@@ -109,8 +110,8 @@ class Scheduler(
                     }
 
                     // Periodic cleanup of completed executions
-                    if (config.retentionPolicy.enabled && Duration.between(lastCleanup, now) > config.retentionPolicy.cleanupInterval) {
-                        val cutoff = now.minus(config.retentionPolicy.maxAge)
+                    if (config.retentionPolicy.enabled && Duration.between(lastCleanup, now) > config.retentionPolicy.cleanupInterval.toJavaDuration()) {
+                        val cutoff = now.minus(config.retentionPolicy.maxAge.toJavaDuration())
                         var totalCleaned = 0
                         var batchCount = 0
                         while (batchCount < 5) {
