@@ -188,15 +188,16 @@ class RedisJobStore private constructor(
     }
 
     override suspend fun heartbeat(id: UUID, leaseDuration: Duration): Boolean = inRedisContext {
-        val current = getStoredExecution(id) ?: return@inRedisContext false
-        val status = ExecutionStatus.valueOf(current.status)
-        if (status != ExecutionStatus.CLAIMED && status != ExecutionStatus.RUNNING) {
-            return@inRedisContext false
-        }
-
-        saveStoredExecution(current.copy(expiresAt = Instant.now().plus(leaseDuration).toString()))
-        commands.pexpire(keys.claimLock(id.toString()), leaseDuration.toRedisTtlMillis())
-        true
+        val expiresAt = Instant.now().plus(leaseDuration)
+        commands.eval<Long>(
+            HEARTBEAT_EXECUTION_SCRIPT,
+            ScriptOutputType.INTEGER,
+            arrayOf(keys.executions, keys.claimed, keys.running, keys.claimLock(id.toString())),
+            id.toString(),
+            expiresAt.toString(),
+            expiresAt.toEpochMilli().toString(),
+            leaseDuration.toRedisTtlMillis().toString()
+        ) == 1L
     }
 
     override suspend fun isLockHeld(lockKey: String, excludeExecutionId: UUID?): Boolean = inRedisContext {
@@ -432,6 +433,30 @@ class RedisJobStore private constructor(
                 end
             end
             return ids
+        """
+
+        private const val HEARTBEAT_EXECUTION_SCRIPT = """
+            local id = ARGV[1]
+            local execution_json = redis.call('HGET', KEYS[1], id)
+            if not execution_json then
+                return 0
+            end
+
+            local execution = cjson.decode(execution_json)
+            local status = execution['status'] or 'PENDING'
+            if status ~= 'CLAIMED' and status ~= 'RUNNING' then
+                return 0
+            end
+
+            execution['expiresAt'] = ARGV[2]
+            redis.call('HSET', KEYS[1], id, cjson.encode(execution))
+            if status == 'CLAIMED' then
+                redis.call('ZADD', KEYS[2], ARGV[3], id)
+            else
+                redis.call('ZADD', KEYS[3], ARGV[3], id)
+            end
+            redis.call('PEXPIRE', KEYS[4], ARGV[4])
+            return 1
         """
 
         private const val CLAIM_EXECUTION_SCRIPT = """

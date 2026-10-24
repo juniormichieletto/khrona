@@ -7,6 +7,9 @@ import io.khrona.core.JobDefinition
 import io.khrona.core.JobExecution
 import io.khrona.core.testing.JobStoreContract
 import io.lettuce.core.RedisClient
+import io.lettuce.core.event.command.CommandListener
+import io.lettuce.core.event.command.CommandStartedEvent
+import io.lettuce.core.event.command.CommandSucceededEvent
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -27,10 +30,14 @@ import org.testcontainers.utility.DockerImageName
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 @Testcontainers
 class RedisJobStoreTest : JobStoreContract {
     private val stores = mutableListOf<RedisJobStore>()
+    private val clients = mutableListOf<RedisClient>()
 
     companion object {
         @Container
@@ -176,6 +183,61 @@ class RedisJobStoreTest : JobStoreContract {
         val secondScore = redisScore(namespace, "claimed", execution.id)
 
         assertTrue(secondScore > firstScore)
+    }
+
+    @Test
+    fun `heartbeat cannot restore an execution superseded after it reads active status`() = runTest {
+        val namespace = "heartbeat-supersede-race-${UUID.randomUUID()}"
+        val heartbeatReachedCommit = CountDownLatch(1)
+        val allowHeartbeatCommit = CountDownLatch(1)
+        val interceptHeartbeatRead = AtomicBoolean(false)
+        fun pauseHeartbeatAtRedis() {
+            if (interceptHeartbeatRead.compareAndSet(true, false)) {
+                heartbeatReachedCommit.countDown()
+                check(allowHeartbeatCommit.await(5, TimeUnit.SECONDS))
+            }
+        }
+        val client = RedisClient.create(redisUri())
+        clients.add(client)
+        client.addListener(object : CommandListener {
+            override fun commandStarted(event: CommandStartedEvent) {
+                if (event.command.type.toString() == "EVAL") {
+                    pauseHeartbeatAtRedis()
+                }
+            }
+
+            override fun commandSucceeded(event: CommandSucceededEvent) {
+                if (interceptHeartbeatRead.get() && event.command.type.toString() == "HGET") {
+                    pauseHeartbeatAtRedis()
+                }
+            }
+        })
+        val store = RedisJobStore(client, namespace = namespace)
+        val supersedingStore = RedisJobStore(redisUri(), namespace = namespace)
+        stores.add(store)
+        stores.add(supersedingStore)
+        val execution = JobExecution(
+            jobId = "heartbeat-supersede-job",
+            scheduledAt = Instant.now(),
+            lockKey = "heartbeat-supersede-lock"
+        )
+        store.saveExecution(execution)
+        assertTrue(store.claimExecution(execution.id, "old-worker", Duration.ofMinutes(1)))
+
+        interceptHeartbeatRead.set(true)
+        val heartbeat = async(Dispatchers.IO) {
+            store.heartbeat(execution.id, Duration.ofMinutes(1))
+        }
+        try {
+            assertTrue(heartbeatReachedCommit.await(5, TimeUnit.SECONDS))
+            assertEquals(listOf(execution.id), supersedingStore.supersedeExecutionsByLockKey(execution.lockKey!!))
+        } finally {
+            allowHeartbeatCommit.countDown()
+        }
+
+        assertFalse(heartbeat.await(), "A heartbeat must fail after another worker supersedes the execution")
+        assertEquals(ExecutionStatus.SUPERSEDED, store.getExecution(execution.id)?.status)
+        assertFalse(store.isLockHeld(execution.lockKey!!))
     }
 
     @Test
@@ -514,6 +576,8 @@ class RedisJobStoreTest : JobStoreContract {
     fun tearDown() {
         stores.forEach { it.close() }
         stores.clear()
+        clients.forEach { it.shutdown() }
+        clients.clear()
     }
 
     private fun redisUri(): String = "redis://${redis.host}:${redis.getMappedPort(6379)}"
