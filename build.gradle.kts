@@ -31,13 +31,10 @@ subprojects {
     apply(plugin = "signing")
 
     configure<JacocoPluginExtension> {
-        toolVersion = "0.8.13"
+        toolVersion = "0.8.15"
     }
 
     configure<JavaPluginExtension> {
-        toolchain {
-            languageVersion.set(JavaLanguageVersion.of(21))
-        }
         withSourcesJar()
         withJavadocJar()
     }
@@ -45,8 +42,12 @@ subprojects {
     tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
         compilerOptions {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)
-            freeCompilerArgs.add("-Xjsr305=strict")
+            freeCompilerArgs.addAll("-Xjsr305=strict", "-Xjdk-release=21")
         }
+    }
+
+    tasks.withType<JavaCompile>().configureEach {
+        options.release.set(21)
     }
 
     tasks.named<Test>("test") {

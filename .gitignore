@@ -29,6 +29,12 @@ out/
 /nbdist/
 /.nb-gradle/
 
+### Visual Studio Code ###
+/.vscode/
+.history/
+*.code-workspace
+**/bin/
+
 ### OS ###
 .DS_Store
 .DS_Store?
