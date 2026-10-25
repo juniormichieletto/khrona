@@ -115,9 +115,14 @@ class RedisJobStore private constructor(
         saveStoredExecution(execution.toStored())
     }
 
-    override suspend fun updateExecutionStatus(id: UUID, status: ExecutionStatus, error: String?): Unit = inRedisContext {
-        val current = getStoredExecution(id) ?: return@inRedisContext
-        val completedAt = if (status.isTerminal()) Instant.now().toString() else current.completedAt
+    override suspend fun updateExecutionStatus(
+        id: UUID,
+        status: ExecutionStatus,
+        error: String?,
+        workerId: String?
+    ): Boolean = inRedisContext {
+        val current = getStoredExecution(id) ?: return@inRedisContext false
+        val completedAt = if (status.isTerminal()) Instant.now().toString() else current.completedAt ?: ""
         commands.eval<Long>(
             UPDATE_EXECUTION_STATUS_SCRIPT,
             ScriptOutputType.INTEGER,
@@ -126,11 +131,12 @@ class RedisJobStore private constructor(
             status.name,
             error ?: "",
             status.isTerminal().toString(),
-            completedAt ?: "",
+            completedAt,
             current.scheduledAt.toScore().toString(),
             keys.lockPrefix,
-            keys.claimLockPrefix
-        )
+            keys.claimLockPrefix,
+            workerId ?: ""
+        ) == 1L
     }
 
     override suspend fun getExecution(id: UUID): JobExecution? = inRedisContext {
@@ -232,15 +238,24 @@ class RedisJobStore private constructor(
             if ((status == ExecutionStatus.CLAIMED || status == ExecutionStatus.RUNNING) &&
                 current.expiresAt?.let { Instant.parse(it) <= now } == true
             ) {
-                saveStoredExecution(
-                    current.copy(
-                        status = ExecutionStatus.PENDING.name,
-                        workerId = null,
-                        startedAt = null,
-                        expiresAt = null
-                    )
+                val reset = commands.eval<Long>(
+                    RESET_EXPIRED_EXECUTION_SCRIPT,
+                    ScriptOutputType.INTEGER,
+                    arrayOf(
+                        keys.executions,
+                        keys.pending,
+                        keys.claimed,
+                        keys.running,
+                        keys.executionLocks(id),
+                        keys.claimLock(id)
+                    ),
+                    id,
+                    now.toEpochMilli().toString(),
+                    current.scheduledAt.toScore().toString()
                 )
-                count++
+                if (reset == 1L) {
+                    count++
+                }
             }
         }
         count
@@ -553,6 +568,43 @@ class RedisJobStore private constructor(
             return superseded
         """
 
+        private const val RESET_EXPIRED_EXECUTION_SCRIPT = """
+            local id = ARGV[1]
+            local execution_json = redis.call('HGET', KEYS[1], id)
+            if not execution_json then
+                return 0
+            end
+
+            local execution = cjson.decode(execution_json)
+            local status = execution['status'] or 'PENDING'
+            if status ~= 'CLAIMED' and status ~= 'RUNNING' then
+                return 0
+            end
+
+            local active_index = status == 'CLAIMED' and KEYS[3] or KEYS[4]
+            local current_expiry = redis.call('ZSCORE', active_index, id)
+            if not current_expiry or tonumber(current_expiry) > tonumber(ARGV[2]) then
+                return 0
+            end
+
+            redis.call('ZREM', KEYS[3], id)
+            redis.call('ZREM', KEYS[4], id)
+            local lock_indexes = redis.call('SMEMBERS', KEYS[5])
+            for _, lock_index in ipairs(lock_indexes) do
+                redis.call('SREM', lock_index, id)
+            end
+            redis.call('DEL', KEYS[5])
+            redis.call('DEL', KEYS[6])
+
+            execution['status'] = 'PENDING'
+            execution['workerId'] = cjson.null
+            execution['startedAt'] = cjson.null
+            execution['expiresAt'] = cjson.null
+            redis.call('HSET', KEYS[1], id, cjson.encode(execution))
+            redis.call('ZADD', KEYS[2], ARGV[3], id)
+            return 1
+        """
+
         private const val UPDATE_EXECUTION_STATUS_SCRIPT = """
             local id = ARGV[1]
             local execution_json = redis.call('HGET', KEYS[1], id)
@@ -561,6 +613,13 @@ class RedisJobStore private constructor(
             end
 
             local execution = cjson.decode(execution_json)
+            local current_status = execution['status'] or 'PENDING'
+            if ARGV[9] ~= '' then
+                if (current_status ~= 'CLAIMED' and current_status ~= 'RUNNING') or execution['workerId'] ~= ARGV[9] then
+                    return 0
+                end
+            end
+
             local current_expiry = redis.call('ZSCORE', KEYS[3], id) or redis.call('ZSCORE', KEYS[4], id)
 
             redis.call('ZREM', KEYS[2], id)
@@ -581,6 +640,11 @@ class RedisJobStore private constructor(
             end
             if ARGV[4] == 'true' and ARGV[5] ~= '' then
                 execution['completedAt'] = ARGV[5]
+            end
+            if ARGV[2] == 'PENDING' then
+                execution['workerId'] = cjson.null
+                execution['startedAt'] = cjson.null
+                execution['expiresAt'] = cjson.null
             end
 
             redis.call('HSET', KEYS[1], id, cjson.encode(execution))

@@ -9,7 +9,22 @@ interface JobStore {
     suspend fun listJobs(): List<JobDefinition>
 
     suspend fun saveExecution(execution: JobExecution)
-    suspend fun updateExecutionStatus(id: UUID, status: ExecutionStatus, error: String? = null)
+
+    /**
+     * Updates the status of execution [id] to [status].
+     *
+     * When [workerId] is non-null, the store must atomically verify that the execution is currently
+     * in an active (`CLAIMED` or `RUNNING`) state and owned by [workerId] before applying the transition.
+     * When transitioning to `PENDING` (releasing a claim), the store clears `workerId`, `startedAt`, and `expiresAt`.
+     * Returns `true` if the execution was updated, or `false` if the execution does not exist or ownership/state validation failed.
+     */
+    suspend fun updateExecutionStatus(
+        id: UUID,
+        status: ExecutionStatus,
+        error: String? = null,
+        workerId: String? = null
+    ): Boolean
+
     suspend fun getExecution(id: UUID): JobExecution?
     
     suspend fun listEligibleExecutions(now: Instant, limit: Int = Int.MAX_VALUE): List<JobExecution>

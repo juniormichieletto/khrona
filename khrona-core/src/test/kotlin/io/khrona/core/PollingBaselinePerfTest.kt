@@ -80,7 +80,12 @@ class PollingBaselinePerfTest {
         override suspend fun getJob(jobId: String): JobDefinition? = jobs[jobId]
         override suspend fun listJobs(): List<JobDefinition> = jobs.values.toList()
         override suspend fun saveExecution(execution: JobExecution) {}
-        override suspend fun updateExecutionStatus(id: UUID, status: ExecutionStatus, error: String?) {}
+        override suspend fun updateExecutionStatus(
+            id: UUID,
+            status: ExecutionStatus,
+            error: String?,
+            workerId: String?
+        ): Boolean = false
         override suspend fun getExecution(id: UUID): JobExecution? = null
         override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> = emptyList()
         override suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: java.time.Duration): Boolean = false

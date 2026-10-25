@@ -9,6 +9,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -175,6 +176,52 @@ interface JobStoreContract {
             "An expired lease must not be revived by heartbeat even before another worker reclaims it"
         )
         assertEquals(expiredLease, store.getExecution(execution.id)?.expiresAt)
+    }
+
+    @Test
+    fun `updateExecutionStatus rejects stale worker ownership and non-active states when workerId is supplied`() = runTest {
+        val store = createStore()
+        val reclaimed = JobExecution(
+            jobId = "fenced-reclaimed-status-job",
+            scheduledAt = Instant.now(),
+            lockKey = "fenced-reclaimed-lock"
+        )
+        val superseded = JobExecution(
+            jobId = "fenced-superseded-status-job",
+            scheduledAt = Instant.now(),
+            lockKey = "fenced-superseded-lock"
+        )
+        store.saveExecution(reclaimed)
+        store.saveExecution(superseded)
+
+        assertTrue(store.claimExecution(reclaimed.id, "old-worker", Duration.ofSeconds(-5)))
+        assertTrue(store.claimExecution(reclaimed.id, "new-worker", Duration.ofMinutes(1)))
+
+        assertFalse(
+            store.updateExecutionStatus(reclaimed.id, ExecutionStatus.SUCCESS, workerId = "old-worker"),
+            "Stale worker must not overwrite reclaimed execution status"
+        )
+        assertEquals(ExecutionStatus.CLAIMED, store.getExecution(reclaimed.id)?.status)
+        assertEquals("new-worker", store.getExecution(reclaimed.id)?.workerId)
+        assertTrue(store.isLockHeld("fenced-reclaimed-lock"))
+
+        assertTrue(store.updateExecutionStatus(reclaimed.id, ExecutionStatus.RUNNING, workerId = "new-worker"))
+        assertEquals(ExecutionStatus.RUNNING, store.getExecution(reclaimed.id)?.status)
+
+        assertTrue(store.updateExecutionStatus(reclaimed.id, ExecutionStatus.PENDING, error = "Released", workerId = "new-worker"))
+        val released = store.getExecution(reclaimed.id)
+        assertEquals(ExecutionStatus.PENDING, released?.status)
+        assertNull(released?.workerId)
+        assertNull(released?.expiresAt)
+        assertNull(released?.startedAt)
+
+        assertTrue(store.claimExecution(superseded.id, "worker-a", Duration.ofMinutes(1)))
+        assertEquals(listOf(superseded.id), store.supersedeExecutionsByLockKey("fenced-superseded-lock"))
+        assertFalse(
+            store.updateExecutionStatus(superseded.id, ExecutionStatus.RUNNING, workerId = "worker-a"),
+            "Superseded execution must not transition back to RUNNING"
+        )
+        assertEquals(ExecutionStatus.SUPERSEDED, store.getExecution(superseded.id)?.status)
     }
 
     @Test

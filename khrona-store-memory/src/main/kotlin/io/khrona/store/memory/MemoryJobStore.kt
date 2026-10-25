@@ -25,11 +25,27 @@ class MemoryJobStore : JobStore {
         executions[execution.id] = execution
     }
 
-    override suspend fun updateExecutionStatus(id: UUID, status: ExecutionStatus, error: String?) {
+    override suspend fun updateExecutionStatus(
+        id: UUID,
+        status: ExecutionStatus,
+        error: String?,
+        workerId: String?
+    ): Boolean {
+        var updated = false
         executions.computeIfPresent(id) { _, exec ->
+            if (workerId != null) {
+                val isActive = exec.status == ExecutionStatus.CLAIMED || exec.status == ExecutionStatus.RUNNING
+                if (!isActive || exec.workerId != workerId) {
+                    return@computeIfPresent exec
+                }
+            }
+            updated = true
             exec.copy(
                 status = status,
                 error = error,
+                workerId = if (status == ExecutionStatus.PENDING) null else exec.workerId,
+                startedAt = if (status == ExecutionStatus.PENDING) null else exec.startedAt,
+                expiresAt = if (status == ExecutionStatus.PENDING) null else exec.expiresAt,
                 completedAt = if (status == ExecutionStatus.SUCCESS ||
                     status == ExecutionStatus.FAILED ||
                     status == ExecutionStatus.DEAD_LETTERED ||
@@ -38,6 +54,7 @@ class MemoryJobStore : JobStore {
                 ) Instant.now() else exec.completedAt
             )
         }
+        return updated
     }
 
     override suspend fun getExecution(id: UUID): JobExecution? = executions[id]

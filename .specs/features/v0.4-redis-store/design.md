@@ -115,7 +115,7 @@ As of the upcoming 0.6.0 release, `JobStore.heartbeat(id, workerId, leaseDuratio
 
 Validation and renewal are atomic. A failed check returns `false` without changing state, and the scheduler requests cooperative handler cancellation. An expired lease is never revived by heartbeat, even before reclamation or when a heartbeat request is delayed in flight until after expiry. Missing lease-index entries also cause renewal to fail; heartbeat does not repair inconsistencies between the hash and sorted sets. Likewise, `updateExecutionStatus` preserves the existing lease-index score and claim-key TTL inside its Lua script rather than writing a pre-read client snapshot, so a concurrent `CLAIMED` → `RUNNING` transition cannot undo a heartbeat renewal.
 
-This replaces the ownerless two-argument SPI and requires custom stores and direct callers to migrate. Heartbeat ownership validation does not yet fence final status writes or distinguish successive claims by the same worker; see the [remaining fencing work](../v0.3-distributed/design.md#remaining-fencing-work).
+This replaces the ownerless two-argument SPI and requires custom stores and direct callers to migrate. Likewise, `updateExecutionStatus` validates `workerId` ownership when supplied, and `resetExpiredExecutions` uses an atomic Lua script to verify active status and expired sorted-set score before resetting to `PENDING`.
 
 `resetExpiredExecutions(now)` should find expired claimed/running ids by sorted-set score and reset them to `PENDING`, clearing worker and lease fields.
 

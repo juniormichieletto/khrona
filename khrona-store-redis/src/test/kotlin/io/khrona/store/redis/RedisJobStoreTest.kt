@@ -363,6 +363,57 @@ class RedisJobStoreTest : JobStoreContract {
     }
 
     @Test
+    fun `resetExpiredExecutions does not clobber a concurrent reclaim`() = runTest {
+        val namespace = "reset-reclaim-race-${UUID.randomUUID()}"
+        val paused = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        val intercept = AtomicBoolean(false)
+        val client = RedisClient.create(redisUri())
+        clients.add(client)
+        client.addListener(object : CommandListener {
+            override fun commandSucceeded(event: CommandSucceededEvent) {
+                if (intercept.get() && event.command.type == CommandType.HGET && intercept.compareAndSet(true, false)) {
+                    paused.countDown()
+                    check(resume.await(10, TimeUnit.SECONDS))
+                }
+            }
+        })
+        val resettingStore = RedisJobStore(client, namespace = namespace)
+        val reclaimingStore = RedisJobStore(redisUri(), namespace = namespace)
+        stores.add(resettingStore)
+        stores.add(reclaimingStore)
+
+        val now = Instant.now()
+        val expiredRunning = JobExecution(
+            jobId = "reset-race-job",
+            scheduledAt = now.minusSeconds(60),
+            startedAt = now.minusSeconds(30),
+            expiresAt = now.minusSeconds(1),
+            status = ExecutionStatus.RUNNING,
+            workerId = "old-worker",
+            lockKey = "reset-race-lock"
+        )
+        reclaimingStore.saveExecution(expiredRunning)
+
+        intercept.set(true)
+        val resetDeferred = async(Dispatchers.IO) {
+            resettingStore.resetExpiredExecutions(now)
+        }
+        try {
+            assertTrue(paused.await(5, TimeUnit.SECONDS))
+            assertTrue(reclaimingStore.claimExecution(expiredRunning.id, "new-worker", Duration.ofMinutes(1)))
+        } finally {
+            resume.countDown()
+        }
+
+        assertEquals(0, resetDeferred.await(), "Reset must not clobber an execution that was reclaimed concurrently")
+        val stored = reclaimingStore.getExecution(expiredRunning.id)
+        assertEquals(ExecutionStatus.CLAIMED, stored?.status)
+        assertEquals("new-worker", stored?.workerId)
+        assertTrue(reclaimingStore.isLockHeld("reset-race-lock"))
+    }
+
+    @Test
     fun `claim and heartbeat respect configured lease durations`() = runTest {
         val store = createStore()
         val execution = JobExecution(jobId = "configured-lease-job", scheduledAt = Instant.now())

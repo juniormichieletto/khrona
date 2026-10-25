@@ -86,13 +86,19 @@ dependencies {
 
 ## Upgrading to 0.6.0
 
-**Breaking API change:** upgrade all Khrona modules together. Custom `JobStore` implementations and direct callers must replace the old two-argument heartbeat method and recompile against this signature:
+**Breaking API change:** upgrade all Khrona modules together. Custom `JobStore` implementations and direct callers must update both `heartbeat` and `updateExecutionStatus` and recompile against these signatures:
 
 ```kotlin
 suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: java.time.Duration): Boolean
+suspend fun updateExecutionStatus(
+    id: UUID,
+    status: ExecutionStatus,
+    error: String? = null,
+    workerId: String? = null
+): Boolean
 ```
 
-The store must atomically check that the execution is `CLAIMED` or `RUNNING`, belongs to `workerId`, and has an unexpired lease before extending it. Return `false` without changing the execution if any check fails. The scheduler supplies its worker ID; forwarding to the old method without ownership validation does not satisfy this contract.
+For `heartbeat`, the store must atomically check that the execution is `CLAIMED` or `RUNNING`, belongs to `workerId`, and has an unexpired lease before extending it. Return `false` without changing the execution if any check fails. For `updateExecutionStatus`, when `workerId` is non-null, the store must atomically verify that the execution is currently active (`CLAIMED` or `RUNNING`) and owned by `workerId`, clearing claim metadata (`workerId`, `startedAt`, `expiresAt`) when releasing back to `PENDING`, and return `true` only when the transition was applied. The scheduler supplies a unique per-claim token (`<workerId>:<claimId>`) on every claim, heartbeat, and status transition, and only schedules retries or next recurring runs when the status transition succeeds.
 
 **Breaking `JdbcDialect.heartbeatSql()` parameter contract:** `JdbcJobStore.heartbeat` now binds four positional `?` parameters in order: `(1) new expires_at (Timestamp)`, `(2) execution id (String)`, `(3) claimed_by / workerId (String)`, and `(4) current timestamp now (Timestamp)`. Custom `JdbcDialect` implementations that still return a two-parameter SQL statement will compile but fail at runtime when binding parameters 3 and 4; update `heartbeatSql()` to match:
 
@@ -103,7 +109,7 @@ WHERE id = ? AND claimed_by = ? AND expires_at > ? AND (status = 'CLAIMED' OR st
 
 **Expired leases cannot be revived by heartbeat**, even when nobody has reclaimed the execution yet. A rejected renewal makes the scheduler request cooperative cancellation of the handler. A GC pause, slow database, or Redis outage that exceeds the remaining lease can therefore cancel otherwise healthy work. The default heartbeat interval is half the lease duration, leaving roughly `executionLeaseDuration - heartbeatInterval` for delays after a heartbeat becomes due. Choose a lease that accommodates expected pauses and storage latency.
 
-Redis also requires an unexpired entry in the corresponding claimed/running sorted set; a missing entry causes renewal to fail. Final status writes and successive claims by the same worker still need fencing; see the [follow-up design](.specs/features/v0.3-distributed/design.md#remaining-fencing-work).
+Redis also requires an unexpired entry in the corresponding claimed/running sorted set; a missing entry causes renewal to fail.
 
 ## Quick Start (In-Memory)
 

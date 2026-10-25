@@ -72,12 +72,10 @@ This could be integrated into the `Scheduler`'s main loop or a separate maintena
 ### khrona-store-memory
 - Update `MemoryJobStore` to support new methods and lease logic.
 
-## Remaining fencing work
+## Fencing guarantees in 0.6.0
 
-These are follow-ups to heartbeat ownership validation, not guarantees supplied by the current implementation:
-
-1. **Fence status transitions and subsequent scheduling.** `updateExecutionStatus` does not validate ownership or current status. A superseded claim can transition back to `RUNNING` when its coroutine starts, and a previous handler can finish between heartbeats or ignore cancellation, overwrite the new owner's state with `SUCCESS`/`FAILED`, and schedule a duplicate next execution. Require an atomic ownership/claim check for status transitions, and schedule the next run only when completion succeeds. Regression tests must let an old handler transition or finish after reclamation/superseding and verify that neither the new state nor next-run scheduling is changed by it.
-2. **Distinguish successive claims by the same worker.** Polling does not skip IDs already in `activeJobs`; one scheduler can reclaim an expired execution whose original coroutine is still running, replacing the map entry. Both attempts have the same `workerId`, so worker-level validation cannot distinguish them. Introduce a per-claim UUID or monotonically increasing version, validate it on renewal and status transitions, and make local active-job tracking safe for overlapping attempts. Regression tests must reclaim with the same worker ID and prove that the previous claim cannot renew, complete, or remove the newer attempt from tracking.
+1. **Fenced status transitions and subsequent scheduling.** `updateExecutionStatus(id, status, error, workerId): Boolean` atomically validates that the execution is currently active (`CLAIMED` or `RUNNING`) and owned by `workerId` when `workerId` is supplied. A superseded claim cannot transition back to `RUNNING`, and a stale handler finishing after reclamation cannot overwrite the new owner's state with `SUCCESS`/`FAILED`/`DEAD_LETTERED` or schedule a duplicate retry or next recurring execution.
+2. **Per-claim tokens and claimed-before-active shutdown safety.** The scheduler generates a unique per-claim token (`<workerId>:<claimId>`) for each claim attempt, skips executions already in `activeJobs`, registers a placeholder job immediately after `claimExecution` succeeds, and releases the execution back to `PENDING` (fenced by the per-claim token) if shutdown interrupts post-claim setup or cancels active jobs on timeout.
 
 ## Data Model Changes
 
