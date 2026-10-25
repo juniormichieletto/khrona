@@ -188,7 +188,8 @@ class RedisJobStore private constructor(
     }
 
     override suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean = inRedisContext {
-        val expiresAt = Instant.now().plus(leaseDuration)
+        val now = Instant.now()
+        val expiresAt = now.plus(leaseDuration)
         commands.eval<Long>(
             HEARTBEAT_EXECUTION_SCRIPT,
             ScriptOutputType.INTEGER,
@@ -197,7 +198,7 @@ class RedisJobStore private constructor(
             workerId,
             expiresAt.toString(),
             expiresAt.toEpochMilli().toString(),
-            Instant.now().toEpochMilli().toString(),
+            now.toEpochMilli().toString(),
             leaseDuration.toRedisTtlMillis().toString()
         ) == 1L
     }
@@ -461,11 +462,7 @@ class RedisJobStore private constructor(
 
             execution['expiresAt'] = ARGV[3]
             redis.call('HSET', KEYS[1], id, cjson.encode(execution))
-            if status == 'CLAIMED' then
-                redis.call('ZADD', KEYS[2], ARGV[4], id)
-            else
-                redis.call('ZADD', KEYS[3], ARGV[4], id)
-            end
+            redis.call('ZADD', active_index, ARGV[4], id)
             redis.call('PEXPIRE', KEYS[4], ARGV[6])
             return 1
         """

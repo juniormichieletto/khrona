@@ -15,6 +15,12 @@ interface JobStore {
     suspend fun listEligibleExecutions(now: Instant, limit: Int = Int.MAX_VALUE): List<JobExecution>
     suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: java.time.Duration): Boolean
     
+    /**
+     * Atomically renews an unexpired CLAIMED/RUNNING execution owned by [workerId].
+     * Returns false without changing the execution when ownership or lease validation fails,
+     * including when the lease expired before any worker reclaimed it.
+     * The scheduler requests cooperative cancellation when renewal returns false.
+     */
     suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: java.time.Duration): Boolean
     suspend fun isLockHeld(lockKey: String, excludeExecutionId: UUID? = null): Boolean
     suspend fun resetExpiredExecutions(now: Instant): Int

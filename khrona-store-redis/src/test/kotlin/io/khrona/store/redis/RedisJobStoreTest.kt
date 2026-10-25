@@ -10,6 +10,7 @@ import io.lettuce.core.RedisClient
 import io.lettuce.core.event.command.CommandListener
 import io.lettuce.core.event.command.CommandStartedEvent
 import io.lettuce.core.event.command.CommandSucceededEvent
+import io.lettuce.core.protocol.CommandType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -201,13 +202,13 @@ class RedisJobStoreTest : JobStoreContract {
         clients.add(client)
         client.addListener(object : CommandListener {
             override fun commandStarted(event: CommandStartedEvent) {
-                if (event.command.type.toString() == "EVAL") {
+                if (event.command.type == CommandType.EVAL) {
                     pauseHeartbeatAtRedis()
                 }
             }
 
             override fun commandSucceeded(event: CommandSucceededEvent) {
-                if (interceptHeartbeatRead.get() && event.command.type.toString() == "HGET") {
+                if (interceptHeartbeatRead.get() && event.command.type == CommandType.HGET) {
                     pauseHeartbeatAtRedis()
                 }
             }
@@ -612,5 +613,4 @@ class RedisJobStoreTest : JobStoreContract {
             }
         }
     }
-
 }

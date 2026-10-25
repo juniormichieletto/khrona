@@ -104,12 +104,18 @@ Critical atomic operations require Lua scripts with explicit input/output contra
 
 Khrona should keep explicit execution state in Redis rather than relying only on Redis key TTLs. TTLs may be useful for cleanup, but correctness should come from stored status and sorted-set lease indexes.
 
-Heartbeat should:
+As of the upcoming 0.6.0 release, `JobStore.heartbeat(id, workerId, leaseDuration): Boolean` executes one Lua script to:
 
 - verify the execution is still `CLAIMED` or `RUNNING`
-- note: current `JobStore.heartbeat(id, leaseDuration)` SPI has no workerId parameter, so ownership is inferred by execution status and ID only (matching Memory/JDBC behavior)
+- verify that the stored `workerId` matches the supplied worker ID
+- require an entry in the corresponding claimed/running lease index with a score strictly greater than the supplied current time
 - update `expiresAt`
 - move the execution score in the claimed/running lease index
+- renew the claim-key TTL
+
+Validation and renewal are atomic. A failed check returns `false` without changing state, and the scheduler requests cooperative handler cancellation. An expired lease is never revived by heartbeat, even before reclamation. Missing lease-index entries also cause renewal to fail; heartbeat does not repair inconsistencies between the hash and sorted sets. The caller captures the application clock once for both validation and the new expiration.
+
+This replaces the ownerless two-argument SPI and requires custom stores and direct callers to migrate. Heartbeat ownership validation does not yet fence final status writes or distinguish successive claims by the same worker; see the [remaining fencing work](../v0.3-distributed/design.md#remaining-fencing-work).
 
 `resetExpiredExecutions(now)` should find expired claimed/running ids by sorted-set score and reset them to `PENDING`, clearing worker and lease fields.
 

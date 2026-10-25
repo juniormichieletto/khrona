@@ -10,6 +10,7 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
 
 - [Features](#features)
 - [Installation](#installation)
+- [Upgrading to 0.6.0](#upgrading-to-060)
 - [Quick Start (In-Memory)](#quick-start-in-memory)
 - [Persistent Storage (JDBC)](#persistent-storage-jdbc)
   - [Flyway-managed schema](#flyway-managed-schema)
@@ -53,6 +54,8 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
 
 ## Installation
 
+These examples target the upcoming **0.6.0** release, which is not yet published.
+
 Ensure `mavenCentral()` is present in your repositories:
 
 ```kotlin
@@ -63,15 +66,15 @@ repositories {
 
 dependencies {
     // For Ktor integration:
-    implementation("io.github.juniormichieletto:khrona-ktor:0.5.1")
+    implementation("io.github.juniormichieletto:khrona-ktor:0.6.0")
     
     // OR for Standalone Kotlin apps (without Ktor):
-    // implementation("io.github.juniormichieletto:khrona-core:0.5.1")
+    // implementation("io.github.juniormichieletto:khrona-core:0.6.0")
 
     // Choose your storage backend:
-    implementation("io.github.juniormichieletto:khrona-store-memory:0.5.1") // Dev / testing
-    implementation("io.github.juniormichieletto:khrona-store-jdbc:0.5.1")   // Production JDBC
-    // implementation("io.github.juniormichieletto:khrona-store-redis:0.5.1") // Experimental Redis coordination
+    implementation("io.github.juniormichieletto:khrona-store-memory:0.6.0") // Dev / testing
+    implementation("io.github.juniormichieletto:khrona-store-jdbc:0.6.0")   // Production JDBC
+    // implementation("io.github.juniormichieletto:khrona-store-redis:0.6.0") // Experimental Redis coordination
 
     // When using JDBC, add the driver for your database:
     runtimeOnly("org.postgresql:postgresql:42.7.5")           // PostgreSQL
@@ -80,6 +83,20 @@ dependencies {
     // runtimeOnly("com.h2database:h2:2.3.232")               // H2
 }
 ```
+
+## Upgrading to 0.6.0
+
+**Breaking API change:** upgrade all Khrona modules together. Custom `JobStore` implementations and direct callers must replace the old two-argument heartbeat method and recompile against this signature:
+
+```kotlin
+suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: java.time.Duration): Boolean
+```
+
+The store must atomically check that the execution is `CLAIMED` or `RUNNING`, belongs to `workerId`, and has an unexpired lease before extending it. Return `false` without changing the execution if any check fails. The scheduler supplies its worker ID; forwarding to the old method without ownership validation does not satisfy this contract.
+
+**Expired leases cannot be revived by heartbeat**, even when nobody has reclaimed the execution yet. A rejected renewal makes the scheduler request cooperative cancellation of the handler. A GC pause, slow database, or Redis outage that exceeds the remaining lease can therefore cancel otherwise healthy work. The default heartbeat interval is half the lease duration, leaving roughly `executionLeaseDuration - heartbeatInterval` for delays after a heartbeat becomes due. Choose a lease that accommodates expected pauses and storage latency.
+
+Redis also requires an unexpired entry in the corresponding claimed/running sorted set; a missing entry causes renewal to fail. Final status writes and successive claims by the same worker still need fencing; see the [follow-up design](.specs/features/v0.3-distributed/design.md#remaining-fencing-work).
 
 ## Quick Start (In-Memory)
 
@@ -721,7 +738,7 @@ For JDBC, the main database access points are:
 - `listEligibleExecutions`: reads due `PENDING` rows and expired `CLAIMED` or `RUNNING` rows, ordered by `scheduled_at` and bounded by `pollBatchSize`.
 - `claimExecution`: performs an atomic conditional update to `CLAIMED`; PostgreSQL and MySQL use `FOR UPDATE SKIP LOCKED` so only one competing worker wins.
 - `isLockHeld`: checks for another unexpired `CLAIMED` or `RUNNING` row with the same `lock_key`.
-- `heartbeat`: updates `expires_at` only while the row remains `CLAIMED` or `RUNNING`.
+- `heartbeat`: atomically updates `expires_at` only while the row remains `CLAIMED` or `RUNNING`, belongs to the requesting worker, and has an unexpired lease.
 - `resetExpiredExecutions`: returns expired active rows to `PENDING` so work can resume after a crash or lost worker.
 - `supersedeExecutionsByLockKey`: transactionally marks older active rows as `SUPERSEDED` for `ConcurrencyPolicy.REPLACE`.
 - `cleanupCompletedExecutions`: purges terminal executions older than `maxAge` matching the configured retention statuses in bounded batches.
@@ -735,8 +752,8 @@ For JDBC, the main database access points are:
 - [x] **v0.4:** Redis-backed `JobStore` with atomic claiming, heartbeat, recovery, and lock semantics. **(Experimental for production use)**
 - [x] **v0.5.0:** JReleaser release flow, Flyway setup docs, misfire policy hardening.
 - [x] **v0.5.1:** Execution retention & cleanup, Kotlin Duration DSL, streamlined quick-start docs.
-- [ ] **v0.5.2:** Core job management API, Metrics (Micrometer/OpenTelemetry), lock inspection.
-- [ ] **v0.6:** Production hardening, testkit improvements, adaptive delay, and operator ergonomics.
+- [ ] **v0.6.0:** Breaking heartbeat ownership validation and expired-lease handling, with atomic Redis renewal.
+- [ ] **Future:** Core job management API, metrics (Micrometer/OpenTelemetry), lock inspection, further production hardening, testkit improvements, adaptive delay, and operator ergonomics.
 - [ ] **v0.7:** Android SQLite storage support.
 
 ## License

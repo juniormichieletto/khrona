@@ -41,9 +41,12 @@ In `Scheduler.pollAndExecute()`:
 
 ### 3. Heartbeating
 To prevent jobs from being reclaimed while still running, workers should heartbeat.
-`JobStore.heartbeat(executionId: UUID, leaseDuration: Duration)`
+As of the upcoming 0.6.0 release, the public SPI is:
+`JobStore.heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean`
 
-The `Scheduler` will launch a background coroutine for each running job to heartbeat.
+The `Scheduler` launches a background coroutine for each running job and passes its worker ID. Each store atomically validates active status (`CLAIMED`/`RUNNING`), matching ownership, and an unexpired lease before extending it. A failed check returns `false` without modifying the execution, and the scheduler requests cooperative cancellation of the handler.
+
+An expired lease cannot be revived, even before reclamation. This changes the previous behavior: pauses or storage delays that exhaust the remaining lease can cancel healthy work. The default heartbeat interval is half the execution lease; choose a lease with enough margin for expected pauses. JDBC compares stored timestamps against the application clock, as claiming already does, so clock skew between workers remains relevant.
 
 ### 4. Stale Worker Recovery
 A new method in `JobStore`:
@@ -58,7 +61,7 @@ This could be integrated into the `Scheduler`'s main loop or a separate maintena
 - `JobExecution`: Add `expiresAt`.
 - `JobDefinition`: Add `concurrencyPolicy`.
 - `JobStore`:
-    - Add `heartbeat(id, duration)`
+    - Use `heartbeat(id, workerId, leaseDuration): Boolean` (breaking change in 0.6.0)
     - Add `isLockHeld(lockKey): Boolean`
     - Add `resetExpiredExecutions(): Int`
 
@@ -68,6 +71,13 @@ This could be integrated into the `Scheduler`'s main loop or a separate maintena
 
 ### khrona-store-memory
 - Update `MemoryJobStore` to support new methods and lease logic.
+
+## Remaining fencing work
+
+These are follow-ups to heartbeat ownership validation, not guarantees supplied by the current implementation:
+
+1. **Fence final status writes and subsequent scheduling.** `updateExecutionStatus` does not validate ownership. A previous handler can finish between heartbeats or ignore cancellation, overwrite the new owner's state with `SUCCESS`/`FAILED`, and schedule a duplicate next execution. Require an atomic ownership/claim check for completion and failure transitions, and schedule the next run only when that transition succeeds. Regression tests must let an old handler finish after reclamation and verify that neither the new state nor next-run scheduling is changed by it.
+2. **Distinguish successive claims by the same worker.** Polling does not skip IDs already in `activeJobs`; one scheduler can reclaim an expired execution whose original coroutine is still running, replacing the map entry. Both attempts have the same `workerId`, so worker-level validation cannot distinguish them. Introduce a per-claim UUID or monotonically increasing version, validate it on renewal and status transitions, and make local active-job tracking safe for overlapping attempts. Regression tests must reclaim with the same worker ID and prove that the previous claim cannot renew, complete, or remove the newer attempt from tracking.
 
 ## Data Model Changes
 
