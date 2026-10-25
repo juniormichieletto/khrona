@@ -274,7 +274,7 @@ class Scheduler(
                     delay(heartbeatInterval.toMillis())
                     try {
                         // Check if we are still RUNNING/CLAIMED (not superseded) while heartbeating
-                        if (!store.heartbeat(execution.id, leaseDuration)) {
+                        if (!store.heartbeat(execution.id, workerId, leaseDuration)) {
                             log.warn("[${execution.jobId}] Failed to heartbeat for execution ${execution.id}, it might have been reclaimed or superseded")
                             this@coroutineScope.cancel("Execution ${execution.id} is no longer valid (superseded or reclaimed)")
                             break

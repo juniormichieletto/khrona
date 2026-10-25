@@ -127,16 +127,35 @@ interface JobStoreContract {
         val execution = JobExecution(jobId = "heartbeat-job", scheduledAt = Instant.now())
         store.saveExecution(execution)
 
-        store.claimExecution(execution.id, "worker-1", Duration.ofMillis(100))
+        store.claimExecution(execution.id, "worker-1", Duration.ofSeconds(5))
         val firstExpiry = store.getExecution(execution.id)?.expiresAt
 
-        val heartbeated = store.heartbeat(execution.id, Duration.ofMinutes(1))
+        val heartbeated = store.heartbeat(execution.id, "worker-1", Duration.ofMinutes(1))
         val secondExpiry = store.getExecution(execution.id)?.expiresAt
 
         assertTrue(heartbeated)
         assertNotNull(firstExpiry)
         assertNotNull(secondExpiry)
         assertTrue(secondExpiry!! > firstExpiry!!)
+    }
+
+    @Test
+    fun `heartbeat rejects a former worker after another worker reclaims the execution`() = runTest {
+        val store = createStore()
+        val execution = JobExecution(
+            jobId = "reclaimed-heartbeat-job",
+            scheduledAt = Instant.now()
+        )
+        store.saveExecution(execution)
+
+        assertTrue(store.claimExecution(execution.id, "old-worker", Duration.ofSeconds(-5)))
+        assertTrue(store.claimExecution(execution.id, "new-worker", Duration.ofMinutes(1)))
+
+        assertFalse(
+            store.heartbeat(execution.id, "old-worker", Duration.ofMinutes(1)),
+            "A former worker must not extend the lease owned by the new worker"
+        )
+        assertEquals("new-worker", store.getExecution(execution.id)?.workerId)
     }
 
     @Test

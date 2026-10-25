@@ -227,7 +227,7 @@ class ConcurrencyReplaceTest {
             return true
         }
 
-        override suspend fun heartbeat(id: UUID, leaseDuration: Duration): Boolean = false
+        override suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean = false
 
         override suspend fun isLockHeld(lockKey: String, excludeExecutionId: UUID?): Boolean = false
 

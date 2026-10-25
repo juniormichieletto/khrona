@@ -187,15 +187,17 @@ class RedisJobStore private constructor(
         claimed == 1L
     }
 
-    override suspend fun heartbeat(id: UUID, leaseDuration: Duration): Boolean = inRedisContext {
+    override suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean = inRedisContext {
         val expiresAt = Instant.now().plus(leaseDuration)
         commands.eval<Long>(
             HEARTBEAT_EXECUTION_SCRIPT,
             ScriptOutputType.INTEGER,
             arrayOf(keys.executions, keys.claimed, keys.running, keys.claimLock(id.toString())),
             id.toString(),
+            workerId,
             expiresAt.toString(),
             expiresAt.toEpochMilli().toString(),
+            Instant.now().toEpochMilli().toString(),
             leaseDuration.toRedisTtlMillis().toString()
         ) == 1L
     }
@@ -447,15 +449,24 @@ class RedisJobStore private constructor(
             if status ~= 'CLAIMED' and status ~= 'RUNNING' then
                 return 0
             end
+            if execution['workerId'] ~= ARGV[2] then
+                return 0
+            end
 
-            execution['expiresAt'] = ARGV[2]
+            local active_index = status == 'CLAIMED' and KEYS[2] or KEYS[3]
+            local current_expiry = redis.call('ZSCORE', active_index, id)
+            if not current_expiry or tonumber(current_expiry) <= tonumber(ARGV[5]) then
+                return 0
+            end
+
+            execution['expiresAt'] = ARGV[3]
             redis.call('HSET', KEYS[1], id, cjson.encode(execution))
             if status == 'CLAIMED' then
-                redis.call('ZADD', KEYS[2], ARGV[3], id)
+                redis.call('ZADD', KEYS[2], ARGV[4], id)
             else
-                redis.call('ZADD', KEYS[3], ARGV[3], id)
+                redis.call('ZADD', KEYS[3], ARGV[4], id)
             end
-            redis.call('PEXPIRE', KEYS[4], ARGV[4])
+            redis.call('PEXPIRE', KEYS[4], ARGV[6])
             return 1
         """
 

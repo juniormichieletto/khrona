@@ -179,7 +179,7 @@ class RedisJobStoreTest : JobStoreContract {
         assertTrue(store.claimExecution(execution.id, "worker-1", Duration.ofMillis(100)))
         val firstScore = redisScore(namespace, "claimed", execution.id)
 
-        assertTrue(store.heartbeat(execution.id, Duration.ofMinutes(5)))
+        assertTrue(store.heartbeat(execution.id, "worker-1", Duration.ofMinutes(5)))
         val secondScore = redisScore(namespace, "claimed", execution.id)
 
         assertTrue(secondScore > firstScore)
@@ -226,7 +226,7 @@ class RedisJobStoreTest : JobStoreContract {
 
         interceptHeartbeatRead.set(true)
         val heartbeat = async(Dispatchers.IO) {
-            store.heartbeat(execution.id, Duration.ofMinutes(1))
+            store.heartbeat(execution.id, "old-worker", Duration.ofMinutes(1))
         }
         try {
             assertTrue(heartbeatReachedCommit.await(5, TimeUnit.SECONDS))
@@ -276,7 +276,7 @@ class RedisJobStoreTest : JobStoreContract {
         val shortLease = store.getExecution(execution.id)?.expiresAt!!
         assertTrue(shortLease <= Instant.now().plusMillis(500))
 
-        assertTrue(store.heartbeat(execution.id, Duration.ofSeconds(2)))
+        assertTrue(store.heartbeat(execution.id, "worker-1", Duration.ofSeconds(2)))
         val extendedLease = store.getExecution(execution.id)?.expiresAt!!
 
         assertTrue(extendedLease > shortLease.plusMillis(1_000))
@@ -413,8 +413,8 @@ class RedisJobStoreTest : JobStoreContract {
         assertNotNull(store.getExecution(success.id)?.completedAt)
         assertFalse(store.claimExecution(success.id, "worker", Duration.ofMinutes(1)))
         assertFalse(store.claimExecution(UUID.randomUUID(), "worker", Duration.ofMinutes(1)))
-        assertFalse(store.heartbeat(success.id, Duration.ofMinutes(1)))
-        assertFalse(store.heartbeat(UUID.randomUUID(), Duration.ofMinutes(1)))
+        assertFalse(store.heartbeat(success.id, "worker", Duration.ofMinutes(1)))
+        assertFalse(store.heartbeat(UUID.randomUUID(), "worker", Duration.ofMinutes(1)))
 
         // Missing execution status update branch
         store.updateExecutionStatus(UUID.randomUUID(), ExecutionStatus.RUNNING)
@@ -423,7 +423,7 @@ class RedisJobStoreTest : JobStoreContract {
         val claimedForHeartbeat = JobExecution(jobId = "redis-hb-claimed", scheduledAt = Instant.now())
         store.saveExecution(claimedForHeartbeat)
         assertTrue(store.claimExecution(claimedForHeartbeat.id, "hb-worker", Duration.ofMinutes(1)))
-        assertTrue(store.heartbeat(claimedForHeartbeat.id, Duration.ofMinutes(1)))
+        assertTrue(store.heartbeat(claimedForHeartbeat.id, "hb-worker", Duration.ofMinutes(1)))
 
         // Terminal statuses (MISFIRED and DEAD_LETTERED)
         val misfired = JobExecution(jobId = "redis-misfired", scheduledAt = Instant.now())
@@ -612,4 +612,5 @@ class RedisJobStoreTest : JobStoreContract {
             }
         }
     }
+
 }

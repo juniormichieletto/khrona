@@ -70,11 +70,13 @@ open class MockJobStore(private val clock: java.time.Clock = java.time.Clock.sys
         return claimed
     }
 
-    override suspend fun heartbeat(id: UUID, leaseDuration: Duration): Boolean {
+    override suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean {
         var updated = false
         val now = Instant.now(clock)
         executions.computeIfPresent(id) { _, exec ->
-            if (exec.status == ExecutionStatus.CLAIMED || exec.status == ExecutionStatus.RUNNING) {
+            if ((exec.status == ExecutionStatus.CLAIMED || exec.status == ExecutionStatus.RUNNING) &&
+                exec.workerId == workerId && exec.expiresAt?.isAfter(now) == true
+            ) {
                 updated = true
                 exec.copy(expiresAt = now.plus(leaseDuration))
             } else {

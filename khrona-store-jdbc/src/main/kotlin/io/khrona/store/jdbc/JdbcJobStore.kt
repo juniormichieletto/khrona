@@ -249,13 +249,16 @@ class JdbcJobStore(
         }
     }
 
-    override suspend fun heartbeat(id: UUID, leaseDuration: Duration): Boolean = inJdbcContext {
+    override suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean = inJdbcContext {
         val dialect = getDialect()
         dataSource.connection.use { conn ->
             conn.prepareStatementWithTimeout(dialect.heartbeatSql()).use { stmt ->
-                val expiresAt = Instant.now().plus(leaseDuration)
+                val now = Instant.now()
+                val expiresAt = now.plus(leaseDuration)
                 stmt.setTimestamp(1, Timestamp.from(expiresAt))
                 stmt.setString(2, id.toString())
+                stmt.setString(3, workerId)
+                stmt.setTimestamp(4, Timestamp.from(now))
                 return@inJdbcContext stmt.executeUpdate() > 0
             }
         }

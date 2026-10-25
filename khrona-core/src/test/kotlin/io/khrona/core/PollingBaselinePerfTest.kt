@@ -84,7 +84,7 @@ class PollingBaselinePerfTest {
         override suspend fun getExecution(id: UUID): JobExecution? = null
         override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> = emptyList()
         override suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: java.time.Duration): Boolean = false
-        override suspend fun heartbeat(id: UUID, leaseDuration: java.time.Duration): Boolean = false
+        override suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: java.time.Duration): Boolean = false
         override suspend fun isLockHeld(lockKey: String, excludeExecutionId: UUID?): Boolean = false
         override suspend fun resetExpiredExecutions(now: Instant): Int = 0
         override suspend fun supersedeExecutionsByLockKey(lockKey: String, excludeExecutionId: UUID?): List<UUID> = emptyList()

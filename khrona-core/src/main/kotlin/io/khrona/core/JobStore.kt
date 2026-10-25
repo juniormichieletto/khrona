@@ -15,7 +15,7 @@ interface JobStore {
     suspend fun listEligibleExecutions(now: Instant, limit: Int = Int.MAX_VALUE): List<JobExecution>
     suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: java.time.Duration): Boolean
     
-    suspend fun heartbeat(id: UUID, leaseDuration: java.time.Duration): Boolean
+    suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: java.time.Duration): Boolean
     suspend fun isLockHeld(lockKey: String, excludeExecutionId: UUID? = null): Boolean
     suspend fun resetExpiredExecutions(now: Instant): Int
 

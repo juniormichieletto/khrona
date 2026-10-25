@@ -56,8 +56,8 @@ class H2JobStoreTest : AbstractJdbcJobStoreTest() {
         assertNotNull(store.getExecution(success.id)?.completedAt)
         assertFalse(store.claimExecution(success.id, "worker", Duration.ofMinutes(1)))
         assertFalse(store.claimExecution(java.util.UUID.randomUUID(), "worker", Duration.ofMinutes(1)))
-        assertFalse(store.heartbeat(success.id, Duration.ofMinutes(1)))
-        assertFalse(store.heartbeat(java.util.UUID.randomUUID(), Duration.ofMinutes(1)))
+        assertFalse(store.heartbeat(success.id, "worker", Duration.ofMinutes(1)))
+        assertFalse(store.heartbeat(java.util.UUID.randomUUID(), "worker", Duration.ofMinutes(1)))
     }
 
     @Test

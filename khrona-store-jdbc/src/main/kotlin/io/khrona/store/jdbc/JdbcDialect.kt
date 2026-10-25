@@ -51,8 +51,8 @@ class PostgresDialect : JdbcDialect {
     """.trimIndent()
 
     override fun heartbeatSql(): String = """
-        UPDATE khrona_executions SET expires_at = ? 
-        WHERE id = ? AND (status = 'CLAIMED' OR status = 'RUNNING')
+        UPDATE khrona_executions SET expires_at = ?
+        WHERE id = ? AND claimed_by = ? AND expires_at > ? AND (status = 'CLAIMED' OR status = 'RUNNING')
     """.trimIndent()
 
     override fun isLockHeldSql(excludeId: Boolean): String = """
@@ -105,8 +105,8 @@ class H2Dialect : JdbcDialect {
     """.trimIndent()
 
     override fun heartbeatSql(): String = """
-        UPDATE khrona_executions SET expires_at = ? 
-        WHERE id = ? AND (status = 'CLAIMED' OR status = 'RUNNING')
+        UPDATE khrona_executions SET expires_at = ?
+        WHERE id = ? AND claimed_by = ? AND expires_at > ? AND (status = 'CLAIMED' OR status = 'RUNNING')
     """.trimIndent()
 
     override fun isLockHeldSql(excludeId: Boolean): String = """
@@ -177,8 +177,8 @@ class MySqlDialect : JdbcDialect {
     """.trimIndent()
 
     override fun heartbeatSql(): String = """
-        UPDATE khrona_executions SET expires_at = ? 
-        WHERE id = ? AND (status = 'CLAIMED' OR status = 'RUNNING')
+        UPDATE khrona_executions SET expires_at = ?
+        WHERE id = ? AND claimed_by = ? AND expires_at > ? AND (status = 'CLAIMED' OR status = 'RUNNING')
     """.trimIndent()
 
     override fun isLockHeldSql(excludeId: Boolean): String = """
@@ -246,8 +246,8 @@ class OracleDialect : JdbcDialect {
     """.trimIndent()
 
     override fun heartbeatSql(): String = """
-        UPDATE khrona_executions SET expires_at = ? 
-        WHERE id = ? AND (status = 'CLAIMED' OR status = 'RUNNING')
+        UPDATE khrona_executions SET expires_at = ?
+        WHERE id = ? AND claimed_by = ? AND expires_at > ? AND (status = 'CLAIMED' OR status = 'RUNNING')
     """.trimIndent()
 
     override fun isLockHeldSql(excludeId: Boolean): String = """

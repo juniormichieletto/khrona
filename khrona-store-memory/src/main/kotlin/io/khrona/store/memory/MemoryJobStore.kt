@@ -72,12 +72,15 @@ class MemoryJobStore : JobStore {
         return claimed
     }
 
-    override suspend fun heartbeat(id: UUID, leaseDuration: Duration): Boolean {
+    override suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean {
         var updated = false
+        val now = Instant.now()
         executions.computeIfPresent(id) { _, exec ->
-            if (exec.status == ExecutionStatus.CLAIMED || exec.status == ExecutionStatus.RUNNING) {
+            if ((exec.status == ExecutionStatus.CLAIMED || exec.status == ExecutionStatus.RUNNING) &&
+                exec.workerId == workerId && exec.expiresAt?.isAfter(now) == true
+            ) {
                 updated = true
-                exec.copy(expiresAt = Instant.now().plus(leaseDuration))
+                exec.copy(expiresAt = now.plus(leaseDuration))
             } else {
                 exec
             }
