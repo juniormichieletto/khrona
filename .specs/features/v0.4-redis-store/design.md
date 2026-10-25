@@ -108,12 +108,12 @@ As of the upcoming 0.6.0 release, `JobStore.heartbeat(id, workerId, leaseDuratio
 
 - verify the execution is still `CLAIMED` or `RUNNING`
 - verify that the stored `workerId` matches the supplied worker ID
-- require an entry in the corresponding claimed/running lease index with a score strictly greater than the supplied current time
+- require an entry in the corresponding claimed/running lease index with a score strictly greater than both the supplied current time and Redis `TIME` at script execution
 - update `expiresAt`
 - move the execution score in the claimed/running lease index
 - renew the claim-key TTL
 
-Validation and renewal are atomic. A failed check returns `false` without changing state, and the scheduler requests cooperative handler cancellation. An expired lease is never revived by heartbeat, even before reclamation. Missing lease-index entries also cause renewal to fail; heartbeat does not repair inconsistencies between the hash and sorted sets. The caller captures the application clock once for both validation and the new expiration.
+Validation and renewal are atomic. A failed check returns `false` without changing state, and the scheduler requests cooperative handler cancellation. An expired lease is never revived by heartbeat, even before reclamation or when a heartbeat request is delayed in flight until after expiry. Missing lease-index entries also cause renewal to fail; heartbeat does not repair inconsistencies between the hash and sorted sets. Likewise, `updateExecutionStatus` preserves the existing lease-index score and claim-key TTL inside its Lua script rather than writing a pre-read client snapshot, so a concurrent `CLAIMED` → `RUNNING` transition cannot undo a heartbeat renewal.
 
 This replaces the ownerless two-argument SPI and requires custom stores and direct callers to migrate. Heartbeat ownership validation does not yet fence final status writes or distinguish successive claims by the same worker; see the [remaining fencing work](../v0.3-distributed/design.md#remaining-fencing-work).
 

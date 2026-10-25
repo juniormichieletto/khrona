@@ -94,6 +94,13 @@ suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: java.time.Durat
 
 The store must atomically check that the execution is `CLAIMED` or `RUNNING`, belongs to `workerId`, and has an unexpired lease before extending it. Return `false` without changing the execution if any check fails. The scheduler supplies its worker ID; forwarding to the old method without ownership validation does not satisfy this contract.
 
+**Breaking `JdbcDialect.heartbeatSql()` parameter contract:** `JdbcJobStore.heartbeat` now binds four positional `?` parameters in order: `(1) new expires_at (Timestamp)`, `(2) execution id (String)`, `(3) claimed_by / workerId (String)`, and `(4) current timestamp now (Timestamp)`. Custom `JdbcDialect` implementations that still return a two-parameter SQL statement will compile but fail at runtime when binding parameters 3 and 4; update `heartbeatSql()` to match:
+
+```sql
+UPDATE khrona_executions SET expires_at = ?
+WHERE id = ? AND claimed_by = ? AND expires_at > ? AND (status = 'CLAIMED' OR status = 'RUNNING')
+```
+
 **Expired leases cannot be revived by heartbeat**, even when nobody has reclaimed the execution yet. A rejected renewal makes the scheduler request cooperative cancellation of the handler. A GC pause, slow database, or Redis outage that exceeds the remaining lease can therefore cancel otherwise healthy work. The default heartbeat interval is half the lease duration, leaving roughly `executionLeaseDuration - heartbeatInterval` for delays after a heartbeat becomes due. Choose a lease that accommodates expected pauses and storage latency.
 
 Redis also requires an unexpired entry in the corresponding claimed/running sorted set; a missing entry causes renewal to fail. Final status writes and successive claims by the same worker still need fencing; see the [follow-up design](.specs/features/v0.3-distributed/design.md#remaining-fencing-work).
@@ -710,7 +717,7 @@ flowchart TD
     Launch --> Running["Mark RUNNING<br/>updateExecutionStatus"]
     Running --> Heartbeat["While handler runs, extend lease periodically<br/>heartbeat"]
     Running --> Execute["Run handler<br/>optionally within timeout"]
-    Heartbeat -- "Lease update rejected" --> Cancel["Cancel handler: execution was reclaimed<br/>or superseded"]
+    Heartbeat -- "Lease update rejected" --> Cancel["Cancel handler: execution was reclaimed,<br/>superseded, or lease expired"]
 
     Execute -- "Success" --> Success["Mark SUCCESS<br/>updateExecutionStatus"]
     Execute -- "Failure or timeout" --> Retry{"Retry attempts remain?"}

@@ -159,6 +159,25 @@ interface JobStoreContract {
     }
 
     @Test
+    fun `heartbeat rejects an expired lease even before reclamation`() = runTest {
+        val store = createStore()
+        val execution = JobExecution(
+            jobId = "expired-heartbeat-job",
+            scheduledAt = Instant.now()
+        )
+        store.saveExecution(execution)
+
+        assertTrue(store.claimExecution(execution.id, "worker-1", Duration.ofSeconds(-5)))
+        val expiredLease = store.getExecution(execution.id)?.expiresAt
+
+        assertFalse(
+            store.heartbeat(execution.id, "worker-1", Duration.ofMinutes(1)),
+            "An expired lease must not be revived by heartbeat even before another worker reclaims it"
+        )
+        assertEquals(expiredLease, store.getExecution(execution.id)?.expiresAt)
+    }
+
+    @Test
     fun `purges terminal executions completed before cutoff up to limit`() = runTest {
         val store = createStore()
         val testRunId = UUID.randomUUID()

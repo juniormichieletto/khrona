@@ -16,6 +16,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -239,6 +240,100 @@ class RedisJobStoreTest : JobStoreContract {
         assertFalse(heartbeat.await(), "A heartbeat must fail after another worker supersedes the execution")
         assertEquals(ExecutionStatus.SUPERSEDED, store.getExecution(execution.id)?.status)
         assertFalse(store.isLockHeld(execution.lockKey!!))
+    }
+
+    @Test
+    fun `running transition must preserve a concurrent heartbeat renewal`() = runTest {
+        val namespace = "transition-review-${UUID.randomUUID()}"
+        val paused = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        val intercept = AtomicBoolean(false)
+        val client = RedisClient.create(redisUri())
+        clients.add(client)
+        client.addListener(object : CommandListener {
+            override fun commandStarted(event: CommandStartedEvent) {
+                if (event.command.type == CommandType.EVAL && intercept.compareAndSet(true, false)) {
+                    paused.countDown()
+                    check(resume.await(10, TimeUnit.SECONDS))
+                }
+            }
+        })
+        val store = RedisJobStore(client, namespace = namespace)
+        val observer = RedisJobStore(redisUri(), namespace = namespace)
+        stores.add(store)
+        stores.add(observer)
+
+        val execution = JobExecution(jobId = "transition-review", scheduledAt = Instant.now())
+        store.saveExecution(execution)
+        assertTrue(store.claimExecution(execution.id, "worker", Duration.ofSeconds(2)))
+        val originalExpiry = observer.getExecution(execution.id)!!.expiresAt!!
+        intercept.set(true)
+        val transition = async(Dispatchers.IO) {
+            store.updateExecutionStatus(execution.id, ExecutionStatus.RUNNING)
+        }
+        try {
+            assertTrue(paused.await(5, TimeUnit.SECONDS))
+            assertTrue(observer.heartbeat(execution.id, "worker", Duration.ofMinutes(1)))
+        } finally {
+            resume.countDown()
+        }
+        transition.await()
+        val stored = observer.getExecution(execution.id)!!
+        assertEquals(ExecutionStatus.RUNNING, stored.status)
+        assertTrue(stored.expiresAt!!.isAfter(originalExpiry.plusSeconds(30)))
+        withContext(Dispatchers.IO) {
+            Thread.sleep(Duration.between(Instant.now(), originalExpiry).toMillis().coerceAtLeast(0) + 100)
+        }
+        assertTrue(Instant.now().isBefore(stored.expiresAt))
+        val renewed = observer.heartbeat(execution.id, "worker", Duration.ofMinutes(1))
+        assertTrue(renewed, "The same owner must be able to renew its unexpired lease after changing status")
+    }
+
+    @Test
+    fun `heartbeat delayed until after expiry must not revive the lease`() = runTest {
+        val namespace = "expiry-review-${UUID.randomUUID()}"
+        val paused = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        val intercept = AtomicBoolean(false)
+        val client = RedisClient.create(redisUri())
+        clients.add(client)
+        client.addListener(object : CommandListener {
+            override fun commandStarted(event: CommandStartedEvent) {
+                if (event.command.type == CommandType.EVAL && intercept.compareAndSet(true, false)) {
+                    paused.countDown()
+                    check(resume.await(10, TimeUnit.SECONDS))
+                }
+            }
+        })
+        val store = RedisJobStore(client, namespace = namespace)
+        val observer = RedisJobStore(redisUri(), namespace = namespace)
+        stores.add(store)
+        stores.add(observer)
+
+        val execution = JobExecution(jobId = "expiry-review", scheduledAt = Instant.now())
+        store.saveExecution(execution)
+        assertTrue(store.claimExecution(execution.id, "worker", Duration.ofSeconds(2)))
+        val before = observer.getExecution(execution.id)!!
+        val expiresAt = before.expiresAt!!
+        intercept.set(true)
+        val heartbeat = async(Dispatchers.IO) {
+            store.heartbeat(execution.id, "worker", Duration.ofMinutes(1))
+        }
+        try {
+            assertTrue(paused.await(5, TimeUnit.SECONDS))
+            assertTrue(Instant.now().isBefore(expiresAt), "Heartbeat must start while lease is valid")
+            withContext(Dispatchers.IO) {
+                Thread.sleep(Duration.between(Instant.now(), expiresAt).toMillis().coerceAtLeast(0) + 100)
+            }
+            assertTrue(Instant.now().isAfter(expiresAt))
+            assertEquals(before, observer.getExecution(execution.id), "No reclamation or status change occurred")
+        } finally {
+            resume.countDown()
+        }
+        val renewed = heartbeat.await()
+        val after = observer.getExecution(execution.id)!!
+        assertFalse(renewed, "A request reaching Redis after lease expiry must be rejected")
+        assertEquals(before, after)
     }
 
     @Test

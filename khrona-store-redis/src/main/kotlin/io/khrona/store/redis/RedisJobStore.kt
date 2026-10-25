@@ -118,7 +118,6 @@ class RedisJobStore private constructor(
     override suspend fun updateExecutionStatus(id: UUID, status: ExecutionStatus, error: String?): Unit = inRedisContext {
         val current = getStoredExecution(id) ?: return@inRedisContext
         val completedAt = if (status.isTerminal()) Instant.now().toString() else current.completedAt
-        val expiresAt = current.expiresAt?.let { Instant.parse(it) }
         commands.eval<Long>(
             UPDATE_EXECUTION_STATUS_SCRIPT,
             ScriptOutputType.INTEGER,
@@ -129,8 +128,6 @@ class RedisJobStore private constructor(
             status.isTerminal().toString(),
             completedAt ?: "",
             current.scheduledAt.toScore().toString(),
-            expiresAt?.toEpochMilli()?.toString() ?: "",
-            expiresAt?.ttlFromNowMillis()?.toString() ?: "",
             keys.lockPrefix,
             keys.claimLockPrefix
         )
@@ -456,7 +453,10 @@ class RedisJobStore private constructor(
 
             local active_index = status == 'CLAIMED' and KEYS[2] or KEYS[3]
             local current_expiry = redis.call('ZSCORE', active_index, id)
-            if not current_expiry or tonumber(current_expiry) <= tonumber(ARGV[5]) then
+            local redis_time = redis.call('TIME')
+            local redis_now_ms = tonumber(redis_time[1]) * 1000 + math.floor(tonumber(redis_time[2]) / 1000)
+            local check_now_ms = math.max(tonumber(ARGV[5]), redis_now_ms)
+            if not current_expiry or tonumber(current_expiry) <= check_now_ms then
                 return 0
             end
 
@@ -561,6 +561,7 @@ class RedisJobStore private constructor(
             end
 
             local execution = cjson.decode(execution_json)
+            local current_expiry = redis.call('ZSCORE', KEYS[3], id) or redis.call('ZSCORE', KEYS[4], id)
 
             redis.call('ZREM', KEYS[2], id)
             redis.call('ZREM', KEYS[3], id)
@@ -584,26 +585,25 @@ class RedisJobStore private constructor(
 
             redis.call('HSET', KEYS[1], id, cjson.encode(execution))
 
+            local claim_lock_key = ARGV[8] .. id
             if ARGV[2] == 'PENDING' then
                 redis.call('ZADD', KEYS[2], ARGV[6], id)
-                redis.call('DEL', ARGV[10] .. id)
+                redis.call('DEL', claim_lock_key)
             elseif ARGV[2] == 'CLAIMED' then
-                if ARGV[7] ~= '' then
-                    redis.call('ZADD', KEYS[3], ARGV[7], id)
-                    redis.call('PEXPIRE', ARGV[10] .. id, ARGV[8])
+                if current_expiry then
+                    redis.call('ZADD', KEYS[3], current_expiry, id)
                 end
             elseif ARGV[2] == 'RUNNING' then
-                if ARGV[7] ~= '' then
-                    redis.call('ZADD', KEYS[4], ARGV[7], id)
-                    redis.call('PEXPIRE', ARGV[10] .. id, ARGV[8])
+                if current_expiry then
+                    redis.call('ZADD', KEYS[4], current_expiry, id)
                 end
             else
-                redis.call('DEL', ARGV[10] .. id)
+                redis.call('DEL', claim_lock_key)
             end
 
             local lock_key = execution['lockKey']
             if (ARGV[2] == 'CLAIMED' or ARGV[2] == 'RUNNING') and lock_key ~= nil and lock_key ~= cjson.null then
-                local lock_index = ARGV[9] .. lock_key
+                local lock_index = ARGV[7] .. lock_key
                 redis.call('SADD', lock_index, id)
                 redis.call('SADD', KEYS[5], lock_index)
             end

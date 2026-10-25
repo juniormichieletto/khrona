@@ -5,6 +5,16 @@ interface JdbcDialect {
     fun upsertExecutionSql(): String
     fun claimExecutionSql(): String
     fun listEligibleExecutionsSql(): String
+
+    /**
+     * Returns the SQL UPDATE statement used to atomically extend an active execution lease.
+     *
+     * [JdbcJobStore.heartbeat] binds four positional `?` parameters in order:
+     * 1. `expires_at` (`java.sql.Timestamp`) — the new lease expiration timestamp (`now + leaseDuration`).
+     * 2. `id` (`String`) — the execution UUID string.
+     * 3. `claimed_by` (`String`) — the `workerId` requesting the renewal.
+     * 4. `now` (`java.sql.Timestamp`) — the current timestamp; the row must have `expires_at > ?` and status in (`CLAIMED`, `RUNNING`).
+     */
     fun heartbeatSql(): String
     fun isLockHeldSql(excludeId: Boolean = false): String
     fun resetExpiredExecutionsSql(): String
