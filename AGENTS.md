@@ -14,3 +14,9 @@
 ```bash
 ./gradlew clean test
 ```
+
+- **End-to-End (E2E) Dockerized Ktor Generator Suite:** Tests tagged with `@Tag("e2e")` are excluded from default `./gradlew test` runs because they scaffold a fresh Ktor project inside Docker containers (`ktor new`), publish local artifacts to `mavenLocal()`, and boot real Ktor servers against Memory, PostgreSQL (`JdbcJobStore`), and Redis (`RedisJobStore`). Run them explicitly when validating end-to-end Ktor integration or before releases:
+
+```bash
+./gradlew :khrona-ktor:e2eTest
+```

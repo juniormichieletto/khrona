@@ -18,6 +18,7 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
   - [Local Redis for Development](#local-redis-for-development)
 - [MySQL 8 & Multi-Node Testing](#mysql-8--multi-node-testing)
   - [Local Multi-Instance Setup](#local-multi-instance-setup)
+- [End-to-End Dockerized Ktor Tests](#end-to-end-dockerized-ktor-tests)
 - [Advanced Configuration](#advanced-configuration)
   - [Retry Policies](#retry-policies)
   - [Concurrency & Locking](#concurrency--locking)
@@ -330,6 +331,20 @@ NODE_NAME=node-1 ./gradlew run
 NODE_NAME=node-2 ./gradlew run
 ```
 Only one node will claim and execute the job at a time if `concurrencyPolicy = ConcurrencyPolicy.FORBID` is used.
+
+## End-to-End Dockerized Ktor Tests
+
+Khrona includes an opt-in end-to-end test suite (`@Tag("e2e")`) that is excluded from standard `./gradlew test` runs. For each backend (`MemoryJobStore`, `JdbcJobStore` with PostgreSQL, and `RedisJobStore`), the suite:
+
+1. Publishes all Khrona modules (`khrona-core`, `khrona-ktor`, `khrona-store-memory`, `khrona-store-jdbc`, `khrona-store-redis`) to `mavenLocal()`.
+2. Starts a Docker container and scaffolds a brand-new Ktor application from scratch using the official Ktor CLI generator (`ktor new`).
+3. Configures `khrona-ktor` and the target `JobStore` inside the generated project, boots the Ktor server (`./gradlew run`), and verifies triggers (`once`, `every`, `cron`, manual `trigger`), structured payloads, MDC `correlationId` propagation, retries, timeouts (`DEAD_LETTERED`), concurrency policies (`FORBID`, `REPLACE`), misfire handling (`IGNORE`), retention cleanup, stale recovery, and lease/status-transition fencing over HTTP.
+
+Run the E2E suite on demand (requires Docker):
+
+```bash
+./gradlew :khrona-ktor:e2eTest
+```
 
 ## Advanced Configuration
 

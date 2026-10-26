@@ -51,7 +51,9 @@ subprojects {
     }
 
     tasks.named<Test>("test") {
-        useJUnitPlatform()
+        useJUnitPlatform {
+            excludeTags("e2e")
+        }
     }
 
     tasks.named<org.gradle.testing.jacoco.tasks.JacocoReport>("jacocoTestReport") {
