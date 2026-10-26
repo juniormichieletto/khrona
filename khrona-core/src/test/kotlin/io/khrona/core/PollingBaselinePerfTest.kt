@@ -3,7 +3,7 @@ package io.khrona.core
 import io.khrona.core.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
-import org.junit.jupiter.api.Disabled
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
 import java.lang.management.ManagementFactory
 import java.time.Duration
@@ -14,8 +14,14 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * Baseline performance test for the Khrona scheduler loop.
  * Measures CPU and Memory overhead of polling without a real database.
+ *
+ * Excluded from default `./gradlew test` runs via `@Tag("perf")`.
+ * Run explicitly with:
+ * ```bash
+ * ./gradlew :khrona-core:perfTest
+ * ```
  */
-@Disabled("Manual performance test - run locally to measure scheduler overhead.")
+@Tag("perf")
 class PollingBaselinePerfTest {
 
     private val runtime = Runtime.getRuntime()

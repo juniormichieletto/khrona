@@ -5,7 +5,7 @@ import com.zaxxer.hikari.HikariDataSource
 import io.khrona.core.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
-import org.junit.jupiter.api.Disabled
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
 import org.testcontainers.containers.MySQLContainer
 import org.testcontainers.containers.PostgreSQLContainer
@@ -17,8 +17,14 @@ import java.util.*
 /**
  * Performance test for JDBC-backed Khrona schedulers.
  * Measures the impact of database polling on CPU and Memory.
+ *
+ * Excluded from default `./gradlew test` runs via `@Tag("perf")`.
+ * Run explicitly with:
+ * ```bash
+ * ./gradlew :khrona-store-jdbc:perfTest
+ * ```
  */
-@Disabled("Manual performance test - requires Docker and takes several minutes.")
+@Tag("perf")
 class JdbcPollingPerfTest {
 
     private val runtime = Runtime.getRuntime()
@@ -34,25 +40,33 @@ class JdbcPollingPerfTest {
     }
 
     @Test
-    fun runPostgresPerf() = runBenchmark("PostgreSQL (Docker)") {
-        val container = PostgreSQLContainer("postgres:16-alpine").apply { start() }
-        val config = HikariConfig().apply {
-            jdbcUrl = container.jdbcUrl
-            username = container.username
-            password = container.password
+    fun runPostgresPerf() {
+        PostgreSQLContainer("postgres:16-alpine").use { container ->
+            container.start()
+            runBenchmark("PostgreSQL (Docker)") {
+                val config = HikariConfig().apply {
+                    jdbcUrl = container.jdbcUrl
+                    username = container.username
+                    password = container.password
+                }
+                HikariDataSource(config)
+            }
         }
-        HikariDataSource(config)
     }
 
     @Test
-    fun runMySqlPerf() = runBenchmark("MySQL (Docker)") {
-        val container = MySQLContainer("mysql:8.0").apply { start() }
-        val config = HikariConfig().apply {
-            jdbcUrl = container.jdbcUrl
-            username = container.username
-            password = container.password
+    fun runMySqlPerf() {
+        MySQLContainer("mysql:8.0").use { container ->
+            container.start()
+            runBenchmark("MySQL (Docker)") {
+                val config = HikariConfig().apply {
+                    jdbcUrl = container.jdbcUrl
+                    username = container.username
+                    password = container.password
+                }
+                HikariDataSource(config)
+            }
         }
-        HikariDataSource(config)
     }
 
     private fun runBenchmark(name: String, dataSourceProvider: () -> HikariDataSource) = runBlocking {

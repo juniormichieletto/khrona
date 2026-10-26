@@ -9,7 +9,7 @@ This document records dated performance analysis runs used to evaluate the resou
 
 The benchmarks were conducted using a series of automated JUnit tests. For each configuration, the following procedure was followed:
 
-1.  **Environment Setup:** A clean JVM instance was initialized. For persistent stores (PostgreSQL, MySQL), Testcontainers were used to spin up ephemeral Docker instances. Redis tests utilized a local Docker container started via `./docker-start.sh`.
+1.  **Environment Setup:** A clean JVM instance was initialized. For persistent stores (PostgreSQL, MySQL, and Redis), Testcontainers are used to spin up isolated ephemeral Docker instances.
 2.  **Job Registration:** 10 recurring jobs were registered with a 5-minute interval to ensure the scheduler loop was active but not processing actual task logic, focusing purely on polling and claim-check overhead.
 3.  **Measurement Window:** For each polling interval (100ms, 1s, 10s, 1m), the scheduler ran for 10 seconds.
 4.  **Data Sampling:**
@@ -59,6 +59,26 @@ This run was performed after the `v0.5.0` release setup. The disabled benchmark 
 | **10s** (PT10S) | 0.05% / 16 MB | 0.12% / 19 MB | 0.11% / 14 MB |
 | **1m** (PT1M) | 0.07% / 16 MB | 0.07% / 19 MB | 0.13% / 13 MB |
 
+### 2026-10-26 Follow-Up Run (`v0.6.0` Lease & Status Fencing)
+
+This run was performed via `./gradlew perfTest --rerun-tasks` after introducing per-claim ownership tokens (`<workerId>:<claimId>`), fenced heartbeat renewals, fenced status transitions, and Testcontainers-isolated Redis benchmarking.
+
+#### In-Memory / Local
+| Polling Interval | Minimal Store (CPU/Mem) | H2 In-Memory (CPU/Mem) |
+| :--- | :--- | :--- |
+| **100ms** (PT0.1S) | 0.43% / 28 MB | 1.68% / 51 MB |
+| **1s** (PT1S) | 0.21% / 10 MB | 0.20% / 17 MB |
+| **10s** (PT10S) | 0.07% / 6 MB | 0.14% / 17 MB |
+| **1m** (PT1M) | 0.10% / 6 MB | 0.19% / 17 MB |
+
+#### Distributed / Persistent
+| Polling Interval | PostgreSQL (CPU/Mem) | MySQL (CPU/Mem) | Redis (CPU/Mem) |
+| :--- | :--- | :--- | :--- |
+| **100ms** (PT0.1S) | 1.94% / 55 MB | 1.70% / 33 MB | 1.97% / 48 MB |
+| **1s** (PT1S) | 0.20% / 16 MB | 0.30% / 20 MB | 0.31% / 19 MB |
+| **10s** (PT10S) | 0.14% / 16 MB | 0.15% / 19 MB | 0.24% / 18 MB |
+| **1m** (PT1M) | 0.15% / 16 MB | 0.14% / 19 MB | 0.26% / 18 MB |
+
 ## Key Observations
 
 ### 1. Database-Backed Overhead
@@ -77,29 +97,22 @@ Memory usage remains remarkably stable across all persistent stores, typically s
 - **For high-precision needs:** **100ms** is perfectly sustainable but consider the increased load on your database server if scaling to many scheduler instances.
 
 ## Reproducing the Tests
-The performance tests are preserved as `@Disabled` JUnit tests in the following files:
+The performance tests are tagged with `@Tag("perf")` (excluded from default `./gradlew test` runs) in the following files:
 - **Baseline:** `khrona-core/src/test/kotlin/io/khrona/core/PollingBaselinePerfTest.kt`
 - **JDBC (H2, Postgres, MySQL):** `khrona-store-jdbc/src/test/kotlin/io/khrona/store/jdbc/JdbcPollingPerfTest.kt`
 - **Redis:** `khrona-store-redis/src/test/kotlin/io/khrona/store/redis/RedisPollingPerfTest.kt`
 
-To run these tests manually:
-1. Ensure Docker is running (for Postgres/MySQL/Redis).
-2. Start the local Redis via `./docker-start.sh`.
-3. Enable the `@Disabled` tests with a temporary Gradle init script:
-   ```groovy
-   allprojects {
-       tasks.withType(Test).configureEach {
-           systemProperty "junit.jupiter.conditions.deactivate", "org.junit.jupiter.engine.extension.DisabledCondition"
-       }
-   }
-   ```
-4. Run the desired benchmark task with the init script:
+To run these tests:
+1. Ensure Docker is running (Testcontainers automatically starts ephemeral PostgreSQL, MySQL, and Redis containers).
+2. Run the full performance benchmark suite or target an individual module:
    ```bash
-   ./gradlew --init-script /tmp/khrona-enable-disabled-tests.gradle :khrona-store-jdbc:test --tests "io.khrona.store.jdbc.JdbcPollingPerfTest" --rerun-tasks --info
-   ```
-5. Before rerunning the Redis benchmark against a reused local Redis container, clear only the benchmark namespace to avoid replaying stale jobs:
-   ```bash
-   docker exec khrona-redis redis-cli -a khrona_dev_password DEL khrona-perf:jobs khrona-perf:executions khrona-perf:pending
+   # Run all performance benchmark suites
+   ./gradlew perfTest --rerun-tasks
+
+   # Or run a specific module's benchmark suite
+   ./gradlew :khrona-core:perfTest --rerun-tasks
+   ./gradlew :khrona-store-jdbc:perfTest --rerun-tasks
+   ./gradlew :khrona-store-redis:perfTest --rerun-tasks
    ```
 
 ## Future Testing

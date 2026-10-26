@@ -52,8 +52,24 @@ subprojects {
 
     tasks.named<Test>("test") {
         useJUnitPlatform {
-            excludeTags("e2e")
+            excludeTags("e2e", "perf")
         }
+    }
+
+    tasks.register<Test>("perfTest") {
+        group = LifecycleBasePlugin.VERIFICATION_GROUP
+        description = "Runs scheduler CPU and memory polling performance benchmark tests."
+        val testSourceSet = project.extensions.getByType<SourceSetContainer>()["test"]
+        testClassesDirs = testSourceSet.output.classesDirs
+        classpath = testSourceSet.runtimeClasspath
+        useJUnitPlatform {
+            includeTags("perf")
+        }
+        testLogging {
+            showStandardStreams = true
+        }
+        maxParallelForks = 1
+        systemProperty("junit.jupiter.execution.parallel.enabled", "false")
     }
 
     tasks.named<org.gradle.testing.jacoco.tasks.JacocoReport>("jacocoTestReport") {

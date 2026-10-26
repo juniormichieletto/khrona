@@ -19,6 +19,7 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
 - [MySQL 8 & Multi-Node Testing](#mysql-8--multi-node-testing)
   - [Local Multi-Instance Setup](#local-multi-instance-setup)
 - [End-to-End Dockerized Ktor Tests](#end-to-end-dockerized-ktor-tests)
+- [Performance Benchmark Suite](#performance-benchmark-suite)
 - [Advanced Configuration](#advanced-configuration)
   - [Retry Policies](#retry-policies)
   - [Concurrency & Locking](#concurrency--locking)
@@ -344,6 +345,22 @@ Run the E2E suite on demand (requires Docker):
 
 ```bash
 ./gradlew :khrona-ktor:e2eTest
+```
+
+## Performance Benchmark Suite
+
+Khrona includes an opt-in polling CPU and memory benchmark suite (`@Tag("perf")`) across `khrona-core` (baseline loop overhead), `khrona-store-jdbc` (H2, PostgreSQL, and MySQL via Testcontainers), and `khrona-store-redis` (Redis via Testcontainers). These tests are excluded from default `./gradlew test` runs.
+
+Run all performance benchmarks or target an individual module on demand:
+
+```bash
+# Run all performance benchmark suites
+./gradlew perfTest
+
+# Or run a specific module's benchmark suite
+./gradlew :khrona-core:perfTest
+./gradlew :khrona-store-jdbc:perfTest
+./gradlew :khrona-store-redis:perfTest
 ```
 
 ## Advanced Configuration

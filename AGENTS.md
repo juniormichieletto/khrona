@@ -20,3 +20,15 @@
 ```bash
 ./gradlew :khrona-ktor:e2eTest
 ```
+
+- **Performance Benchmark Suite:** Tests tagged with `@Tag("perf")` in `khrona-core`, `khrona-store-jdbc`, and `khrona-store-redis` are excluded from default `./gradlew test` runs. Run them explicitly when modifying the scheduler polling loop or storage implementations, or before major releases:
+
+```bash
+# Run all performance benchmark suites
+./gradlew perfTest
+
+# Or run a specific module's performance suite
+./gradlew :khrona-core:perfTest
+./gradlew :khrona-store-jdbc:perfTest
+./gradlew :khrona-store-redis:perfTest
+```
