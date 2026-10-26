@@ -5,6 +5,16 @@ interface JdbcDialect {
     fun upsertExecutionSql(): String
     fun claimExecutionSql(): String
     fun listEligibleExecutionsSql(): String
+
+    /**
+     * Returns the SQL UPDATE statement used to atomically extend an active execution lease.
+     *
+     * [JdbcJobStore.heartbeat] binds four positional `?` parameters in order:
+     * 1. `expires_at` (`java.sql.Timestamp`) — the new lease expiration timestamp (`now + leaseDuration`).
+     * 2. `id` (`String`) — the execution UUID string.
+     * 3. `claimed_by` (`String`) — the `workerId` requesting the renewal.
+     * 4. `now` (`java.sql.Timestamp`) — the current timestamp; the row must have `expires_at > ?` and status in (`CLAIMED`, `RUNNING`).
+     */
     fun heartbeatSql(): String
     fun isLockHeldSql(excludeId: Boolean = false): String
     fun resetExpiredExecutionsSql(): String
@@ -51,8 +61,8 @@ class PostgresDialect : JdbcDialect {
     """.trimIndent()
 
     override fun heartbeatSql(): String = """
-        UPDATE khrona_executions SET expires_at = ? 
-        WHERE id = ? AND (status = 'CLAIMED' OR status = 'RUNNING')
+        UPDATE khrona_executions SET expires_at = ?
+        WHERE id = ? AND claimed_by = ? AND expires_at > ? AND (status = 'CLAIMED' OR status = 'RUNNING')
     """.trimIndent()
 
     override fun isLockHeldSql(excludeId: Boolean): String = """
@@ -105,8 +115,8 @@ class H2Dialect : JdbcDialect {
     """.trimIndent()
 
     override fun heartbeatSql(): String = """
-        UPDATE khrona_executions SET expires_at = ? 
-        WHERE id = ? AND (status = 'CLAIMED' OR status = 'RUNNING')
+        UPDATE khrona_executions SET expires_at = ?
+        WHERE id = ? AND claimed_by = ? AND expires_at > ? AND (status = 'CLAIMED' OR status = 'RUNNING')
     """.trimIndent()
 
     override fun isLockHeldSql(excludeId: Boolean): String = """
@@ -177,8 +187,8 @@ class MySqlDialect : JdbcDialect {
     """.trimIndent()
 
     override fun heartbeatSql(): String = """
-        UPDATE khrona_executions SET expires_at = ? 
-        WHERE id = ? AND (status = 'CLAIMED' OR status = 'RUNNING')
+        UPDATE khrona_executions SET expires_at = ?
+        WHERE id = ? AND claimed_by = ? AND expires_at > ? AND (status = 'CLAIMED' OR status = 'RUNNING')
     """.trimIndent()
 
     override fun isLockHeldSql(excludeId: Boolean): String = """
@@ -246,8 +256,8 @@ class OracleDialect : JdbcDialect {
     """.trimIndent()
 
     override fun heartbeatSql(): String = """
-        UPDATE khrona_executions SET expires_at = ? 
-        WHERE id = ? AND (status = 'CLAIMED' OR status = 'RUNNING')
+        UPDATE khrona_executions SET expires_at = ?
+        WHERE id = ? AND claimed_by = ? AND expires_at > ? AND (status = 'CLAIMED' OR status = 'RUNNING')
     """.trimIndent()
 
     override fun isLockHeldSql(excludeId: Boolean): String = """

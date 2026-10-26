@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Next release: **0.6.0** (minor release with breaking changes).
+
+### Changed
+- **Breaking — custom JobStore implementations:** `heartbeat(id: UUID, leaseDuration: Duration)` is replaced by `heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean`, and `updateExecutionStatus(id: UUID, status: ExecutionStatus, error: String?)` is replaced by `updateExecutionStatus(id: UUID, status: ExecutionStatus, error: String? = null, workerId: String? = null): Boolean`. Implementations and direct callers must update and recompile. Renew or transition only when the execution is `CLAIMED`/`RUNNING` and the stored owner matches `workerId` (plus an unexpired lease for `heartbeat`); validate and update atomically. See the [migration notes](README.md#upgrading-to-060).
+- **Breaking — custom JdbcDialect implementations:** `JdbcJobStore.heartbeat` now binds four positional `?` parameters (`new expires_at`, `id`, `claimed_by`, `now`) instead of two. Custom `JdbcDialect.heartbeatSql()` implementations must update their SQL placeholders to avoid runtime parameter-binding errors.
+- **Breaking — expired lease behavior:** A late heartbeat now returns `false` even if no other worker has reclaimed the execution. Previously it could revive an expired active lease. On a `false` response, the scheduler requests cooperative cancellation of the handler. GC pauses, slow storage, or outages that exhaust the renewal margin can therefore cancel otherwise healthy work. `heartbeatInterval` still defaults to half of `executionLeaseDuration`; size the lease for expected pauses and storage latency.
+- Redis heartbeat renewal also requires the corresponding claimed/running sorted-set entry with an unexpired score (checked against both the caller timestamp and Redis server `TIME` at script execution). Missing lease-index entries cause renewal to fail without rebuilding the index.
+
+### Fixed
+- Redis heartbeat status validation, lease renewal, index update, and claim-key TTL renewal now execute in one Lua script, preventing a stale heartbeat from restoring a superseded execution or reviving a lease after an in-flight delay past expiry.
+- Redis `updateExecutionStatus` now preserves the current sorted-set lease score and claim-lock TTL inside the Lua script instead of overwriting them with a pre-read client snapshot, preventing `CLAIMED` → `RUNNING` transitions from clobbering concurrent heartbeat renewals.
+- Redis `resetExpiredExecutions` now resets each expired execution via an atomic Lua script that verifies active status and expired sorted-set score before resetting, preventing stale recovery from clobbering a concurrent reclaim.
+- Memory, JDBC, and Redis heartbeats and status transitions (`RUNNING`, `SUCCESS`, `FAILED`, `DEAD_LETTERED`, `MISFIRED`, `PENDING`) now validate per-claim ownership (`<workerId>:<claimId>`), preventing stale claims from overwriting reclaimed/superseded state or scheduling duplicate retries and next recurring runs.
+- `Scheduler.pollAndExecute()` and `stop()` now track claims immediately upon `claimExecution` with per-claim tokens and release any claimed-before-launched execution back to `PENDING` if shutdown interrupts post-claim setup.
+
 ## [0.5.1] - 2026-10-01
 
 ### Added

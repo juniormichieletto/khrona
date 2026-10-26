@@ -203,8 +203,18 @@ class ConcurrencyReplaceTest {
             executions[execution.id] = execution
         }
 
-        override suspend fun updateExecutionStatus(id: UUID, status: ExecutionStatus, error: String?) {
-            executions[id] = executions.getValue(id).copy(status = status, error = error)
+        override suspend fun updateExecutionStatus(
+            id: UUID,
+            status: ExecutionStatus,
+            error: String?,
+            workerId: String?
+        ): Boolean {
+            val current = executions[id] ?: return false
+            if (workerId != null && ((current.status != ExecutionStatus.CLAIMED && current.status != ExecutionStatus.RUNNING) || current.workerId != workerId)) {
+                return false
+            }
+            executions[id] = current.copy(status = status, error = error)
+            return true
         }
 
         override suspend fun getExecution(id: UUID): JobExecution? = executions[id]
@@ -227,7 +237,7 @@ class ConcurrencyReplaceTest {
             return true
         }
 
-        override suspend fun heartbeat(id: UUID, leaseDuration: Duration): Boolean = false
+        override suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean = false
 
         override suspend fun isLockHeld(lockKey: String, excludeExecutionId: UUID?): Boolean = false
 

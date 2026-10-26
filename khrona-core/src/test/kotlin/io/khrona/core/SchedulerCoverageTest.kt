@@ -699,19 +699,19 @@ class SchedulerCoverageTest {
     private class HeartbeatThrowingStore : MockJobStore() {
         private var thrown = false
 
-        override suspend fun heartbeat(id: UUID, leaseDuration: Duration): Boolean {
+        override suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean {
             if (!thrown) {
                 thrown = true
                 throw IllegalStateException("heartbeat failure")
             }
-            return super.heartbeat(id, leaseDuration)
+            return super.heartbeat(id, workerId, leaseDuration)
         }
     }
 
     private class HeartbeatFalseStore : MockJobStore() {
         var heartbeatAttempts: Int = 0
 
-        override suspend fun heartbeat(id: UUID, leaseDuration: Duration): Boolean {
+        override suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean {
             heartbeatAttempts++
             return false
         }
@@ -762,7 +762,7 @@ class SchedulerCoverageTest {
     private class CancellingHeartbeatStore : MockJobStore() {
         var heartbeatAttempts: Int = 0
 
-        override suspend fun heartbeat(id: UUID, leaseDuration: Duration): Boolean {
+        override suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean {
             heartbeatAttempts++
             currentCoroutineContext().cancel()
             return true

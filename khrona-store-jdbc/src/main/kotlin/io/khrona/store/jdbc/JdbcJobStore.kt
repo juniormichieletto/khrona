@@ -183,9 +183,24 @@ class JdbcJobStore(
         }
     }
 
-    override suspend fun updateExecutionStatus(id: UUID, status: ExecutionStatus, error: String?): Unit = inJdbcContext {
+    override suspend fun updateExecutionStatus(
+        id: UUID,
+        status: ExecutionStatus,
+        error: String?,
+        workerId: String?
+    ): Boolean = inJdbcContext {
         dataSource.connection.use { conn ->
-            val sql = "UPDATE khrona_executions SET status = ?, error = ?, completed_at = ? WHERE id = ?"
+            val setClause = if (status == ExecutionStatus.PENDING) {
+                "status = ?, error = ?, completed_at = ?, claimed_at = NULL, claimed_by = NULL, expires_at = NULL, started_at = NULL"
+            } else {
+                "status = ?, error = ?, completed_at = ?"
+            }
+            val whereClause = if (workerId != null) {
+                "WHERE id = ? AND claimed_by = ? AND (status = 'CLAIMED' OR status = 'RUNNING')"
+            } else {
+                "WHERE id = ?"
+            }
+            val sql = "UPDATE khrona_executions SET $setClause $whereClause"
             conn.prepareStatementWithTimeout(sql).use { stmt ->
                 stmt.setString(1, status.name)
                 stmt.setString(2, error)
@@ -196,7 +211,10 @@ class JdbcJobStore(
                                 status == ExecutionStatus.SUPERSEDED
                 stmt.setTimestamp(3, if (isTerminal) Timestamp.from(Instant.now()) else null)
                 stmt.setString(4, id.toString())
-                stmt.executeUpdate()
+                if (workerId != null) {
+                    stmt.setString(5, workerId)
+                }
+                return@inJdbcContext stmt.executeUpdate() > 0
             }
         }
     }
@@ -249,13 +267,16 @@ class JdbcJobStore(
         }
     }
 
-    override suspend fun heartbeat(id: UUID, leaseDuration: Duration): Boolean = inJdbcContext {
+    override suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean = inJdbcContext {
         val dialect = getDialect()
         dataSource.connection.use { conn ->
             conn.prepareStatementWithTimeout(dialect.heartbeatSql()).use { stmt ->
-                val expiresAt = Instant.now().plus(leaseDuration)
+                val now = Instant.now()
+                val expiresAt = now.plus(leaseDuration)
                 stmt.setTimestamp(1, Timestamp.from(expiresAt))
                 stmt.setString(2, id.toString())
+                stmt.setString(3, workerId)
+                stmt.setTimestamp(4, Timestamp.from(now))
                 return@inJdbcContext stmt.executeUpdate() > 0
             }
         }

@@ -28,3 +28,10 @@
 - Unit tests for `MemoryJobStore` covering lease and lock.
 - Integration tests using Testcontainers for `JdbcJobStore`.
 - Multi-worker test simulation in `SchedulerTest`.
+
+## Fencing follow-ups after 0.6.0 heartbeat changes
+
+See [Fencing guarantees in 0.6.0](design.md#fencing-guarantees-in-060) for scenarios and regression-test expectations.
+
+- [x] Fence terminal status transitions and next-run scheduling against stale claims.
+- [x] Introduce a per-claim token and protect active-job tracking when the same worker reclaims an expired execution.

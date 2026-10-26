@@ -72,9 +72,12 @@
 - [ ] Lock Inspection
 
 ## v0.6: Hardening
+- [x] Breaking heartbeat ownership validation (`workerId`) and expired-lease handling across Memory, JDBC, and Redis (v0.6.0)
+- [x] Atomic Redis heartbeat renewal, lease-preserving status transitions, and atomic stale-execution reset (v0.6.0)
+- [x] Fence status transitions (`RUNNING`, `SUCCESS`, `FAILED`, `DEAD_LETTERED`, `MISFIRED`, `PENDING`) and next-run scheduling against stale claims (v0.6.0)
+- [x] Introduce a per-claim token (`<workerId>:<claimId>`) to distinguish successive claims and harden claimed-before-active shutdown release (v0.6.0)
 - [ ] Testkit (Virtual Time)
 - [ ] Focused shutdown and cancellation contract tests
-- [ ] Harden claimed-before-active shutdown edge so newly claimed executions cannot rely only on lease expiry
 - [ ] Documentation & Samples
 - [ ] Performance Tuning
 - [ ] Establish Performance Test CI Pipeline to prevent regressions

@@ -507,5 +507,171 @@ class SchedulerTest {
         assertEquals(Duration.ofMinutes(5), trigger.interval)
         assertEquals(Duration.ofSeconds(10), trigger.initialDelay)
     }
+
+    @Test
+    fun `stale worker finishing after reclamation must not overwrite status or schedule next run`() = runBlocking {
+        val store = MockJobStore()
+        val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        val handlerStarted = CompletableDeferred<Unit>()
+        val allowHandlerFinish = CompletableDeferred<Unit>()
+        val jobDef = JobBuilder("stale-finish-job").apply {
+            every(Duration.ofMinutes(5))
+            execute {
+                handlerStarted.complete(Unit)
+                withContext(NonCancellable) {
+                    allowHandlerFinish.await()
+                }
+            }
+        }.build()
+        val execution = JobExecution(
+            jobId = jobDef.id,
+            scheduledAt = Instant.now().minusSeconds(5),
+            lockKey = jobDef.lockKey
+        )
+        store.saveJob(jobDef)
+        store.saveExecution(execution)
+
+        val scheduler = Scheduler(
+            KhronaConfig().apply {
+                this.store = store
+                this.executionLeaseDuration = Duration.ofMinutes(1)
+                this.heartbeatInterval = Duration.ofSeconds(30)
+                jobs.add(jobDef)
+            },
+            scope
+        )
+
+        scheduler.pollAndExecute()
+        handlerStarted.await()
+
+        // Simulate lease expiry and another worker reclaiming the execution while handler is still running
+        store.executions.computeIfPresent(execution.id) { _, exec ->
+            exec.copy(expiresAt = Instant.now().minusSeconds(1))
+        }
+        assertTrue(store.claimExecution(execution.id, "other-worker:claim-2", Duration.ofMinutes(5)))
+
+        allowHandlerFinish.complete(Unit)
+        delay(50)
+        scheduler.stop()
+        scope.cancel()
+
+        val current = store.getExecution(execution.id)
+        assertEquals(ExecutionStatus.CLAIMED, current?.status, "Reclaimed execution status must not be overwritten by stale worker")
+        assertEquals("other-worker:claim-2", current?.workerId)
+        assertEquals(1, store.executions.size, "Stale worker must not schedule a duplicate next recurring execution")
+    }
+
+    @Test
+    fun `same scheduler does not reclaim an execution that is still locally active`() = runBlocking {
+        val store = MockJobStore()
+        val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        val firstAttemptStarted = CompletableDeferred<Unit>()
+        val releaseFirstAttempt = CompletableDeferred<Unit>()
+        var attempts = 0
+        val jobDef = JobBuilder("local-active-job").apply {
+            once()
+            execute {
+                attempts++
+                firstAttemptStarted.complete(Unit)
+                withContext(NonCancellable) {
+                    releaseFirstAttempt.await()
+                }
+            }
+        }.build()
+        val execution = JobExecution(
+            jobId = jobDef.id,
+            scheduledAt = Instant.now().minusSeconds(5)
+        )
+        store.saveJob(jobDef)
+        store.saveExecution(execution)
+
+        val scheduler = Scheduler(
+            KhronaConfig().apply {
+                this.store = store
+                this.executionLeaseDuration = Duration.ofMinutes(1)
+                this.heartbeatInterval = Duration.ofSeconds(30)
+                jobs.add(jobDef)
+            },
+            scope
+        )
+
+        scheduler.pollAndExecute()
+        firstAttemptStarted.await()
+
+        // Force lease expiry in store while coroutine is still active locally
+        store.executions.computeIfPresent(execution.id) { _, exec ->
+            exec.copy(expiresAt = Instant.now().minusSeconds(1))
+        }
+
+        // Second poll on the same scheduler must skip the locally active execution
+        scheduler.pollAndExecute()
+        delay(30)
+        assertEquals(1, attempts, "Same scheduler must not launch a duplicate local coroutine for an already active execution")
+
+        releaseFirstAttempt.complete(Unit)
+        delay(50)
+        scheduler.stop()
+        scope.cancel()
+    }
+
+    @Test
+    fun `shutdown while post-claim lock check is in flight releases the claimed execution back to PENDING`() = runBlocking {
+        val lockCheckEntered = CompletableDeferred<Unit>()
+        val allowLockCheckExit = CompletableDeferred<Unit>()
+        val store = object : MockJobStore() {
+            override suspend fun isLockHeld(lockKey: String, excludeExecutionId: UUID?): Boolean {
+                if (excludeExecutionId != null) {
+                    lockCheckEntered.complete(Unit)
+                    allowLockCheckExit.await()
+                }
+                return super.isLockHeld(lockKey, excludeExecutionId)
+            }
+        }
+        val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        val jobDef = JobBuilder("shutdown-mid-claim-job").apply {
+            once()
+            concurrencyPolicy = ConcurrencyPolicy.FORBID
+            lockKey = "mid-claim-lock"
+            execute {
+                delay(5_000)
+            }
+        }.build()
+        val execution = JobExecution(
+            jobId = jobDef.id,
+            scheduledAt = Instant.now().minusSeconds(5),
+            lockKey = jobDef.lockKey
+        )
+        store.saveJob(jobDef)
+        store.saveExecution(execution)
+
+        val scheduler = Scheduler(
+            KhronaConfig().apply {
+                this.store = store
+                this.pollingInterval = Duration.ofMillis(50)
+                this.shutdownTimeout = Duration.ofMillis(50)
+                jobs.add(jobDef)
+            },
+            scope
+        )
+
+        scheduler.start()
+        lockCheckEntered.await()
+
+        val stopJob = scope.launch {
+            scheduler.stop()
+        }
+        delay(20)
+        allowLockCheckExit.complete(Unit)
+        stopJob.join()
+        scope.cancel()
+
+        val afterStop = store.getExecution(execution.id)
+        assertEquals(
+            ExecutionStatus.PENDING,
+            afterStop?.status,
+            "An execution claimed right before scheduler.stop() must be released back to PENDING"
+        )
+        assertNull(afterStop?.workerId)
+    }
 }
 
