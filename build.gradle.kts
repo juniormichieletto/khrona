@@ -7,7 +7,7 @@ plugins {
     id("maven-publish")
 }
 
-val releaseVersion = providers.gradleProperty("releaseVersion").orElse("0.5.1")
+val releaseVersion = providers.gradleProperty("releaseVersion").orElse("0.6.0")
 
 allprojects {
     group = "io.github.juniormichieletto"
@@ -51,7 +51,25 @@ subprojects {
     }
 
     tasks.named<Test>("test") {
-        useJUnitPlatform()
+        useJUnitPlatform {
+            excludeTags("e2e", "perf")
+        }
+    }
+
+    tasks.register<Test>("perfTest") {
+        group = LifecycleBasePlugin.VERIFICATION_GROUP
+        description = "Runs scheduler CPU and memory polling performance benchmark tests."
+        val testSourceSet = project.extensions.getByType<SourceSetContainer>()["test"]
+        testClassesDirs = testSourceSet.output.classesDirs
+        classpath = testSourceSet.runtimeClasspath
+        useJUnitPlatform {
+            includeTags("perf")
+        }
+        testLogging {
+            showStandardStreams = true
+        }
+        maxParallelForks = 1
+        systemProperty("junit.jupiter.execution.parallel.enabled", "false")
     }
 
     tasks.named<org.gradle.testing.jacoco.tasks.JacocoReport>("jacocoTestReport") {

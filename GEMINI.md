@@ -6,4 +6,4 @@ Refer to [CONTRIBUTING.md](./CONTRIBUTING.md) for the following project standard
 - **Performance Standards**: Baseline CPU and Memory expectations for the scheduler.
 
 ## Automated Benchmarking
-Ensure that any changes to the scheduler loop or storage implementations are verified against the performance standards using the `@Disabled` tests referenced in `CONTRIBUTING.md`.
+Ensure that any changes to the scheduler loop or storage implementations are verified against the performance standards using the `@Tag("perf")` tests (`./gradlew perfTest`) referenced in `CONTRIBUTING.md`.

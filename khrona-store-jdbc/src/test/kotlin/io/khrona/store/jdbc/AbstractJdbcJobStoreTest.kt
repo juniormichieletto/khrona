@@ -213,11 +213,11 @@ abstract class AbstractJdbcJobStoreTest : JobStoreContract {
         val execution = JobExecution(jobId = "heartbeat-job", scheduledAt = Instant.now())
         store.saveExecution(execution)
         
-        store.claimExecution(execution.id, "worker-1", Duration.ofMillis(100))
+        store.claimExecution(execution.id, "worker-1", Duration.ofSeconds(5))
         val firstExpiry = store.getExecution(execution.id)?.expiresAt
         
         delay(10)
-        store.heartbeat(execution.id, Duration.ofMinutes(1))
+        store.heartbeat(execution.id, "worker-1", Duration.ofMinutes(1))
         val secondExpiry = store.getExecution(execution.id)?.expiresAt
         
         assertNotNull(firstExpiry)

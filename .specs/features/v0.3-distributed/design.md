@@ -41,9 +41,12 @@ In `Scheduler.pollAndExecute()`:
 
 ### 3. Heartbeating
 To prevent jobs from being reclaimed while still running, workers should heartbeat.
-`JobStore.heartbeat(executionId: UUID, leaseDuration: Duration)`
+As of the upcoming 0.6.0 release, the public SPI is:
+`JobStore.heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean`
 
-The `Scheduler` will launch a background coroutine for each running job to heartbeat.
+The `Scheduler` launches a background coroutine for each running job and passes its worker ID. Each store atomically validates active status (`CLAIMED`/`RUNNING`), matching ownership, and an unexpired lease before extending it. A failed check returns `false` without modifying the execution, and the scheduler requests cooperative cancellation of the handler.
+
+An expired lease cannot be revived, even before reclamation. This changes the previous behavior: pauses or storage delays that exhaust the remaining lease can cancel healthy work. The default heartbeat interval is half the execution lease; choose a lease with enough margin for expected pauses. JDBC compares stored timestamps against the application clock, as claiming already does, so clock skew between workers remains relevant.
 
 ### 4. Stale Worker Recovery
 A new method in `JobStore`:
@@ -58,7 +61,7 @@ This could be integrated into the `Scheduler`'s main loop or a separate maintena
 - `JobExecution`: Add `expiresAt`.
 - `JobDefinition`: Add `concurrencyPolicy`.
 - `JobStore`:
-    - Add `heartbeat(id, duration)`
+    - Use `heartbeat(id, workerId, leaseDuration): Boolean` (breaking change in 0.6.0)
     - Add `isLockHeld(lockKey): Boolean`
     - Add `resetExpiredExecutions(): Int`
 
@@ -68,6 +71,11 @@ This could be integrated into the `Scheduler`'s main loop or a separate maintena
 
 ### khrona-store-memory
 - Update `MemoryJobStore` to support new methods and lease logic.
+
+## Fencing guarantees in 0.6.0
+
+1. **Fenced status transitions and subsequent scheduling.** `updateExecutionStatus(id, status, error, workerId): Boolean` atomically validates that the execution is currently active (`CLAIMED` or `RUNNING`) and owned by `workerId` when `workerId` is supplied. A superseded claim cannot transition back to `RUNNING`, and a stale handler finishing after reclamation cannot overwrite the new owner's state with `SUCCESS`/`FAILED`/`DEAD_LETTERED` or schedule a duplicate retry or next recurring execution.
+2. **Per-claim tokens and claimed-before-active shutdown safety.** The scheduler generates a unique per-claim token (`<workerId>:<claimId>`) for each claim attempt, skips executions already in `activeJobs`, registers a placeholder job immediately after `claimExecution` succeeds, and releases the execution back to `PENDING` (fenced by the per-claim token) if shutdown interrupts post-claim setup or cancels active jobs on timeout.
 
 ## Data Model Changes
 

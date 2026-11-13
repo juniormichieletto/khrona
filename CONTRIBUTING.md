@@ -59,6 +59,6 @@ Historical tags can be backfilled with JReleaser. See `docs/release-process.md` 
 
 - **CPU Efficiency:** Polling overhead should remain below 1% CPU for a moderate number of jobs (e.g., 10-100) across all storage engines.
 - **Memory Footprint:** Memory usage should stay under 50MB for the scheduler loop.
-- **Verification:** Use the `@Disabled` performance tests in `khrona-core`, `khrona-store-jdbc`, and `khrona-store-redis` to verify these standards before major releases.
+- **Verification:** Performance benchmark tests are tagged with `@Tag("perf")` in `khrona-core`, `khrona-store-jdbc`, and `khrona-store-redis` and excluded from default `./gradlew test` runs. Run them via `./gradlew perfTest` (or per module, e.g. `./gradlew :khrona-core:perfTest`) to verify these standards before major releases.
 
 Happy coding!

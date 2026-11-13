@@ -185,6 +185,7 @@ class RetentionPolicy {
     var enabled: Boolean = true
     var maxAge: kotlin.time.Duration = 14.days
     var cleanupInterval: kotlin.time.Duration = 1.hours
+    var cleanupJitter: Double = 0.1
     var batchSize: Int = 1000
     var statuses: Set<ExecutionStatus> = setOf(
         ExecutionStatus.SUCCESS,

@@ -7,11 +7,16 @@ import io.khrona.core.JobDefinition
 import io.khrona.core.JobExecution
 import io.khrona.core.testing.JobStoreContract
 import io.lettuce.core.RedisClient
+import io.lettuce.core.event.command.CommandListener
+import io.lettuce.core.event.command.CommandStartedEvent
+import io.lettuce.core.event.command.CommandSucceededEvent
+import io.lettuce.core.protocol.CommandType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -27,10 +32,14 @@ import org.testcontainers.utility.DockerImageName
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 @Testcontainers
 class RedisJobStoreTest : JobStoreContract {
     private val stores = mutableListOf<RedisJobStore>()
+    private val clients = mutableListOf<RedisClient>()
 
     companion object {
         @Container
@@ -172,10 +181,159 @@ class RedisJobStoreTest : JobStoreContract {
         assertTrue(store.claimExecution(execution.id, "worker-1", Duration.ofMillis(100)))
         val firstScore = redisScore(namespace, "claimed", execution.id)
 
-        assertTrue(store.heartbeat(execution.id, Duration.ofMinutes(5)))
+        assertTrue(store.heartbeat(execution.id, "worker-1", Duration.ofMinutes(5)))
         val secondScore = redisScore(namespace, "claimed", execution.id)
 
         assertTrue(secondScore > firstScore)
+    }
+
+    @Test
+    fun `heartbeat cannot restore an execution superseded after it reads active status`() = runTest {
+        val namespace = "heartbeat-supersede-race-${UUID.randomUUID()}"
+        val heartbeatReachedCommit = CountDownLatch(1)
+        val allowHeartbeatCommit = CountDownLatch(1)
+        val interceptHeartbeatRead = AtomicBoolean(false)
+        fun pauseHeartbeatAtRedis() {
+            if (interceptHeartbeatRead.compareAndSet(true, false)) {
+                heartbeatReachedCommit.countDown()
+                check(allowHeartbeatCommit.await(5, TimeUnit.SECONDS))
+            }
+        }
+        val client = RedisClient.create(redisUri())
+        clients.add(client)
+        client.addListener(object : CommandListener {
+            override fun commandStarted(event: CommandStartedEvent) {
+                if (event.command.type == CommandType.EVAL) {
+                    pauseHeartbeatAtRedis()
+                }
+            }
+
+            override fun commandSucceeded(event: CommandSucceededEvent) {
+                if (interceptHeartbeatRead.get() && event.command.type == CommandType.HGET) {
+                    pauseHeartbeatAtRedis()
+                }
+            }
+        })
+        val store = RedisJobStore(client, namespace = namespace)
+        val supersedingStore = RedisJobStore(redisUri(), namespace = namespace)
+        stores.add(store)
+        stores.add(supersedingStore)
+        val execution = JobExecution(
+            jobId = "heartbeat-supersede-job",
+            scheduledAt = Instant.now(),
+            lockKey = "heartbeat-supersede-lock"
+        )
+        store.saveExecution(execution)
+        assertTrue(store.claimExecution(execution.id, "old-worker", Duration.ofMinutes(1)))
+
+        interceptHeartbeatRead.set(true)
+        val heartbeat = async(Dispatchers.IO) {
+            store.heartbeat(execution.id, "old-worker", Duration.ofMinutes(1))
+        }
+        try {
+            assertTrue(heartbeatReachedCommit.await(5, TimeUnit.SECONDS))
+            assertEquals(listOf(execution.id), supersedingStore.supersedeExecutionsByLockKey(execution.lockKey!!))
+        } finally {
+            allowHeartbeatCommit.countDown()
+        }
+
+        assertFalse(heartbeat.await(), "A heartbeat must fail after another worker supersedes the execution")
+        assertEquals(ExecutionStatus.SUPERSEDED, store.getExecution(execution.id)?.status)
+        assertFalse(store.isLockHeld(execution.lockKey!!))
+    }
+
+    @Test
+    fun `running transition must preserve a concurrent heartbeat renewal`() = runTest {
+        val namespace = "transition-review-${UUID.randomUUID()}"
+        val paused = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        val intercept = AtomicBoolean(false)
+        val client = RedisClient.create(redisUri())
+        clients.add(client)
+        client.addListener(object : CommandListener {
+            override fun commandStarted(event: CommandStartedEvent) {
+                if (event.command.type == CommandType.EVAL && intercept.compareAndSet(true, false)) {
+                    paused.countDown()
+                    check(resume.await(10, TimeUnit.SECONDS))
+                }
+            }
+        })
+        val store = RedisJobStore(client, namespace = namespace)
+        val observer = RedisJobStore(redisUri(), namespace = namespace)
+        stores.add(store)
+        stores.add(observer)
+
+        val execution = JobExecution(jobId = "transition-review", scheduledAt = Instant.now())
+        store.saveExecution(execution)
+        assertTrue(store.claimExecution(execution.id, "worker", Duration.ofSeconds(2)))
+        val originalExpiry = observer.getExecution(execution.id)!!.expiresAt!!
+        intercept.set(true)
+        val transition = async(Dispatchers.IO) {
+            store.updateExecutionStatus(execution.id, ExecutionStatus.RUNNING)
+        }
+        try {
+            assertTrue(paused.await(5, TimeUnit.SECONDS))
+            assertTrue(observer.heartbeat(execution.id, "worker", Duration.ofMinutes(1)))
+        } finally {
+            resume.countDown()
+        }
+        transition.await()
+        val stored = observer.getExecution(execution.id)!!
+        assertEquals(ExecutionStatus.RUNNING, stored.status)
+        assertTrue(stored.expiresAt!!.isAfter(originalExpiry.plusSeconds(30)))
+        withContext(Dispatchers.IO) {
+            Thread.sleep(Duration.between(Instant.now(), originalExpiry).toMillis().coerceAtLeast(0) + 100)
+        }
+        assertTrue(Instant.now().isBefore(stored.expiresAt))
+        val renewed = observer.heartbeat(execution.id, "worker", Duration.ofMinutes(1))
+        assertTrue(renewed, "The same owner must be able to renew its unexpired lease after changing status")
+    }
+
+    @Test
+    fun `heartbeat delayed until after expiry must not revive the lease`() = runTest {
+        val namespace = "expiry-review-${UUID.randomUUID()}"
+        val paused = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        val intercept = AtomicBoolean(false)
+        val client = RedisClient.create(redisUri())
+        clients.add(client)
+        client.addListener(object : CommandListener {
+            override fun commandStarted(event: CommandStartedEvent) {
+                if (event.command.type == CommandType.EVAL && intercept.compareAndSet(true, false)) {
+                    paused.countDown()
+                    check(resume.await(10, TimeUnit.SECONDS))
+                }
+            }
+        })
+        val store = RedisJobStore(client, namespace = namespace)
+        val observer = RedisJobStore(redisUri(), namespace = namespace)
+        stores.add(store)
+        stores.add(observer)
+
+        val execution = JobExecution(jobId = "expiry-review", scheduledAt = Instant.now())
+        store.saveExecution(execution)
+        assertTrue(store.claimExecution(execution.id, "worker", Duration.ofSeconds(2)))
+        val before = observer.getExecution(execution.id)!!
+        val expiresAt = before.expiresAt!!
+        intercept.set(true)
+        val heartbeat = async(Dispatchers.IO) {
+            store.heartbeat(execution.id, "worker", Duration.ofMinutes(1))
+        }
+        try {
+            assertTrue(paused.await(5, TimeUnit.SECONDS))
+            assertTrue(Instant.now().isBefore(expiresAt), "Heartbeat must start while lease is valid")
+            withContext(Dispatchers.IO) {
+                Thread.sleep(Duration.between(Instant.now(), expiresAt).toMillis().coerceAtLeast(0) + 100)
+            }
+            assertTrue(Instant.now().isAfter(expiresAt))
+            assertEquals(before, observer.getExecution(execution.id), "No reclamation or status change occurred")
+        } finally {
+            resume.countDown()
+        }
+        val renewed = heartbeat.await()
+        val after = observer.getExecution(execution.id)!!
+        assertFalse(renewed, "A request reaching Redis after lease expiry must be rejected")
+        assertEquals(before, after)
     }
 
     @Test
@@ -205,6 +363,57 @@ class RedisJobStoreTest : JobStoreContract {
     }
 
     @Test
+    fun `resetExpiredExecutions does not clobber a concurrent reclaim`() = runTest {
+        val namespace = "reset-reclaim-race-${UUID.randomUUID()}"
+        val paused = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        val intercept = AtomicBoolean(false)
+        val client = RedisClient.create(redisUri())
+        clients.add(client)
+        client.addListener(object : CommandListener {
+            override fun commandSucceeded(event: CommandSucceededEvent) {
+                if (intercept.get() && event.command.type == CommandType.HGET && intercept.compareAndSet(true, false)) {
+                    paused.countDown()
+                    check(resume.await(10, TimeUnit.SECONDS))
+                }
+            }
+        })
+        val resettingStore = RedisJobStore(client, namespace = namespace)
+        val reclaimingStore = RedisJobStore(redisUri(), namespace = namespace)
+        stores.add(resettingStore)
+        stores.add(reclaimingStore)
+
+        val now = Instant.now()
+        val expiredRunning = JobExecution(
+            jobId = "reset-race-job",
+            scheduledAt = now.minusSeconds(60),
+            startedAt = now.minusSeconds(30),
+            expiresAt = now.minusSeconds(1),
+            status = ExecutionStatus.RUNNING,
+            workerId = "old-worker",
+            lockKey = "reset-race-lock"
+        )
+        reclaimingStore.saveExecution(expiredRunning)
+
+        intercept.set(true)
+        val resetDeferred = async(Dispatchers.IO) {
+            resettingStore.resetExpiredExecutions(now)
+        }
+        try {
+            assertTrue(paused.await(5, TimeUnit.SECONDS))
+            assertTrue(reclaimingStore.claimExecution(expiredRunning.id, "new-worker", Duration.ofMinutes(1)))
+        } finally {
+            resume.countDown()
+        }
+
+        assertEquals(0, resetDeferred.await(), "Reset must not clobber an execution that was reclaimed concurrently")
+        val stored = reclaimingStore.getExecution(expiredRunning.id)
+        assertEquals(ExecutionStatus.CLAIMED, stored?.status)
+        assertEquals("new-worker", stored?.workerId)
+        assertTrue(reclaimingStore.isLockHeld("reset-race-lock"))
+    }
+
+    @Test
     fun `claim and heartbeat respect configured lease durations`() = runTest {
         val store = createStore()
         val execution = JobExecution(jobId = "configured-lease-job", scheduledAt = Instant.now())
@@ -214,7 +423,7 @@ class RedisJobStoreTest : JobStoreContract {
         val shortLease = store.getExecution(execution.id)?.expiresAt!!
         assertTrue(shortLease <= Instant.now().plusMillis(500))
 
-        assertTrue(store.heartbeat(execution.id, Duration.ofSeconds(2)))
+        assertTrue(store.heartbeat(execution.id, "worker-1", Duration.ofSeconds(2)))
         val extendedLease = store.getExecution(execution.id)?.expiresAt!!
 
         assertTrue(extendedLease > shortLease.plusMillis(1_000))
@@ -351,8 +560,8 @@ class RedisJobStoreTest : JobStoreContract {
         assertNotNull(store.getExecution(success.id)?.completedAt)
         assertFalse(store.claimExecution(success.id, "worker", Duration.ofMinutes(1)))
         assertFalse(store.claimExecution(UUID.randomUUID(), "worker", Duration.ofMinutes(1)))
-        assertFalse(store.heartbeat(success.id, Duration.ofMinutes(1)))
-        assertFalse(store.heartbeat(UUID.randomUUID(), Duration.ofMinutes(1)))
+        assertFalse(store.heartbeat(success.id, "worker", Duration.ofMinutes(1)))
+        assertFalse(store.heartbeat(UUID.randomUUID(), "worker", Duration.ofMinutes(1)))
 
         // Missing execution status update branch
         store.updateExecutionStatus(UUID.randomUUID(), ExecutionStatus.RUNNING)
@@ -361,7 +570,7 @@ class RedisJobStoreTest : JobStoreContract {
         val claimedForHeartbeat = JobExecution(jobId = "redis-hb-claimed", scheduledAt = Instant.now())
         store.saveExecution(claimedForHeartbeat)
         assertTrue(store.claimExecution(claimedForHeartbeat.id, "hb-worker", Duration.ofMinutes(1)))
-        assertTrue(store.heartbeat(claimedForHeartbeat.id, Duration.ofMinutes(1)))
+        assertTrue(store.heartbeat(claimedForHeartbeat.id, "hb-worker", Duration.ofMinutes(1)))
 
         // Terminal statuses (MISFIRED and DEAD_LETTERED)
         val misfired = JobExecution(jobId = "redis-misfired", scheduledAt = Instant.now())
@@ -510,10 +719,188 @@ class RedisJobStoreTest : JobStoreContract {
         assertEquals("raw_token", toAnyMethod.invoke(instance, unquoted))
     }
 
+    @Test
+    fun `cleanupCompletedExecutions skips when cleanup lock is held and releases lock after completion`() = runBlocking {
+        val namespace = "khrona:test:${UUID.randomUUID()}"
+        val store = RedisJobStore(redisUri(), namespace = namespace).also { stores.add(it) }
+        val oldCompletedAt = Instant.now().minusSeconds(3600)
+        val exec = JobExecution(
+            jobId = "cleanup-lock-job",
+            scheduledAt = oldCompletedAt.minusSeconds(10),
+            status = ExecutionStatus.SUCCESS,
+            completedAt = oldCompletedAt
+        )
+        store.saveExecution(exec)
+
+        RedisClient.create(redisUri()).use { client ->
+            client.connect().use { conn ->
+                val sync = conn.sync()
+                sync.set("$namespace:cleanup:lock", "other-node", io.lettuce.core.SetArgs.Builder.ex(30))
+
+                val skipped = store.cleanupCompletedExecutions(
+                    before = Instant.now(),
+                    statuses = setOf(ExecutionStatus.SUCCESS),
+                    limit = 100
+                )
+                assertEquals(0, skipped)
+                assertNotNull(store.getExecution(exec.id))
+
+                sync.del("$namespace:cleanup:lock")
+
+                val cleaned = store.cleanupCompletedExecutions(
+                    before = Instant.now(),
+                    statuses = setOf(ExecutionStatus.SUCCESS),
+                    limit = 100
+                )
+                assertEquals(1, cleaned)
+                assertNull(store.getExecution(exec.id))
+                assertNull(sync.get("$namespace:cleanup:lock"))
+            }
+        }
+    }
+
+    @Test
+    fun `saveExecution with PENDING does not overwrite an already CLAIMED or RUNNING execution`() = runTest {
+        val namespace = "save-vs-claim-${UUID.randomUUID()}"
+        val store = RedisJobStore(redisUri(), namespace = namespace).also { stores.add(it) }
+        val now = Instant.now()
+        val initial = JobExecution(
+            id = UUID.randomUUID(),
+            jobId = "startup-race-job",
+            scheduledAt = now.minusSeconds(1),
+            status = ExecutionStatus.PENDING
+        )
+        store.saveExecution(initial)
+        assertTrue(store.claimExecution(initial.id, "worker-a", Duration.ofMinutes(5)))
+
+        // Simulate a second scheduler node attempting to save the initial deterministic PENDING execution late
+        store.saveExecution(initial.copy(status = ExecutionStatus.PENDING, workerId = null, expiresAt = null))
+
+        val current = store.getExecution(initial.id)
+        assertEquals(ExecutionStatus.CLAIMED, current?.status)
+        assertEquals("worker-a", current?.workerId)
+        assertNotNull(redisScoreOrNull(namespace, "claimed", initial.id))
+        assertNull(redisScoreOrNull(namespace, "pending", initial.id))
+    }
+
+    @Test
+    fun `listEligibleExecutions resetExpiredExecutions and isLockHeld self-heal orphan index entries`() = runTest {
+        val namespace = "self-heal-${UUID.randomUUID()}"
+        val store = RedisJobStore(redisUri(), namespace = namespace).also { stores.add(it) }
+        val now = Instant.now()
+        val orphanPending = UUID.randomUUID()
+        val orphanClaimed = UUID.randomUUID()
+        val orphanRunning = UUID.randomUUID()
+        val orphanLockHolder = UUID.randomUUID()
+        val staleTerminalInPending = JobExecution(
+            jobId = "stale-terminal-job",
+            scheduledAt = now.minusSeconds(20),
+            status = ExecutionStatus.SUCCESS,
+            completedAt = now.minusSeconds(5)
+        )
+        val realDue = JobExecution(
+            jobId = "real-due-job",
+            scheduledAt = now.minusSeconds(1),
+            status = ExecutionStatus.PENDING
+        )
+        store.saveExecution(staleTerminalInPending)
+        store.saveExecution(realDue)
+
+        RedisClient.create(redisUri()).use { client ->
+            client.connect().use { conn ->
+                val sync = conn.sync()
+                val pastScore = now.minusSeconds(10).toEpochMilli().toDouble()
+                sync.zadd("$namespace:pending", pastScore, orphanPending.toString())
+                sync.zadd("$namespace:pending", pastScore - 1000.0, staleTerminalInPending.id.toString())
+                sync.zadd("$namespace:claimed", pastScore, orphanClaimed.toString())
+                sync.zadd("$namespace:running", pastScore, orphanRunning.toString())
+                sync.sadd("$namespace:locks:heal-lock", orphanLockHolder.toString())
+            }
+        }
+
+        assertEquals(emptyList<JobExecution>(), store.listEligibleExecutions(now, limit = 0))
+        assertEquals(emptyList<JobExecution>(), store.listEligibleExecutions(now, limit = -1))
+
+        // Even with limit = 1, the orphan and stale terminal entry in pending must be evicted and realDue must be returned
+        val eligible = store.listEligibleExecutions(now, limit = 1)
+        assertEquals(listOf(realDue.id), eligible.map { it.id })
+        assertNull(redisScoreOrNull(namespace, "pending", orphanPending))
+        assertNull(redisScoreOrNull(namespace, "pending", staleTerminalInPending.id))
+
+        // resetExpiredExecutions must evict orphan claimed/running entries
+        assertEquals(0, store.resetExpiredExecutions(now))
+        assertNull(redisScoreOrNull(namespace, "claimed", orphanClaimed))
+        assertNull(redisScoreOrNull(namespace, "running", orphanRunning))
+
+        // isLockHeld must evict orphan lock member and return false
+        assertFalse(store.isLockHeld("heal-lock"))
+        assertTrue(redisLockMembers(namespace, "heal-lock").isEmpty())
+    }
+
+    @Test
+    fun `inRedisContext maps Redis OOM errors to KhronaRedisOomException`() = runTest {
+        val namespace = "oom-test-${UUID.randomUUID()}"
+        val store = RedisJobStore(redisUri(), namespace = namespace).also { stores.add(it) }
+        RedisClient.create(redisUri()).use { client ->
+            client.connect().use { conn ->
+                val sync = conn.sync()
+                try {
+                    sync.configSet("maxmemory", "100")
+                    sync.configSet("maxmemory-policy", "noeviction")
+                    assertThrows(KhronaRedisOomException::class.java) {
+                        runBlocking {
+                            store.saveExecution(
+                                JobExecution(
+                                    jobId = "oom-job",
+                                    scheduledAt = Instant.now(),
+                                    payload = "x".repeat(4096)
+                                )
+                            )
+                        }
+                    }
+                } finally {
+                    sync.configSet("maxmemory", "0")
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `clusterNamespace wraps namespace in hash tag and maps all store keys to identical cluster keyslot`() {
+        val clusterNs = RedisJobStoreConfig.clusterNamespace("khrona-prod")
+        assertEquals("{khrona-prod}", clusterNs)
+        assertEquals("{already-tagged}", RedisJobStoreConfig.clusterNamespace("{already-tagged}"))
+        assertThrows(IllegalArgumentException::class.java) {
+            RedisJobStoreConfig.clusterNamespace("   ")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            RedisJobStoreConfig.clusterNamespace("{}bad")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            RedisJobStoreConfig.clusterNamespace("}bad{")
+        }
+
+        val keys = listOf(
+            "$clusterNs:jobs",
+            "$clusterNs:executions",
+            "$clusterNs:pending",
+            "$clusterNs:claimed",
+            "$clusterNs:running",
+            "$clusterNs:cleanup:lock",
+            "$clusterNs:locks:my-lock",
+            "$clusterNs:execution-locks:123",
+            "$clusterNs:claim-locks:123"
+        )
+        val slots = keys.map { io.lettuce.core.cluster.SlotHash.getSlot(it) }.toSet()
+        assertEquals(1, slots.size, "All keys in a hash-tagged namespace must map to the exact same Redis Cluster slot")
+    }
+
     @AfterEach
     fun tearDown() {
         stores.forEach { it.close() }
         stores.clear()
+        clients.forEach { it.shutdown() }
+        clients.clear()
     }
 
     private fun redisUri(): String = "redis://${redis.host}:${redis.getMappedPort(6379)}"
@@ -525,6 +912,14 @@ class RedisJobStoreTest : JobStoreContract {
     )
 
     private fun redisScore(namespace: String, index: String, id: UUID): Double {
+        RedisClient.create(redisUri()).use { client ->
+            client.connect().use { connection ->
+                return connection.sync().zscore("$namespace:$index", id.toString())
+            }
+        }
+    }
+
+    private fun redisScoreOrNull(namespace: String, index: String, id: UUID): Double? {
         RedisClient.create(redisUri()).use { client ->
             client.connect().use { connection ->
                 return connection.sync().zscore("$namespace:$index", id.toString())

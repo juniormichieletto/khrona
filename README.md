@@ -10,6 +10,7 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
 
 - [Features](#features)
 - [Installation](#installation)
+- [Upgrading to 0.6.0](#upgrading-to-060)
 - [Quick Start (In-Memory)](#quick-start-in-memory)
 - [Persistent Storage (JDBC)](#persistent-storage-jdbc)
   - [Flyway-managed schema](#flyway-managed-schema)
@@ -17,6 +18,8 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
   - [Local Redis for Development](#local-redis-for-development)
 - [MySQL 8 & Multi-Node Testing](#mysql-8--multi-node-testing)
   - [Local Multi-Instance Setup](#local-multi-instance-setup)
+- [End-to-End Dockerized Ktor Tests](#end-to-end-dockerized-ktor-tests)
+- [Performance Benchmark Suite](#performance-benchmark-suite)
 - [Advanced Configuration](#advanced-configuration)
   - [Retry Policies](#retry-policies)
   - [Concurrency & Locking](#concurrency--locking)
@@ -53,6 +56,8 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
 
 ## Installation
 
+These examples target the upcoming **0.6.0** release, which is not yet published.
+
 Ensure `mavenCentral()` is present in your repositories:
 
 ```kotlin
@@ -63,15 +68,15 @@ repositories {
 
 dependencies {
     // For Ktor integration:
-    implementation("io.github.juniormichieletto:khrona-ktor:0.5.1")
+    implementation("io.github.juniormichieletto:khrona-ktor:0.6.0")
     
     // OR for Standalone Kotlin apps (without Ktor):
-    // implementation("io.github.juniormichieletto:khrona-core:0.5.1")
+    // implementation("io.github.juniormichieletto:khrona-core:0.6.0")
 
     // Choose your storage backend:
-    implementation("io.github.juniormichieletto:khrona-store-memory:0.5.1") // Dev / testing
-    implementation("io.github.juniormichieletto:khrona-store-jdbc:0.5.1")   // Production JDBC
-    // implementation("io.github.juniormichieletto:khrona-store-redis:0.5.1") // Experimental Redis coordination
+    implementation("io.github.juniormichieletto:khrona-store-memory:0.6.0") // Dev / testing
+    implementation("io.github.juniormichieletto:khrona-store-jdbc:0.6.0")   // Production JDBC
+    // implementation("io.github.juniormichieletto:khrona-store-redis:0.6.0") // Experimental Redis coordination
 
     // When using JDBC, add the driver for your database:
     runtimeOnly("org.postgresql:postgresql:42.7.5")           // PostgreSQL
@@ -80,6 +85,33 @@ dependencies {
     // runtimeOnly("com.h2database:h2:2.3.232")               // H2
 }
 ```
+
+## Upgrading to 0.6.0
+
+**Breaking API change:** upgrade all Khrona modules together. Custom `JobStore` implementations and direct callers must update both `heartbeat` and `updateExecutionStatus` and recompile against these signatures:
+
+```kotlin
+suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: java.time.Duration): Boolean
+suspend fun updateExecutionStatus(
+    id: UUID,
+    status: ExecutionStatus,
+    error: String? = null,
+    workerId: String? = null
+): Boolean
+```
+
+For `heartbeat`, the store must atomically check that the execution is `CLAIMED` or `RUNNING`, belongs to `workerId`, and has an unexpired lease before extending it. Return `false` without changing the execution if any check fails. For `updateExecutionStatus`, when `workerId` is non-null, the store must atomically verify that the execution is currently active (`CLAIMED` or `RUNNING`) and owned by `workerId`, clearing claim metadata (`workerId`, `startedAt`, `expiresAt`) when releasing back to `PENDING`, and return `true` only when the transition was applied. The scheduler supplies a unique per-claim token (`<workerId>:<claimId>`) on every claim, heartbeat, and status transition, and only schedules retries or next recurring runs when the status transition succeeds.
+
+**Breaking `JdbcDialect.heartbeatSql()` parameter contract:** `JdbcJobStore.heartbeat` now binds four positional `?` parameters in order: `(1) new expires_at (Timestamp)`, `(2) execution id (String)`, `(3) claimed_by / workerId (String)`, and `(4) current timestamp now (Timestamp)`. Custom `JdbcDialect` implementations that still return a two-parameter SQL statement will compile but fail at runtime when binding parameters 3 and 4; update `heartbeatSql()` to match:
+
+```sql
+UPDATE khrona_executions SET expires_at = ?
+WHERE id = ? AND claimed_by = ? AND expires_at > ? AND (status = 'CLAIMED' OR status = 'RUNNING')
+```
+
+**Expired leases cannot be revived by heartbeat**, even when nobody has reclaimed the execution yet. A rejected renewal makes the scheduler request cooperative cancellation of the handler. A GC pause, slow database, or Redis outage that exceeds the remaining lease can therefore cancel otherwise healthy work. The default heartbeat interval is half the lease duration, leaving roughly `executionLeaseDuration - heartbeatInterval` for delays after a heartbeat becomes due. Choose a lease that accommodates expected pauses and storage latency.
+
+Redis also requires an unexpired entry in the corresponding claimed/running sorted set; a missing entry causes renewal to fail.
 
 ## Quick Start (In-Memory)
 
@@ -267,7 +299,8 @@ Operational requirements:
 
 - Enable Redis persistence (`AOF` or appropriate `RDB`) if scheduled state must survive Redis restarts.
 - Do not use an eviction policy that can evict Khrona keys. Prefer dedicated Redis memory or `noeviction` for scheduler data.
-- Keep `namespace` unique per environment or tenant to avoid cross-application key collisions.
+- Keep `namespace` unique per environment or tenant to avoid cross-application key collisions. Use `RedisJobStoreConfig.clusterNamespace("khrona-prod")` (`"{khrona-prod}"`) when routing through a single-slot Redis Cluster proxy so all store keys hash to the same slot.
+- Redis `OOM` responses are mapped to `KhronaRedisOomException` for explicit alerting and diagnosis when `maxmemory-policy noeviction` is reached.
 - Automated terminal-execution cleanup runs in the background according to your configured `retention` policy (default: 14 days, purging `SUCCESS`, `FAILED`, `MISFIRED`, and `SUPERSEDED` records). `DEAD_LETTERED` records are preserved by default for operator review.
 
 ## MySQL 8 & Multi-Node Testing
@@ -300,6 +333,36 @@ NODE_NAME=node-1 ./gradlew run
 NODE_NAME=node-2 ./gradlew run
 ```
 Only one node will claim and execute the job at a time if `concurrencyPolicy = ConcurrencyPolicy.FORBID` is used.
+
+## End-to-End Dockerized Ktor Tests
+
+Khrona includes an opt-in end-to-end test suite (`@Tag("e2e")`) that is excluded from standard `./gradlew test` runs. For each backend (`MemoryJobStore`, `JdbcJobStore` with PostgreSQL, and `RedisJobStore`), the suite:
+
+1. Publishes all Khrona modules (`khrona-core`, `khrona-ktor`, `khrona-store-memory`, `khrona-store-jdbc`, `khrona-store-redis`) to `mavenLocal()`.
+2. Starts a Docker container and scaffolds a brand-new Ktor application from scratch using the official Ktor CLI generator (`ktor new`).
+3. Configures `khrona-ktor` and the target `JobStore` inside the generated project, boots the Ktor server (`./gradlew run`), and verifies triggers (`once`, `every`, `cron`, manual `trigger`), structured payloads, MDC `correlationId` propagation, retries, timeouts (`DEAD_LETTERED`), concurrency policies (`FORBID`, `REPLACE`), misfire handling (`IGNORE`), retention cleanup, stale recovery, and lease/status-transition fencing over HTTP.
+
+Run the E2E suite on demand (requires Docker):
+
+```bash
+./gradlew :khrona-ktor:e2eTest
+```
+
+## Performance Benchmark Suite
+
+Khrona includes an opt-in polling CPU and memory benchmark suite (`@Tag("perf")`) across `khrona-core` (baseline loop overhead), `khrona-store-jdbc` (H2, PostgreSQL, and MySQL via Testcontainers), and `khrona-store-redis` (Redis via Testcontainers). These tests are excluded from default `./gradlew test` runs.
+
+Run all performance benchmarks or target an individual module on demand:
+
+```bash
+# Run all performance benchmark suites
+./gradlew perfTest
+
+# Or run a specific module's benchmark suite
+./gradlew :khrona-core:perfTest
+./gradlew :khrona-store-jdbc:perfTest
+./gradlew :khrona-store-redis:perfTest
+```
 
 ## Advanced Configuration
 
@@ -423,7 +486,7 @@ execute { payload ->
 In production, persistent stores continuously accumulate completed executions. To prevent database bloat and performance degradation, Khrona includes automated, bounded execution cleanup enabled by default.
 
 - **Default retention period:** 14 days (`maxAge = 14.days`).
-- **Cleanup interval:** Runs once per hour (`cleanupInterval = 1.hours`).
+- **Cleanup interval & jitter:** Runs once per hour (`cleanupInterval = 1.hours`) with 10% startup and per-interval jitter (`cleanupJitter = 0.1`) to avoid multi-node thundering herds. PostgreSQL, MySQL, and Oracle use `FOR UPDATE SKIP LOCKED`, and `RedisJobStore` coordinates cleanup with a short-lived distributed lock.
 - **Batch limit:** 1000 records per batch (`batchSize = 1000`) to prevent large database locks and replication lag.
 - **Default statuses purged:** `SUCCESS`, `FAILED` (intermediate retries), `MISFIRED`, and `SUPERSEDED`.
 - **Audit safety:** `DEAD_LETTERED` records are **never deleted automatically by default**, ensuring permanent failures remain available for operator diagnosis.
@@ -438,6 +501,7 @@ val config = Khrona {
         enabled = true                       // true by default
         maxAge = 7.days                      // purge older than 7 days
         cleanupInterval = 30.minutes         // run cleanup every 30 minutes
+        cleanupJitter = 0.1                  // 10% startup & interval randomization
         batchSize = 500                      // bounded batch size
 
         // Optionally include DEAD_LETTERED if you wish to purge dead-lettered jobs:
@@ -693,7 +757,7 @@ flowchart TD
     Launch --> Running["Mark RUNNING<br/>updateExecutionStatus"]
     Running --> Heartbeat["While handler runs, extend lease periodically<br/>heartbeat"]
     Running --> Execute["Run handler<br/>optionally within timeout"]
-    Heartbeat -- "Lease update rejected" --> Cancel["Cancel handler: execution was reclaimed<br/>or superseded"]
+    Heartbeat -- "Lease update rejected" --> Cancel["Cancel handler: execution was reclaimed,<br/>superseded, or lease expired"]
 
     Execute -- "Success" --> Success["Mark SUCCESS<br/>updateExecutionStatus"]
     Execute -- "Failure or timeout" --> Retry{"Retry attempts remain?"}
@@ -721,7 +785,7 @@ For JDBC, the main database access points are:
 - `listEligibleExecutions`: reads due `PENDING` rows and expired `CLAIMED` or `RUNNING` rows, ordered by `scheduled_at` and bounded by `pollBatchSize`.
 - `claimExecution`: performs an atomic conditional update to `CLAIMED`; PostgreSQL and MySQL use `FOR UPDATE SKIP LOCKED` so only one competing worker wins.
 - `isLockHeld`: checks for another unexpired `CLAIMED` or `RUNNING` row with the same `lock_key`.
-- `heartbeat`: updates `expires_at` only while the row remains `CLAIMED` or `RUNNING`.
+- `heartbeat`: atomically updates `expires_at` only while the row remains `CLAIMED` or `RUNNING`, belongs to the requesting worker, and has an unexpired lease.
 - `resetExpiredExecutions`: returns expired active rows to `PENDING` so work can resume after a crash or lost worker.
 - `supersedeExecutionsByLockKey`: transactionally marks older active rows as `SUPERSEDED` for `ConcurrencyPolicy.REPLACE`.
 - `cleanupCompletedExecutions`: purges terminal executions older than `maxAge` matching the configured retention statuses in bounded batches.
@@ -735,8 +799,8 @@ For JDBC, the main database access points are:
 - [x] **v0.4:** Redis-backed `JobStore` with atomic claiming, heartbeat, recovery, and lock semantics. **(Experimental for production use)**
 - [x] **v0.5.0:** JReleaser release flow, Flyway setup docs, misfire policy hardening.
 - [x] **v0.5.1:** Execution retention & cleanup, Kotlin Duration DSL, streamlined quick-start docs.
-- [ ] **v0.5.2:** Core job management API, Metrics (Micrometer/OpenTelemetry), lock inspection.
-- [ ] **v0.6:** Production hardening, testkit improvements, adaptive delay, and operator ergonomics.
+- [ ] **v0.6.0:** Breaking heartbeat ownership validation and expired-lease handling, with atomic Redis renewal.
+- [ ] **Future:** Core job management API, metrics (Micrometer/OpenTelemetry), lock inspection, further production hardening, testkit improvements, adaptive delay, and operator ergonomics.
 - [ ] **v0.7:** Android SQLite storage support.
 
 ## License

@@ -73,7 +73,7 @@ sequenceDiagram
                 activate W
                 W->>ST: updateStatus(RUNNING)
                 loop Heartbeat
-                    W->>ST: heartbeat(execId)
+                    W->>ST: heartbeat(execId, workerId)
                 end
                 W->>W: execute handler()
                 W->>ST: updateStatus(SUCCESS)
