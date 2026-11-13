@@ -79,6 +79,40 @@ This run was performed via `./gradlew perfTest --rerun-tasks` after introducing 
 | **10s** (PT10S) | 0.14% / 16 MB | 0.15% / 19 MB | 0.24% / 18 MB |
 | **1m** (PT1M) | 0.15% / 16 MB | 0.14% / 19 MB | 0.26% / 18 MB |
 
+### 2026-11-13 Follow-Up Run (`v0.6.0` Retention Hardening, Gradle 9.9.1 & Active Load)
+
+This run was performed via `./gradlew perfTest --rerun-tasks` on Gradle `9.9.1` after adding retention cleanup jitter, JDBC `FOR UPDATE SKIP LOCKED` cleanup, and Redis distributed cleanup locking, along with the new active-load and backlog-drain suites.
+
+#### Idle Polling — In-Memory / Local
+| Polling Interval | Minimal Store (CPU/Mem) | H2 In-Memory (CPU/Mem) |
+| :--- | :--- | :--- |
+| **100ms** (PT0.1S) | 0.80% / 20 MB | 1.91% / 42 MB |
+| **1s** (PT1S) | 0.36% / 10 MB | 0.21% / 17 MB |
+| **10s** (PT10S) | 0.08% / 6 MB | 0.16% / 17 MB |
+| **1m** (PT1M) | 0.08% / 6 MB | 0.16% / 17 MB |
+
+#### Idle Polling — Distributed / Persistent
+| Polling Interval | PostgreSQL (CPU/Mem) | MySQL (CPU/Mem) | Redis (CPU/Mem) |
+| :--- | :--- | :--- | :--- |
+| **100ms** (PT0.1S) | 1.87% / 54 MB | 2.16% / 59 MB | 1.85% / 72 MB |
+| **1s** (PT1S) | 0.24% / 17 MB | 0.31% / 19 MB | 0.29% / 20 MB |
+| **10s** (PT10S) | 0.12% / 16 MB | 0.20% / 19 MB | 0.26% / 19 MB |
+| **1m** (PT1M) | 0.12% / 15 MB | 0.13% / 19 MB | 0.23% / 18 MB |
+
+#### Active Recurring Load (100 jobs @ `1s`, `pollingInterval = 100ms`, 10s window after 3s warmup)
+| Store | Completed | Throughput | Avg CPU | p95 CPU | Max Mem |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Core (`MockJobStore`)** | 1000 | 99.6 exec/s | 2.48% | 10.95% | 32 MB |
+| **PostgreSQL (`JdbcJobStore`)** | 1000 | 99.6 exec/s | 9.15% | 32.66% | 53 MB |
+| **Redis (`RedisJobStore`)** | 1034 | 102.9 exec/s | 10.93% | 45.00% | 60 MB |
+
+#### Backlog Drain (1,000 due `PENDING` executions, `pollBatchSize = 100`, `pollingInterval = 50ms`)
+| Store | Nodes | Drained | Drain Time | Throughput | Max Mem |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Core (`MockJobStore`)** | 1 | 1000 / 1000 | 689 ms | 1451.4 exec/s | 39 MB |
+| **PostgreSQL (`JdbcJobStore`)** | 2 | 1000 / 1000 | 1660 ms | 602.4 exec/s | 54 MB |
+| **Redis (`RedisJobStore`)** | 2 | 1000 / 1000 | 1706 ms | 586.2 exec/s | 62 MB |
+
 ## Key Observations
 
 ### 1. Database-Backed Overhead
@@ -98,9 +132,9 @@ Memory usage remains remarkably stable across all persistent stores, typically s
 
 ## Reproducing the Tests
 The performance tests are tagged with `@Tag("perf")` (excluded from default `./gradlew test` runs) in the following files:
-- **Baseline:** `khrona-core/src/test/kotlin/io/khrona/core/PollingBaselinePerfTest.kt`
-- **JDBC (H2, Postgres, MySQL):** `khrona-store-jdbc/src/test/kotlin/io/khrona/store/jdbc/JdbcPollingPerfTest.kt`
-- **Redis:** `khrona-store-redis/src/test/kotlin/io/khrona/store/redis/RedisPollingPerfTest.kt`
+- **Baseline (Idle & Active):** `khrona-core/src/test/kotlin/io/khrona/core/PollingBaselinePerfTest.kt`, `khrona-core/src/test/kotlin/io/khrona/core/ActiveLoadPerfTest.kt`
+- **JDBC (H2, Postgres, MySQL):** `khrona-store-jdbc/src/test/kotlin/io/khrona/store/jdbc/JdbcPollingPerfTest.kt`, `khrona-store-jdbc/src/test/kotlin/io/khrona/store/jdbc/JdbcActiveLoadPerfTest.kt`
+- **Redis:** `khrona-store-redis/src/test/kotlin/io/khrona/store/redis/RedisPollingPerfTest.kt`, `khrona-store-redis/src/test/kotlin/io/khrona/store/redis/RedisActiveLoadPerfTest.kt`
 
 To run these tests:
 1. Ensure Docker is running (Testcontainers automatically starts ephemeral PostgreSQL, MySQL, and Redis containers).
