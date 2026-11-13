@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ master, main ]
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -23,8 +27,35 @@ jobs:
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
 
-    - name: Run Tests
-      run: ./gradlew test --info
+    - name: Run Tests & Coverage Verification
+      run: ./gradlew test jacocoTestReport jacocoRootReport jacocoTestCoverageVerification jacocoRootCoverageVerification --info
+
+    - name: Verify Coverage Ratchet & Generate Summary
+      if: always()
+      run: |
+        set -o pipefail
+        if [ -f build/reports/jacoco/jacocoRootReport/jacocoRootReport.xml ]; then
+          python3 .github/scripts/check_coverage.py | tee -a "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Comment Coverage Report on PR
+      if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPO: ${{ github.repository }}
+      run: |
+        if [ ! -f build/reports/jacoco/coverage-summary.md ]; then
+          exit 0
+        fi
+        COMMENT_ID=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
+          --jq '.[] | select(.body | contains("<!-- khrona-coverage-report -->")) | .id' | head -n 1 || true)
+        BODY_JSON=$(python3 -c 'import json, pathlib; print(json.dumps({"body": pathlib.Path("build/reports/jacoco/coverage-summary.md").read_text()}))')
+        if [ -n "$COMMENT_ID" ]; then
+          printf '%s' "$BODY_JSON" | gh api -X PATCH "repos/${REPO}/issues/comments/${COMMENT_ID}" --input -
+        else
+          printf '%s' "$BODY_JSON" | gh api -X POST "repos/${REPO}/issues/${PR_NUMBER}/comments" --input -
+        fi
 
     - name: Upload Test Report
       if: failure()

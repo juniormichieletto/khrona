@@ -85,6 +85,26 @@ subprojects {
         }
     }
 
+    tasks.named<org.gradle.testing.jacoco.tasks.JacocoCoverageVerification>("jacocoTestCoverageVerification") {
+        dependsOn(tasks.named<Test>("test"))
+        sourceDirectories.setFrom(layout.projectDirectory.dir("src/main/kotlin"))
+        classDirectories.setFrom(layout.buildDirectory.dir("classes/kotlin/main"))
+        violationRules {
+            rule {
+                limit {
+                    counter = "LINE"
+                    value = "COVEREDRATIO"
+                    minimum = "0.90".toBigDecimal()
+                }
+                limit {
+                    counter = "BRANCH"
+                    value = "COVEREDRATIO"
+                    minimum = "0.85".toBigDecimal()
+                }
+            }
+        }
+    }
+
     configure<PublishingExtension> {
         publications {
             create<MavenPublication>("mavenJava") {
@@ -150,5 +170,36 @@ tasks.register<org.gradle.testing.jacoco.tasks.JacocoReport>("jacocoRootReport")
         xml.required.set(true)
         html.required.set(true)
         csv.required.set(false)
+    }
+}
+
+tasks.register<org.gradle.testing.jacoco.tasks.JacocoCoverageVerification>("jacocoRootCoverageVerification") {
+    group = LifecycleBasePlugin.VERIFICATION_GROUP
+    description = "Verifies aggregate JaCoCo coverage thresholds across all Khrona modules."
+
+    dependsOn(tasks.named("jacocoRootReport"))
+
+    executionData.from(subprojects.map { it.layout.buildDirectory.file("jacoco/test.exec") })
+    sourceDirectories.from(subprojects.map { it.layout.projectDirectory.dir("src/main/kotlin") })
+    classDirectories.from(subprojects.map { it.layout.buildDirectory.dir("classes/kotlin/main") })
+
+    violationRules {
+        rule {
+            limit {
+                counter = "LINE"
+                value = "COVEREDRATIO"
+                minimum = "0.95".toBigDecimal()
+            }
+            limit {
+                counter = "INSTRUCTION"
+                value = "COVEREDRATIO"
+                minimum = "0.90".toBigDecimal()
+            }
+            limit {
+                counter = "BRANCH"
+                value = "COVEREDRATIO"
+                minimum = "0.88".toBigDecimal()
+            }
+        }
     }
 }
