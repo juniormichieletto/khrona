@@ -286,4 +286,13 @@ class OracleDialect : JdbcDialect {
             )
         """.trimIndent()
     }
+
+    fun selectCompletedExecutionsForCleanupSql(statusCount: Int): String {
+        val placeholders = (1..statusCount).joinToString(",") { "?" }
+        return """
+            SELECT id FROM khrona_executions
+            WHERE status IN ($placeholders) AND completed_at < ? AND ROWNUM <= ?
+            FOR UPDATE SKIP LOCKED
+        """.trimIndent()
+    }
 }

@@ -362,6 +362,9 @@ class JdbcJobStore(
         if (statuses.isEmpty() || limit <= 0) return@inJdbcContext 0
         val dialect = getDialect()
         val statusList = statuses.toList()
+        if (dialect is OracleDialect) {
+            return@inJdbcContext cleanupOracleWithSkipLocked(dialect, before, statusList, limit)
+        }
         val sql = dialect.cleanupCompletedExecutionsSql(statusList.size)
         dataSource.connection.use { conn ->
             conn.prepareStatementWithTimeout(sql).use { stmt ->
@@ -372,6 +375,53 @@ class JdbcJobStore(
                 stmt.setTimestamp(paramIdx++, Timestamp.from(before))
                 stmt.setInt(paramIdx, limit)
                 return@inJdbcContext stmt.executeUpdate()
+            }
+        }
+    }
+
+    private fun cleanupOracleWithSkipLocked(
+        dialect: OracleDialect,
+        before: Instant,
+        statusList: List<ExecutionStatus>,
+        limit: Int
+    ): Int {
+        dataSource.connection.use { conn ->
+            val originalAutoCommit = conn.autoCommit
+            conn.autoCommit = false
+            try {
+                val idsToDelete = mutableListOf<String>()
+                val selectSql = dialect.selectCompletedExecutionsForCleanupSql(statusList.size)
+                conn.prepareStatementWithTimeout(selectSql).use { stmt ->
+                    var paramIdx = 1
+                    statusList.forEach { status ->
+                        stmt.setString(paramIdx++, status.name)
+                    }
+                    stmt.setTimestamp(paramIdx++, Timestamp.from(before))
+                    stmt.setInt(paramIdx, limit)
+                    stmt.executeQuery().use { rs ->
+                        while (rs.next()) {
+                            idsToDelete.add(rs.getString(1))
+                        }
+                    }
+                }
+                val deleted = if (idsToDelete.isEmpty()) {
+                    0
+                } else {
+                    conn.prepareStatementWithTimeout("DELETE FROM khrona_executions WHERE id = ?").use { deleteStmt ->
+                        idsToDelete.forEach { id ->
+                            deleteStmt.setString(1, id)
+                            deleteStmt.addBatch()
+                        }
+                        deleteStmt.executeBatch().sumOf { count -> if (count > 0) count else 1 }
+                    }
+                }
+                conn.commit()
+                return deleted
+            } catch (e: Exception) {
+                conn.rollback()
+                throw e
+            } finally {
+                conn.autoCommit = originalAutoCommit
             }
         }
     }

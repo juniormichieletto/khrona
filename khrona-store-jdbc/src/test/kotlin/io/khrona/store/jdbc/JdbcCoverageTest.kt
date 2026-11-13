@@ -133,6 +133,9 @@ class JdbcCoverageTest : AbstractJdbcJobStoreTest() {
         assertTrue(MySqlDialect().cleanupCompletedExecutionsSql(3).contains("FOR UPDATE SKIP LOCKED"))
         assertFalse(H2Dialect().cleanupCompletedExecutionsSql(3).contains("FOR UPDATE SKIP LOCKED"))
         assertFalse(OracleDialect().cleanupCompletedExecutionsSql(3).contains("FOR UPDATE SKIP LOCKED"))
+        val oracleSkipLockedSql = OracleDialect().selectCompletedExecutionsForCleanupSql(3)
+        assertTrue(oracleSkipLockedSql.contains("FOR UPDATE SKIP LOCKED"))
+        assertTrue(oracleSkipLockedSql.contains("ROWNUM <= ?"))
     }
 
     @Test
