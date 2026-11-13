@@ -429,6 +429,26 @@ class SchedulerTest {
             }
             Scheduler(config)
         }
+
+        assertThrows(IllegalArgumentException::class.java) {
+            val config = KhronaConfig().apply {
+                this.store = store
+                retention {
+                    cleanupJitter = -0.1
+                }
+            }
+            Scheduler(config)
+        }
+
+        assertThrows(IllegalArgumentException::class.java) {
+            val config = KhronaConfig().apply {
+                this.store = store
+                retention {
+                    cleanupJitter = 1.1
+                }
+            }
+            Scheduler(config)
+        }
     }
 
     @Test
@@ -442,6 +462,7 @@ class SchedulerTest {
                 enabled = true
                 maxAge = 10.minutes
                 cleanupInterval = 1.minutes
+                cleanupJitter = 0.0
                 batchSize = 10
             }
         }
@@ -475,6 +496,45 @@ class SchedulerTest {
         assertNotNull(store.getExecution(oldDead.id), "Dead lettered execution should be preserved")
         // Recent success should be preserved
         assertNotNull(store.getExecution(recentSuccess.id), "Recent success should be preserved")
+
+        scheduler.stop()
+    }
+
+    @Test
+    fun `scheduler retention cleanup should apply startup and interval jitter`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
+        val config = KhronaConfig().apply {
+            this.store = store
+            pollingInterval = Duration.ofSeconds(1)
+            retention {
+                enabled = true
+                maxAge = 1.minutes
+                cleanupInterval = 10.minutes
+                cleanupJitter = 0.2
+                batchSize = 10
+            }
+        }
+
+        val scheduler = Scheduler(config, backgroundScope, clock).apply {
+            random = kotlin.random.Random(42)
+        }
+
+        // Save an execution that is already older than maxAge (completed at T = 0, we'll advance 2m before starting)
+        val oldSuccess = JobExecution(jobId = "old-jitter-succ", scheduledAt = Instant.now(clock))
+        store.saveExecution(oldSuccess)
+        store.updateExecutionStatus(oldSuccess.id, ExecutionStatus.SUCCESS)
+
+        advanceTimeBy(2 * 60 * 1000L)
+        scheduler.start()
+
+        // First poll tick at T = 2m: startup jitter should defer initial cleanup beyond 0ms
+        advanceTimeBy(1_000L)
+        assertNotNull(store.getExecution(oldSuccess.id), "Startup jitter should defer initial cleanup")
+
+        // Advance past the max startup jitter window (20% of 10m = 2m)
+        advanceTimeBy(2 * 60 * 1000L)
+        assertNull(store.getExecution(oldSuccess.id), "Cleanup should run once startup jitter window elapses")
 
         scheduler.stop()
     }

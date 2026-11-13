@@ -129,6 +129,10 @@ class JdbcCoverageTest : AbstractJdbcJobStoreTest() {
             assertTrue(sql.contains("DELETE FROM khrona_executions"))
             assertTrue(sql.contains("completed_at < ?"))
         }
+        assertTrue(PostgresDialect().cleanupCompletedExecutionsSql(3).contains("FOR UPDATE SKIP LOCKED"))
+        assertTrue(MySqlDialect().cleanupCompletedExecutionsSql(3).contains("FOR UPDATE SKIP LOCKED"))
+        assertFalse(H2Dialect().cleanupCompletedExecutionsSql(3).contains("FOR UPDATE SKIP LOCKED"))
+        assertFalse(OracleDialect().cleanupCompletedExecutionsSql(3).contains("FOR UPDATE SKIP LOCKED"))
     }
 
     @Test

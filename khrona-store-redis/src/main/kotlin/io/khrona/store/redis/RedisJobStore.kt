@@ -279,33 +279,52 @@ class RedisJobStore private constructor(
         limit: Int
     ): Int = inRedisContext {
         if (statuses.isEmpty() || limit <= 0) return@inRedisContext 0
-        var cursor = io.lettuce.core.ScanCursor.INITIAL
-        val toDelete = mutableListOf<String>()
-        val statusNames = statuses.map { it.name }.toSet()
-        do {
-            val scanResult = commands.hscan(
-                keys.executions,
-                cursor,
-                io.lettuce.core.ScanArgs.Builder.limit(limit.toLong().coerceAtLeast(100))
-            )
-            cursor = scanResult
-            for ((id, jsonStr) in scanResult.map) {
-                val stored = try { json.decodeFromString<StoredExecution>(jsonStr) } catch (_: Exception) { null }
-                if (stored != null && stored.status in statusNames) {
-                    val completedAt = stored.completedAt?.let { try { Instant.parse(it) } catch (_: Exception) { null } }
-                    if (completedAt != null && completedAt < before) {
-                        toDelete.add(id)
-                        if (toDelete.size >= limit) break
+        val lockToken = UUID.randomUUID().toString()
+        val acquired = commands.set(
+            keys.cleanupLock,
+            lockToken,
+            io.lettuce.core.SetArgs.Builder.nx().px(CLEANUP_LOCK_TTL_MS)
+        ) == "OK"
+        if (!acquired) return@inRedisContext 0
+
+        try {
+            var cursor = io.lettuce.core.ScanCursor.INITIAL
+            val toDelete = mutableListOf<String>()
+            val statusNames = statuses.map { it.name }.toSet()
+            do {
+                val scanResult = commands.hscan(
+                    keys.executions,
+                    cursor,
+                    io.lettuce.core.ScanArgs.Builder.limit(limit.toLong().coerceAtLeast(100))
+                )
+                cursor = scanResult
+                for ((id, jsonStr) in scanResult.map) {
+                    val stored = try { json.decodeFromString<StoredExecution>(jsonStr) } catch (_: Exception) { null }
+                    if (stored != null && stored.status in statusNames) {
+                        val completedAt = stored.completedAt?.let { try { Instant.parse(it) } catch (_: Exception) { null } }
+                        if (completedAt != null && completedAt < before) {
+                            toDelete.add(id)
+                            if (toDelete.size >= limit) break
+                        }
                     }
                 }
-            }
-        } while (!cursor.isFinished && toDelete.size < limit)
+            } while (!cursor.isFinished && toDelete.size < limit)
 
-        if (toDelete.isNotEmpty()) {
-            commands.hdel(keys.executions, *toDelete.toTypedArray())
-            toDelete.forEach { removeFromIndexes(it) }
+            if (toDelete.isNotEmpty()) {
+                val deleted = commands.hdel(keys.executions, *toDelete.toTypedArray())
+                toDelete.forEach { removeFromIndexes(it) }
+                deleted.toInt()
+            } else {
+                0
+            }
+        } finally {
+            commands.eval<Long>(
+                RELEASE_CLEANUP_LOCK_SCRIPT,
+                ScriptOutputType.INTEGER,
+                arrayOf(keys.cleanupLock),
+                lockToken
+            )
         }
-        toDelete.size
     }
 
     override fun close() {
@@ -388,6 +407,13 @@ class RedisJobStore private constructor(
 
     companion object {
         private val log = LoggerFactory.getLogger(RedisJobStore::class.java)
+        private const val CLEANUP_LOCK_TTL_MS = 60_000L
+        private const val RELEASE_CLEANUP_LOCK_SCRIPT = """
+            if redis.call("get", KEYS[1]) == ARGV[1] then
+                return redis.call("del", KEYS[1])
+            end
+            return 0
+        """
 
         private fun createClient(config: RedisJobStoreConfig): RedisClient {
             val redisUri = RedisURI.create(config.redisUri).apply {
@@ -739,6 +765,7 @@ private data class RedisKeys(private val namespace: String) {
     val lockPrefix = "$namespace:locks:"
     val executionLocksPrefix = "$namespace:execution-locks:"
     val claimLockPrefix = "$namespace:claim-locks:"
+    val cleanupLock = "$namespace:cleanup:lock"
 
     fun lock(lockKey: String) = "$lockPrefix$lockKey"
     fun executionLocks(id: String) = "$executionLocksPrefix$id"

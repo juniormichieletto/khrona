@@ -26,6 +26,7 @@ class Scheduler(
     private var job: Job? = null
     @Volatile
     private var stopping = false
+    internal var random: kotlin.random.Random = kotlin.random.Random.Default
 
     init {
         validateConfig()
@@ -57,6 +58,9 @@ class Scheduler(
             }
             if (config.retentionPolicy.batchSize <= 0) {
                 throw IllegalArgumentException("retentionPolicy.batchSize must be positive")
+            }
+            if (config.retentionPolicy.cleanupJitter !in 0.0..1.0) {
+                throw IllegalArgumentException("retentionPolicy.cleanupJitter must be between 0.0 and 1.0")
             }
         }
     }
@@ -102,7 +106,7 @@ class Scheduler(
             }
 
             var lastRecovery = Instant.MIN
-            var lastCleanup = Instant.MIN
+            var nextCleanupAt = initialCleanupTime(Instant.now(clock))
             while (isActive) {
                 try {
                     val now = Instant.now(clock)
@@ -114,7 +118,7 @@ class Scheduler(
                     }
 
                     // Periodic cleanup of completed executions
-                    if (config.retentionPolicy.enabled && Duration.between(lastCleanup, now) > config.retentionPolicy.cleanupInterval.toJavaDuration()) {
+                    if (config.retentionPolicy.enabled && !now.isBefore(nextCleanupAt)) {
                         val cutoff = now.minus(config.retentionPolicy.maxAge.toJavaDuration())
                         var totalCleaned = 0
                         var batchCount = 0
@@ -129,7 +133,7 @@ class Scheduler(
                             if (cleaned < config.retentionPolicy.batchSize) break
                         }
                         if (totalCleaned > 0) log.info("Cleaned up $totalCleaned completed executions older than $cutoff")
-                        lastCleanup = now
+                        nextCleanupAt = nextCleanupTime(now)
                     }
 
                     pollAndExecute()
@@ -142,6 +146,23 @@ class Scheduler(
                 delay(config.pollingInterval.toMillis())
             }
         }
+    }
+
+    private fun initialCleanupTime(now: Instant): Instant {
+        val jitter = config.retentionPolicy.cleanupJitter
+        if (!config.retentionPolicy.enabled || jitter <= 0.0) return Instant.MIN
+        val intervalMillis = config.retentionPolicy.cleanupInterval.inWholeMilliseconds
+        val offsetMillis = (intervalMillis * jitter * random.nextDouble()).toLong()
+        return now.plusMillis(offsetMillis)
+    }
+
+    private fun nextCleanupTime(now: Instant): Instant {
+        val intervalMillis = config.retentionPolicy.cleanupInterval.inWholeMilliseconds
+        val jitter = config.retentionPolicy.cleanupJitter
+        if (jitter <= 0.0) return now.plusMillis(intervalMillis)
+        val factor = 1.0 + (random.nextDouble() * 2.0 - 1.0) * jitter
+        val delayMillis = (intervalMillis * factor).toLong().coerceAtLeast(1L)
+        return now.plusMillis(delayMillis)
     }
 
     private fun validateJob(jobDef: JobDefinition) {

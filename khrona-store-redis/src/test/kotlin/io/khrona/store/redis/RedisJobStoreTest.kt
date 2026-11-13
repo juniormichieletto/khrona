@@ -719,6 +719,46 @@ class RedisJobStoreTest : JobStoreContract {
         assertEquals("raw_token", toAnyMethod.invoke(instance, unquoted))
     }
 
+    @Test
+    fun `cleanupCompletedExecutions skips when cleanup lock is held and releases lock after completion`() = runBlocking {
+        val namespace = "khrona:test:${UUID.randomUUID()}"
+        val store = RedisJobStore(redisUri(), namespace = namespace).also { stores.add(it) }
+        val oldCompletedAt = Instant.now().minusSeconds(3600)
+        val exec = JobExecution(
+            jobId = "cleanup-lock-job",
+            scheduledAt = oldCompletedAt.minusSeconds(10),
+            status = ExecutionStatus.SUCCESS,
+            completedAt = oldCompletedAt
+        )
+        store.saveExecution(exec)
+
+        RedisClient.create(redisUri()).use { client ->
+            client.connect().use { conn ->
+                val sync = conn.sync()
+                sync.set("$namespace:cleanup:lock", "other-node", io.lettuce.core.SetArgs.Builder.ex(30))
+
+                val skipped = store.cleanupCompletedExecutions(
+                    before = Instant.now(),
+                    statuses = setOf(ExecutionStatus.SUCCESS),
+                    limit = 100
+                )
+                assertEquals(0, skipped)
+                assertNotNull(store.getExecution(exec.id))
+
+                sync.del("$namespace:cleanup:lock")
+
+                val cleaned = store.cleanupCompletedExecutions(
+                    before = Instant.now(),
+                    statuses = setOf(ExecutionStatus.SUCCESS),
+                    limit = 100
+                )
+                assertEquals(1, cleaned)
+                assertNull(store.getExecution(exec.id))
+                assertNull(sync.get("$namespace:cleanup:lock"))
+            }
+        }
+    }
+
     @AfterEach
     fun tearDown() {
         stores.forEach { it.close() }

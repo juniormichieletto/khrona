@@ -86,6 +86,7 @@ class PostgresDialect : JdbcDialect {
                 SELECT id FROM khrona_executions
                 WHERE status IN ($placeholders) AND completed_at < ?
                 LIMIT ?
+                FOR UPDATE SKIP LOCKED
             )
         """.trimIndent()
     }
@@ -213,6 +214,7 @@ class MySqlDialect : JdbcDialect {
                     SELECT id FROM khrona_executions
                     WHERE status IN ($placeholders) AND completed_at < ?
                     LIMIT ?
+                    FOR UPDATE SKIP LOCKED
                 ) as t
             )
         """.trimIndent()
