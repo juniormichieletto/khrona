@@ -5,13 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-Next release: **0.6.0** (minor release with breaking changes).
+## [0.6.0] - 2026-11-13
 
 ### Added
 - **Multi-Node Retention Cleanup Hardening:** Added `RetentionPolicy.cleanupJitter` (default `0.1`, i.e., 10% startup and per-interval jitter), `FOR UPDATE SKIP LOCKED` support for PostgreSQL, MySQL, and Oracle retention cleanup in `khrona-store-jdbc`, and a distributed Redis cleanup lock (`$namespace:cleanup:lock` via `SET NX PX`) in `khrona-store-redis`.
 - **Redis Store Production Hardening:** Added `RedisJobStoreConfig.clusterNamespace(namespace)` for single-slot hash-tagged namespaces (`{...}`), `KhronaRedisOomException` for explicit Redis OOM error mapping, and atomic single-round-trip Lua scripts for `saveExecution`, `listEligibleExecutions`, `isLockHeld`, and batched `cleanupCompletedExecutions` with automatic orphan and stale index self-healing.
+- **Quality & Release Gates:** Added Dockerized Ktor CLI generator E2E tests (`:khrona-ktor:e2eTest` across Memory, PostgreSQL, and Redis), active-load and 15-node cluster drain benchmarks (`perfTest`), and CI gates for JaCoCo coverage and Pitest mutation coverage (`>= 90%`).
 
 ### Changed
 - **Redis Store Production Graduation:** `khrona-store-redis` (`RedisJobStore`) has graduated from experimental to production-ready, backed by atomic single-round-trip Lua scripts, fenced heartbeats and status transitions, automatic orphan/stale index self-healing, distributed retention cleanup locking, `KhronaRedisOomException`, and 15-node cluster benchmarks.

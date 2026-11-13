@@ -56,8 +56,6 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
 
 ## Installation
 
-These examples target the upcoming **0.6.0** release, which is not yet published.
-
 Ensure `mavenCentral()` is present in your repositories:
 
 ```kotlin
@@ -797,7 +795,7 @@ For JDBC, the main database access points are:
 - [x] **v0.4:** Redis-backed `JobStore` with atomic claiming, heartbeat, recovery, and lock semantics.
 - [x] **v0.5.0:** JReleaser release flow, Flyway setup docs, misfire policy hardening.
 - [x] **v0.5.1:** Execution retention & cleanup, Kotlin Duration DSL, streamlined quick-start docs.
-- [ ] **v0.6.0:** Breaking heartbeat ownership validation and expired-lease handling, atomic Lua scripts, and production-ready `RedisJobStore` graduation.
+- [x] **v0.6.0:** Breaking heartbeat ownership validation and expired-lease handling, atomic Lua scripts, and production-ready `RedisJobStore` graduation.
 - [ ] **Future:** Core job management API, metrics (Micrometer/OpenTelemetry), lock inspection, further production hardening, testkit improvements, adaptive delay, and operator ergonomics.
 - [ ] **v0.7:** Android SQLite storage support.
 

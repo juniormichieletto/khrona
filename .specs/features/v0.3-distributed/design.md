@@ -41,7 +41,7 @@ In `Scheduler.pollAndExecute()`:
 
 ### 3. Heartbeating
 To prevent jobs from being reclaimed while still running, workers should heartbeat.
-As of the upcoming 0.6.0 release, the public SPI is:
+As of 0.6.0, the public SPI is:
 `JobStore.heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean`
 
 The `Scheduler` launches a background coroutine for each running job and passes its worker ID. Each store atomically validates active status (`CLAIMED`/`RUNNING`), matching ownership, and an unexpired lease before extending it. A failed check returns `false` without modifying the execution, and the scheduler requests cooperative cancellation of the handler.

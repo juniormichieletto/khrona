@@ -104,7 +104,7 @@ Critical atomic operations require Lua scripts with explicit input/output contra
 
 Khrona should keep explicit execution state in Redis rather than relying only on Redis key TTLs. TTLs may be useful for cleanup, but correctness should come from stored status and sorted-set lease indexes.
 
-As of the upcoming 0.6.0 release, `JobStore.heartbeat(id, workerId, leaseDuration): Boolean` executes one Lua script to:
+As of 0.6.0, `JobStore.heartbeat(id, workerId, leaseDuration): Boolean` executes one Lua script to:
 
 - verify the execution is still `CLAIMED` or `RUNNING`
 - verify that the stored `workerId` matches the supplied worker ID
