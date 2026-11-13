@@ -212,8 +212,10 @@ class KtorGeneratorDockerE2ETest {
         routingSource: String
     ): GenericContainer<*> {
         val m2Repo: Path = Paths.get(System.getProperty("user.home"), ".m2", "repository")
-        val gradleUserHome: Path = Paths.get(System.getProperty("user.home"), ".gradle")
+        val gradleUserHome: Path = System.getenv("GRADLE_USER_HOME")?.takeIf { it.isNotBlank() }?.let { Paths.get(it) }
+            ?: Paths.get(System.getProperty("user.home"), ".gradle")
         val containerGradleHome: Path = gradleUserHome.resolve("khrona-e2e-container-home")
+        Files.createDirectories(m2Repo)
         Files.createDirectories(containerGradleHome)
 
         val tempScript = Files.createTempFile("khrona-e2e-bootstrap-", ".sh")
