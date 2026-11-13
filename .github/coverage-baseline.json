@@ -1,0 +1,15 @@
+{
+  "maxDropTolerancePct": 0.20,
+  "aggregate": {
+    "LINE": 97.04,
+    "INSTRUCTION": 93.37,
+    "BRANCH": 92.10
+  },
+  "modules": {
+    "khrona-core": 93.24,
+    "khrona-ktor": 100.00,
+    "khrona-store-jdbc": 97.66,
+    "khrona-store-memory": 100.00,
+    "khrona-store-redis": 98.78
+  }
+}
