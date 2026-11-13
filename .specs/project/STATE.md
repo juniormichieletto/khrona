@@ -29,8 +29,8 @@
 - [ ] Implement Android SQLite Store (v0.7)
 
 ## Current Implementation Status
-- **Redis Store (v0.4):** Fully implemented but marked as **EXPERIMENTAL** for production workloads. The `khrona-store-redis` module exists with Lettuce, `RedisJobStoreConfig`, Redis Testcontainers coverage, shared `JobStore` contract tests, structured payload tests, namespace isolation coverage, concurrent claim contention coverage, Lua-based atomic `claimExecution` index cleanup, Lua-based atomic supersede cleanup, heartbeat lease-index coverage, multi-scheduler coverage for interval/cron/one-time/manual executions, explicit five-scheduler Redis contention coverage, running recovery, FORBID/REPLACE locking, retries, dead-lettering, misfires, recurring next-run persistence, and README/architecture operations docs. `./gradlew clean test` passes.
-- **Redis remaining work:** Optional command-latency observability hook and long-term production hardening.
+- **Redis Store (v0.4 -> v0.6.0):** Production-ready (graduated in v0.6.0). Uses Lettuce, `RedisJobStoreConfig`, `RedisJobStoreConfig.clusterNamespace(namespace)`, `KhronaRedisOomException`, single-round-trip atomic Lua scripts across `saveExecution`, `claimExecution`, `heartbeat`, `updateExecutionStatus`, `resetExpiredExecutions`, `listEligibleExecutions`, `isLockHeld`, `supersedeExecutionsByLockKey`, and chunked `cleanupCompletedExecutions` (with `$namespace:cleanup:lock` and automatic orphan/stale index self-healing), verified by `RedisJobStoreTest`, shared `JobStoreContract`, Dockerized Ktor E2E tests, and 1/2/15-node cluster drain benchmarks. `./gradlew clean test` passes.
+- **Redis remaining work:** Optional command-latency observability hook (Micrometer/OpenTelemetry) planned alongside core metrics.
 ## Next Tasks
 - [ ] Implement Core Job Management API (v0.5)
 - [ ] Implement Metrics (Micrometer) (v0.5)

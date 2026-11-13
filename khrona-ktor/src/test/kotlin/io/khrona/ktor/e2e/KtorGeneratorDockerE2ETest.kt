@@ -185,15 +185,21 @@ class KtorGeneratorDockerE2ETest {
 
                             val status = awaitStatus(baseUrl) { json ->
                                 json["intervalRuns"]?.jsonPrimitive?.int ?: 0 >= 2 &&
+                                    json["replaceCancelledFirst"]?.jsonPrimitive?.boolean == true &&
+                                    json["replaceCompletedSecond"]?.jsonPrimitive?.boolean == true &&
                                     json["heartbeatExtended"]?.jsonPrimitive?.boolean == true &&
                                     json["staleRecovered"]?.jsonPrimitive?.boolean == true &&
                                     json["replaceSuperseded"]?.jsonPrimitive?.boolean == true &&
+                                    json["retentionCleaned"]?.jsonPrimitive?.boolean == true &&
                                     json["fencingVerified"]?.jsonPrimitive?.boolean == true
                             }
 
+                            assertTrue(status["replaceCancelledFirst"]?.jsonPrimitive?.boolean == true)
+                            assertTrue(status["replaceCompletedSecond"]?.jsonPrimitive?.boolean == true)
                             assertTrue(status["heartbeatExtended"]?.jsonPrimitive?.boolean == true)
                             assertTrue(status["staleRecovered"]?.jsonPrimitive?.boolean == true)
                             assertTrue(status["replaceSuperseded"]?.jsonPrimitive?.boolean == true)
+                            assertTrue(status["retentionCleaned"]?.jsonPrimitive?.boolean == true)
                             assertTrue(status["fencingVerified"]?.jsonPrimitive?.boolean == true)
                         }
                 }
@@ -206,8 +212,10 @@ class KtorGeneratorDockerE2ETest {
         routingSource: String
     ): GenericContainer<*> {
         val m2Repo: Path = Paths.get(System.getProperty("user.home"), ".m2", "repository")
-        val gradleUserHome: Path = Paths.get(System.getProperty("user.home"), ".gradle")
+        val gradleUserHome: Path = System.getenv("GRADLE_USER_HOME")?.takeIf { it.isNotBlank() }?.let { Paths.get(it) }
+            ?: Paths.get(System.getProperty("user.home"), ".gradle")
         val containerGradleHome: Path = gradleUserHome.resolve("khrona-e2e-container-home")
+        Files.createDirectories(m2Repo)
         Files.createDirectories(containerGradleHome)
 
         val tempScript = Files.createTempFile("khrona-e2e-bootstrap-", ".sh")
@@ -318,6 +326,10 @@ class KtorGeneratorDockerE2ETest {
                 pollingInterval(100.milliseconds)
                 executionLeaseDuration(5.seconds)
                 heartbeatInterval(1.seconds)
+                retention {
+                    enabled = true
+                    cleanupJitter = 0.1
+                }
             }
 
             runBlocking {
@@ -391,16 +403,24 @@ class KtorGeneratorDockerE2ETest {
                     }
                 }
 
-                // EC-A3 & EC-A5: Verify heartbeat & status transition fencing directly against the store
+                // EC-A3 & EC-A5: Verify heartbeat, status transition fencing, and saveExecution startup race protection directly against the store
                 val fencedExec = JobExecution(jobId = "fenced-direct", scheduledAt = Instant.now())
                 store.saveExecution(fencedExec)
                 val claimed1 = store.claimExecution(fencedExec.id, "worker-1", Duration.ofSeconds(-5))
                 val expiredHbRejected = !store.heartbeat(fencedExec.id, "worker-1", Duration.ofMinutes(1))
                 val claimed2 = store.claimExecution(fencedExec.id, "worker-2", Duration.ofMinutes(1))
+                store.saveExecution(fencedExec.copy(status = ExecutionStatus.PENDING, workerId = null, expiresAt = null))
+                val latePendingIgnoredWhileClaimed = store.getExecution(fencedExec.id)?.status == ExecutionStatus.CLAIMED &&
+                    store.getExecution(fencedExec.id)?.workerId == "worker-2"
                 val staleHbRejected = !store.heartbeat(fencedExec.id, "worker-1", Duration.ofMinutes(1))
                 val staleStatusRejected = !store.updateExecutionStatus(fencedExec.id, ExecutionStatus.SUCCESS, workerId = "worker-1")
                 val ownerStatusAccepted = store.updateExecutionStatus(fencedExec.id, ExecutionStatus.SUCCESS, workerId = "worker-2")
-                fencingPassed.set(claimed1 && expiredHbRejected && claimed2 && staleHbRejected && staleStatusRejected && ownerStatusAccepted)
+                store.saveExecution(fencedExec.copy(status = ExecutionStatus.PENDING, workerId = null, expiresAt = null))
+                val latePendingIgnoredWhileTerminal = store.getExecution(fencedExec.id)?.status == ExecutionStatus.SUCCESS
+                fencingPassed.set(
+                    claimed1 && expiredHbRejected && claimed2 && latePendingIgnoredWhileClaimed &&
+                        staleHbRejected && staleStatusRejected && ownerStatusAccepted && latePendingIgnoredWhileTerminal
+                )
             }
 
             routing {
@@ -471,6 +491,9 @@ class KtorGeneratorDockerE2ETest {
                 password = System.getenv("DB_PASSWORD")
                 maximumPoolSize = 5
             })
+            monitor.subscribe(ApplicationStopped) {
+                hikari.close()
+            }
             val store = JdbcJobStore(hikari)
 
             val intervalRuns = AtomicInteger(0)
@@ -496,6 +519,10 @@ class KtorGeneratorDockerE2ETest {
                 misfireThreshold(2.seconds)
                 executionLeaseDuration(5.seconds)
                 heartbeatInterval(1.seconds)
+                retention {
+                    enabled = true
+                    cleanupJitter = 0.1
+                }
             }
 
             runBlocking {
@@ -541,24 +568,47 @@ class KtorGeneratorDockerE2ETest {
                 // Enqueue a stale execution for misfire IGNORE verification
                 store.saveExecution(staleMisfire)
 
-                // Verify FORBID lock mutual exclusion, retention cleanup, and fencing on PostgreSQL
+                // Verify FORBID lock mutual exclusion, startup save race protection, SKIP LOCKED retention cleanup, and fencing on PostgreSQL
                 val forbidExec = JobExecution(jobId = "forbid-check", scheduledAt = Instant.now(), lockKey = "pg-shared-lock")
                 store.saveExecution(forbidExec)
                 val claimed = store.claimExecution(forbidExec.id, "pg-worker-1", Duration.ofMinutes(1))
+                store.saveExecution(forbidExec.copy(status = ExecutionStatus.PENDING, workerId = null, expiresAt = null))
+                val latePendingIgnoredWhileClaimed = store.getExecution(forbidExec.id)?.status == ExecutionStatus.CLAIMED &&
+                    store.getExecution(forbidExec.id)?.workerId == "pg-worker-1"
                 val lockHeldForOthers = store.isLockHeld("pg-shared-lock")
                 val lockNotHeldForSelf = !store.isLockHeld("pg-shared-lock", excludeExecutionId = forbidExec.id)
                 val wrongWorkerStatusRejected = !store.updateExecutionStatus(forbidExec.id, ExecutionStatus.SUCCESS, workerId = "pg-worker-2")
                 val rightWorkerStatusAccepted = store.updateExecutionStatus(forbidExec.id, ExecutionStatus.SUCCESS, workerId = "pg-worker-1")
+                store.saveExecution(forbidExec.copy(status = ExecutionStatus.PENDING, workerId = null, expiresAt = null))
+                val latePendingIgnoredWhileSuccess = store.getExecution(forbidExec.id)?.status == ExecutionStatus.SUCCESS
                 forbidVerified.set(claimed && lockHeldForOthers && lockNotHeldForSelf)
-                fencingVerified.set(wrongWorkerStatusRejected && rightWorkerStatusAccepted)
-
-                // UC-12 & EC-D3: Retention cleanup on PostgreSQL
-                val cleaned = store.cleanupCompletedExecutions(
-                    before = Instant.now().plusSeconds(60),
-                    statuses = setOf(ExecutionStatus.SUCCESS),
-                    limit = 100
+                fencingVerified.set(
+                    latePendingIgnoredWhileClaimed && wrongWorkerStatusRejected &&
+                        rightWorkerStatusAccepted && latePendingIgnoredWhileSuccess
                 )
-                retentionCleaned.set(cleaned >= 1 && store.getExecution(forbidExec.id) == null)
+
+                // UC-12 & EC-D3: Retention cleanup with FOR UPDATE SKIP LOCKED contention on PostgreSQL
+                val lockedExec = JobExecution(jobId = "pg-locked-cleanup", scheduledAt = Instant.now().minusSeconds(10))
+                store.saveExecution(lockedExec)
+                store.updateExecutionStatus(lockedExec.id, ExecutionStatus.SUCCESS)
+                val skipLockedCleanupPassed = hikari.connection.use { lockConn ->
+                    lockConn.autoCommit = false
+                    try {
+                        lockConn.prepareStatement("SELECT id FROM khrona_executions WHERE id = ? FOR UPDATE").use { stmt ->
+                            stmt.setString(1, lockedExec.id.toString())
+                            stmt.executeQuery().use { it.next() }
+                        }
+                        val cleaned = store.cleanupCompletedExecutions(
+                            before = Instant.now().plusSeconds(60),
+                            statuses = setOf(ExecutionStatus.SUCCESS),
+                            limit = 1
+                        )
+                        cleaned == 1 && store.getExecution(forbidExec.id) == null && store.getExecution(lockedExec.id) != null
+                    } finally {
+                        lockConn.rollback()
+                    }
+                }
+                retentionCleaned.set(skipLockedCleanupPassed)
 
                 // Trigger REPLACE execution #1, then #2 shortly after once ApplicationStarted fires
                 val khronaScheduler = this@configureRouting.plugin(KhronaPlugin).scheduler
@@ -600,10 +650,14 @@ class KtorGeneratorDockerE2ETest {
         import io.khrona.core.*
         import io.khrona.ktor.*
         import io.khrona.store.redis.RedisJobStore
+        import io.khrona.store.redis.RedisJobStoreConfig
         import io.ktor.http.*
         import io.ktor.server.application.*
         import io.ktor.server.response.*
         import io.ktor.server.routing.*
+        import kotlinx.coroutines.CancellationException
+        import kotlinx.coroutines.delay
+        import kotlinx.coroutines.launch
         import kotlinx.coroutines.runBlocking
         import java.time.Duration
         import java.time.Instant
@@ -613,11 +667,23 @@ class KtorGeneratorDockerE2ETest {
         import kotlin.time.Duration.Companion.seconds
 
         fun Application.configureRouting() {
-            val store = RedisJobStore(System.getenv("REDIS_URI"), namespace = "khrona-e2e")
+            val store = RedisJobStore(
+                RedisJobStoreConfig(
+                    redisUri = System.getenv("REDIS_URI"),
+                    namespace = RedisJobStoreConfig.clusterNamespace("khrona-e2e")
+                )
+            )
+            monitor.subscribe(ApplicationStopped) {
+                store.close()
+            }
             val intervalRuns = AtomicInteger(0)
+            val replaceCount = AtomicInteger(0)
+            val replaceCancelledFirst = AtomicBoolean(false)
+            val replaceCompletedSecond = AtomicBoolean(false)
             val heartbeatExtended = AtomicBoolean(false)
             val staleRecovered = AtomicBoolean(false)
             val replaceSuperseded = AtomicBoolean(false)
+            val retentionCleaned = AtomicBoolean(false)
             val fencingVerified = AtomicBoolean(false)
 
             installKhrona {
@@ -625,6 +691,10 @@ class KtorGeneratorDockerE2ETest {
                 pollingInterval(100.milliseconds)
                 executionLeaseDuration(5.seconds)
                 heartbeatInterval(1.seconds)
+                retention {
+                    enabled = true
+                    cleanupJitter = 0.1
+                }
             }
 
             runBlocking {
@@ -637,12 +707,36 @@ class KtorGeneratorDockerE2ETest {
                             intervalRuns.incrementAndGet()
                         }
                     }
+
+                    // UC-6 & EC-B3/B4: REPLACE concurrency policy over Redis
+                    job("redis-replace") {
+                        at(Instant.now().plus(Duration.ofDays(365)))
+                        concurrencyPolicy = ConcurrencyPolicy.REPLACE
+                        lockKey = "redis-replace-e2e-lock"
+                        execute {
+                            val runNumber = replaceCount.incrementAndGet()
+                            if (runNumber == 1) {
+                                try {
+                                    delay(10_000)
+                                } catch (e: CancellationException) {
+                                    replaceCancelledFirst.set(true)
+                                    throw e
+                                }
+                            } else {
+                                delay(100)
+                                replaceCompletedSecond.set(true)
+                            }
+                        }
+                    }
                 }
 
-                // Verify atomic claiming, heartbeat renewal, RUNNING status transition preserving lease, and fencing in Redis
+                // Verify atomic claiming, startup save race protection, heartbeat renewal, RUNNING status transition preserving lease, and fencing in Redis
                 val exec = JobExecution(jobId = "redis-direct", scheduledAt = Instant.now(), lockKey = "redis-lock")
                 store.saveExecution(exec)
                 val claimed = store.claimExecution(exec.id, "redis-worker-1", Duration.ofSeconds(5))
+                store.saveExecution(exec.copy(status = ExecutionStatus.PENDING, workerId = null, expiresAt = null))
+                val latePendingIgnoredWhileClaimed = store.getExecution(exec.id)?.status == ExecutionStatus.CLAIMED &&
+                    store.getExecution(exec.id)?.workerId == "redis-worker-1"
                 val initialExpiry = store.getExecution(exec.id)?.expiresAt!!
                 val runningTransition = store.updateExecutionStatus(exec.id, ExecutionStatus.RUNNING, workerId = "redis-worker-1")
                 val hbSuccess = store.heartbeat(exec.id, "redis-worker-1", Duration.ofMinutes(2))
@@ -651,12 +745,25 @@ class KtorGeneratorDockerE2ETest {
                 val wrongWorkerStatus = !store.updateExecutionStatus(exec.id, ExecutionStatus.SUCCESS, workerId = "redis-worker-2")
                 heartbeatExtended.set(claimed && runningTransition && hbSuccess && extendedExpiry.isAfter(initialExpiry))
 
-                // Supersede by lock key and verify former owner can no longer heartbeat or complete
+                // Supersede by lock key and verify former owner can no longer heartbeat or complete, nor be overwritten by late PENDING save
                 val supersededIds = store.supersedeExecutionsByLockKey("redis-lock")
+                store.saveExecution(exec.copy(status = ExecutionStatus.PENDING, workerId = null, expiresAt = null))
+                val latePendingIgnoredWhileSuperseded = store.getExecution(exec.id)?.status == ExecutionStatus.SUPERSEDED
                 val hbAfterSupersede = !store.heartbeat(exec.id, "redis-worker-1", Duration.ofMinutes(2))
                 val statusAfterSupersede = !store.updateExecutionStatus(exec.id, ExecutionStatus.SUCCESS, workerId = "redis-worker-1")
                 replaceSuperseded.set(supersededIds == listOf(exec.id) && store.getExecution(exec.id)?.status == ExecutionStatus.SUPERSEDED)
-                fencingVerified.set(wrongWorkerHb && wrongWorkerStatus && hbAfterSupersede && statusAfterSupersede)
+                fencingVerified.set(
+                    latePendingIgnoredWhileClaimed && latePendingIgnoredWhileSuperseded &&
+                        wrongWorkerHb && wrongWorkerStatus && hbAfterSupersede && statusAfterSupersede
+                )
+
+                // Verify Redis retention cleanup on SUPERSEDED executions
+                val cleaned = store.cleanupCompletedExecutions(
+                    before = Instant.now().plusSeconds(60),
+                    statuses = setOf(ExecutionStatus.SUPERSEDED),
+                    limit = 10
+                )
+                retentionCleaned.set(cleaned >= 1 && store.getExecution(exec.id) == null)
 
                 // Verify atomic resetExpiredExecutions on Redis
                 val expiredExec = JobExecution(
@@ -670,6 +777,17 @@ class KtorGeneratorDockerE2ETest {
                 store.saveExecution(expiredExec)
                 val recovered = store.resetExpiredExecutions(Instant.now())
                 staleRecovered.set(recovered == 1 && store.getExecution(expiredExec.id)?.status == ExecutionStatus.PENDING)
+
+                // Trigger REPLACE execution #1, then #2 shortly after once ApplicationStarted fires
+                val khronaScheduler = this@configureRouting.plugin(KhronaPlugin).scheduler
+                this@configureRouting.monitor.subscribe(ApplicationStarted) { app ->
+                    app.launch {
+                        delay(200)
+                        khronaScheduler.trigger("redis-replace")
+                        delay(400)
+                        khronaScheduler.trigger("redis-replace")
+                    }
+                }
             }
 
             routing {
@@ -680,9 +798,12 @@ class KtorGeneratorDockerE2ETest {
                 get("/status") {
                     val body = ""${'"'}{
                         "intervalRuns": ${'$'}{intervalRuns.get()},
+                        "replaceCancelledFirst": ${'$'}{replaceCancelledFirst.get()},
+                        "replaceCompletedSecond": ${'$'}{replaceCompletedSecond.get()},
                         "heartbeatExtended": ${'$'}{heartbeatExtended.get()},
                         "staleRecovered": ${'$'}{staleRecovered.get()},
                         "replaceSuperseded": ${'$'}{replaceSuperseded.get()},
+                        "retentionCleaned": ${'$'}{retentionCleaned.get()},
                         "fencingVerified": ${'$'}{fencingVerified.get()}
                     }""${'"'}.trimIndent()
                     call.respondText(body, ContentType.Application.Json)

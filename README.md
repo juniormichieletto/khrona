@@ -50,7 +50,7 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
   - **Concurrency Control:** Manage overlapping executions with `FORBID` or `REPLACE` policies.
   - **Misfire Policies:** Handle delayed executions (FIRE_NOW or IGNORE).
 - **💾 Persistence Support:** Durable job storage using JDBC (PostgreSQL, MySQL, Oracle, H2).
-- **⚡ Redis Store (Experimental):** Redis-backed coordination with atomic claiming, leases, recovery, and lock replacement.
+- **⚡ Redis Store:** Production-ready Redis coordination with atomic Lua claiming, fenced leases, stale recovery, lock replacement, and retention cleanup.
 - **🌐 Distributed Ready:** Multi-node deployment support with deterministic IDs and distributed locking.
 - **🔌 Ktor Integration:** First-class Ktor plugin with seamless lifecycle management.
 
@@ -76,7 +76,7 @@ dependencies {
     // Choose your storage backend:
     implementation("io.github.juniormichieletto:khrona-store-memory:0.6.0") // Dev / testing
     implementation("io.github.juniormichieletto:khrona-store-jdbc:0.6.0")   // Production JDBC
-    // implementation("io.github.juniormichieletto:khrona-store-redis:0.6.0") // Experimental Redis coordination
+    // implementation("io.github.juniormichieletto:khrona-store-redis:0.6.0") // Production Redis store
 
     // When using JDBC, add the driver for your database:
     runtimeOnly("org.postgresql:postgresql:42.7.5")           // PostgreSQL
@@ -228,8 +228,6 @@ install(Khrona) {
 The SQL above matches the built-in `khrona_schema.sql` resource used by `store.migrate()`. Adapt the column types for databases that need dialect-specific changes, such as using `CLOB` instead of `TEXT` on Oracle.
 
 ## Persistent Storage (Redis)
-
-> **Experimental:** `RedisJobStore` is fully implemented and covered by integration tests, but it is currently marked as **experimental for production workloads**. Please validate it under your own Redis persistence, eviction, failover, and load settings before relying on it for critical scheduling.
 
 Redis can be used as a full `JobStore` when low-latency distributed coordination is preferred over JDBC. The Redis store persists job definitions and executions, uses sorted sets for bounded polling and lease recovery, and uses Lua scripts for atomic claim and replacement transitions.
 
@@ -796,10 +794,10 @@ For JDBC, the main database access points are:
 - [x] **v0.2:** Persistence support (Postgres, H2), retries, and dead-letter handling.
 - [x] **v0.3:** Distributed execution, lease-based claiming, and concurrency policies.
 - [x] **v0.3.3:** Reliability hardening (Registry, Timeouts, Atomic REPLACE).
-- [x] **v0.4:** Redis-backed `JobStore` with atomic claiming, heartbeat, recovery, and lock semantics. **(Experimental for production use)**
+- [x] **v0.4:** Redis-backed `JobStore` with atomic claiming, heartbeat, recovery, and lock semantics.
 - [x] **v0.5.0:** JReleaser release flow, Flyway setup docs, misfire policy hardening.
 - [x] **v0.5.1:** Execution retention & cleanup, Kotlin Duration DSL, streamlined quick-start docs.
-- [ ] **v0.6.0:** Breaking heartbeat ownership validation and expired-lease handling, with atomic Redis renewal.
+- [ ] **v0.6.0:** Breaking heartbeat ownership validation and expired-lease handling, atomic Lua scripts, and production-ready `RedisJobStore` graduation.
 - [ ] **Future:** Core job management API, metrics (Micrometer/OpenTelemetry), lock inspection, further production hardening, testkit improvements, adaptive delay, and operator ergonomics.
 - [ ] **v0.7:** Android SQLite storage support.
 
