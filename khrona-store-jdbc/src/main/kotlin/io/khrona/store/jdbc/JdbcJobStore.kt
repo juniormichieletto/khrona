@@ -392,14 +392,14 @@ class JdbcJobStore(
                 val idsToDelete = mutableListOf<String>()
                 val selectSql = dialect.selectCompletedExecutionsForCleanupSql(statusList.size)
                 conn.prepareStatementWithTimeout(selectSql).use { stmt ->
+                    stmt.fetchSize = limit.coerceIn(1, 1000)
                     var paramIdx = 1
                     statusList.forEach { status ->
                         stmt.setString(paramIdx++, status.name)
                     }
-                    stmt.setTimestamp(paramIdx++, Timestamp.from(before))
-                    stmt.setInt(paramIdx, limit)
+                    stmt.setTimestamp(paramIdx, Timestamp.from(before))
                     stmt.executeQuery().use { rs ->
-                        while (rs.next()) {
+                        while (rs.next() && idsToDelete.size < limit) {
                             idsToDelete.add(rs.getString(1))
                         }
                     }
@@ -412,7 +412,13 @@ class JdbcJobStore(
                             deleteStmt.setString(1, id)
                             deleteStmt.addBatch()
                         }
-                        deleteStmt.executeBatch().sumOf { count -> if (count > 0) count else 1 }
+                        deleteStmt.executeBatch().sumOf { count ->
+                            when {
+                                count > 0 -> count
+                                count == java.sql.Statement.SUCCESS_NO_INFO -> 1
+                                else -> 0
+                            }
+                        }
                     }
                 }
                 conn.commit()

@@ -22,7 +22,13 @@ class MemoryJobStore : JobStore {
     override suspend fun listJobs(): List<JobDefinition> = jobs.values.toList()
 
     override suspend fun saveExecution(execution: JobExecution) {
-        executions[execution.id] = execution
+        executions.compute(execution.id) { _, existing ->
+            if (existing != null && execution.status == ExecutionStatus.PENDING && existing.status != ExecutionStatus.PENDING) {
+                existing
+            } else {
+                execution
+            }
+        }
     }
 
     override suspend fun updateExecutionStatus(

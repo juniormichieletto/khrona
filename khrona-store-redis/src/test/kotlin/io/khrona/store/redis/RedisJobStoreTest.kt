@@ -759,6 +759,142 @@ class RedisJobStoreTest : JobStoreContract {
         }
     }
 
+    @Test
+    fun `saveExecution with PENDING does not overwrite an already CLAIMED or RUNNING execution`() = runTest {
+        val namespace = "save-vs-claim-${UUID.randomUUID()}"
+        val store = RedisJobStore(redisUri(), namespace = namespace).also { stores.add(it) }
+        val now = Instant.now()
+        val initial = JobExecution(
+            id = UUID.randomUUID(),
+            jobId = "startup-race-job",
+            scheduledAt = now.minusSeconds(1),
+            status = ExecutionStatus.PENDING
+        )
+        store.saveExecution(initial)
+        assertTrue(store.claimExecution(initial.id, "worker-a", Duration.ofMinutes(5)))
+
+        // Simulate a second scheduler node attempting to save the initial deterministic PENDING execution late
+        store.saveExecution(initial.copy(status = ExecutionStatus.PENDING, workerId = null, expiresAt = null))
+
+        val current = store.getExecution(initial.id)
+        assertEquals(ExecutionStatus.CLAIMED, current?.status)
+        assertEquals("worker-a", current?.workerId)
+        assertNotNull(redisScoreOrNull(namespace, "claimed", initial.id))
+        assertNull(redisScoreOrNull(namespace, "pending", initial.id))
+    }
+
+    @Test
+    fun `listEligibleExecutions resetExpiredExecutions and isLockHeld self-heal orphan index entries`() = runTest {
+        val namespace = "self-heal-${UUID.randomUUID()}"
+        val store = RedisJobStore(redisUri(), namespace = namespace).also { stores.add(it) }
+        val now = Instant.now()
+        val orphanPending = UUID.randomUUID()
+        val orphanClaimed = UUID.randomUUID()
+        val orphanRunning = UUID.randomUUID()
+        val orphanLockHolder = UUID.randomUUID()
+        val staleTerminalInPending = JobExecution(
+            jobId = "stale-terminal-job",
+            scheduledAt = now.minusSeconds(20),
+            status = ExecutionStatus.SUCCESS,
+            completedAt = now.minusSeconds(5)
+        )
+        val realDue = JobExecution(
+            jobId = "real-due-job",
+            scheduledAt = now.minusSeconds(1),
+            status = ExecutionStatus.PENDING
+        )
+        store.saveExecution(staleTerminalInPending)
+        store.saveExecution(realDue)
+
+        RedisClient.create(redisUri()).use { client ->
+            client.connect().use { conn ->
+                val sync = conn.sync()
+                val pastScore = now.minusSeconds(10).toEpochMilli().toDouble()
+                sync.zadd("$namespace:pending", pastScore, orphanPending.toString())
+                sync.zadd("$namespace:pending", pastScore - 1000.0, staleTerminalInPending.id.toString())
+                sync.zadd("$namespace:claimed", pastScore, orphanClaimed.toString())
+                sync.zadd("$namespace:running", pastScore, orphanRunning.toString())
+                sync.sadd("$namespace:locks:heal-lock", orphanLockHolder.toString())
+            }
+        }
+
+        assertEquals(emptyList<JobExecution>(), store.listEligibleExecutions(now, limit = 0))
+        assertEquals(emptyList<JobExecution>(), store.listEligibleExecutions(now, limit = -1))
+
+        // Even with limit = 1, the orphan and stale terminal entry in pending must be evicted and realDue must be returned
+        val eligible = store.listEligibleExecutions(now, limit = 1)
+        assertEquals(listOf(realDue.id), eligible.map { it.id })
+        assertNull(redisScoreOrNull(namespace, "pending", orphanPending))
+        assertNull(redisScoreOrNull(namespace, "pending", staleTerminalInPending.id))
+
+        // resetExpiredExecutions must evict orphan claimed/running entries
+        assertEquals(0, store.resetExpiredExecutions(now))
+        assertNull(redisScoreOrNull(namespace, "claimed", orphanClaimed))
+        assertNull(redisScoreOrNull(namespace, "running", orphanRunning))
+
+        // isLockHeld must evict orphan lock member and return false
+        assertFalse(store.isLockHeld("heal-lock"))
+        assertTrue(redisLockMembers(namespace, "heal-lock").isEmpty())
+    }
+
+    @Test
+    fun `inRedisContext maps Redis OOM errors to KhronaRedisOomException`() = runTest {
+        val namespace = "oom-test-${UUID.randomUUID()}"
+        val store = RedisJobStore(redisUri(), namespace = namespace).also { stores.add(it) }
+        RedisClient.create(redisUri()).use { client ->
+            client.connect().use { conn ->
+                val sync = conn.sync()
+                try {
+                    sync.configSet("maxmemory", "100")
+                    sync.configSet("maxmemory-policy", "noeviction")
+                    assertThrows(KhronaRedisOomException::class.java) {
+                        runBlocking {
+                            store.saveExecution(
+                                JobExecution(
+                                    jobId = "oom-job",
+                                    scheduledAt = Instant.now(),
+                                    payload = "x".repeat(4096)
+                                )
+                            )
+                        }
+                    }
+                } finally {
+                    sync.configSet("maxmemory", "0")
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `clusterNamespace wraps namespace in hash tag and maps all store keys to identical cluster keyslot`() {
+        val clusterNs = RedisJobStoreConfig.clusterNamespace("khrona-prod")
+        assertEquals("{khrona-prod}", clusterNs)
+        assertEquals("{already-tagged}", RedisJobStoreConfig.clusterNamespace("{already-tagged}"))
+        assertThrows(IllegalArgumentException::class.java) {
+            RedisJobStoreConfig.clusterNamespace("   ")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            RedisJobStoreConfig.clusterNamespace("{}bad")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            RedisJobStoreConfig.clusterNamespace("}bad{")
+        }
+
+        val keys = listOf(
+            "$clusterNs:jobs",
+            "$clusterNs:executions",
+            "$clusterNs:pending",
+            "$clusterNs:claimed",
+            "$clusterNs:running",
+            "$clusterNs:cleanup:lock",
+            "$clusterNs:locks:my-lock",
+            "$clusterNs:execution-locks:123",
+            "$clusterNs:claim-locks:123"
+        )
+        val slots = keys.map { io.lettuce.core.cluster.SlotHash.getSlot(it) }.toSet()
+        assertEquals(1, slots.size, "All keys in a hash-tagged namespace must map to the exact same Redis Cluster slot")
+    }
+
     @AfterEach
     fun tearDown() {
         stores.forEach { it.close() }
@@ -776,6 +912,14 @@ class RedisJobStoreTest : JobStoreContract {
     )
 
     private fun redisScore(namespace: String, index: String, id: UUID): Double {
+        RedisClient.create(redisUri()).use { client ->
+            client.connect().use { connection ->
+                return connection.sync().zscore("$namespace:$index", id.toString())
+            }
+        }
+    }
+
+    private fun redisScoreOrNull(namespace: String, index: String, id: UUID): Double? {
         RedisClient.create(redisUri()).use { client ->
             client.connect().use { connection ->
                 return connection.sync().zscore("$namespace:$index", id.toString())

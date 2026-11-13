@@ -299,7 +299,8 @@ Operational requirements:
 
 - Enable Redis persistence (`AOF` or appropriate `RDB`) if scheduled state must survive Redis restarts.
 - Do not use an eviction policy that can evict Khrona keys. Prefer dedicated Redis memory or `noeviction` for scheduler data.
-- Keep `namespace` unique per environment or tenant to avoid cross-application key collisions.
+- Keep `namespace` unique per environment or tenant to avoid cross-application key collisions. Use `RedisJobStoreConfig.clusterNamespace("khrona-prod")` (`"{khrona-prod}"`) when routing through a single-slot Redis Cluster proxy so all store keys hash to the same slot.
+- Redis `OOM` responses are mapped to `KhronaRedisOomException` for explicit alerting and diagnosis when `maxmemory-policy noeviction` is reached.
 - Automated terminal-execution cleanup runs in the background according to your configured `retention` policy (default: 14 days, purging `SUCCESS`, `FAILED`, `MISFIRED`, and `SUPERSEDED` records). `DEAD_LETTERED` records are preserved by default for operator review.
 
 ## MySQL 8 & Multi-Node Testing

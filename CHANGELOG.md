@@ -11,6 +11,7 @@ Next release: **0.6.0** (minor release with breaking changes).
 
 ### Added
 - **Multi-Node Retention Cleanup Hardening:** Added `RetentionPolicy.cleanupJitter` (default `0.1`, i.e., 10% startup and per-interval jitter), `FOR UPDATE SKIP LOCKED` support for PostgreSQL, MySQL, and Oracle retention cleanup in `khrona-store-jdbc`, and a distributed Redis cleanup lock (`$namespace:cleanup:lock` via `SET NX PX`) in `khrona-store-redis`.
+- **Redis Store Production Hardening:** Added `RedisJobStoreConfig.clusterNamespace(namespace)` for single-slot hash-tagged namespaces (`{...}`), `KhronaRedisOomException` for explicit Redis OOM error mapping, and atomic single-round-trip Lua scripts for `saveExecution`, `listEligibleExecutions`, `isLockHeld`, and batched `cleanupCompletedExecutions` with automatic orphan and stale index self-healing.
 
 ### Changed
 - **Breaking — custom JobStore implementations:** `heartbeat(id: UUID, leaseDuration: Duration)` is replaced by `heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean`, and `updateExecutionStatus(id: UUID, status: ExecutionStatus, error: String?)` is replaced by `updateExecutionStatus(id: UUID, status: ExecutionStatus, error: String? = null, workerId: String? = null): Boolean`. Implementations and direct callers must update and recompile. Renew or transition only when the execution is `CLAIMED`/`RUNNING` and the stored owner matches `workerId` (plus an unexpired lease for `heartbeat`); validate and update atomically. See the [migration notes](README.md#upgrading-to-060).
@@ -24,6 +25,7 @@ Next release: **0.6.0** (minor release with breaking changes).
 - Redis `resetExpiredExecutions` now resets each expired execution via an atomic Lua script that verifies active status and expired sorted-set score before resetting, preventing stale recovery from clobbering a concurrent reclaim.
 - Memory, JDBC, and Redis heartbeats and status transitions (`RUNNING`, `SUCCESS`, `FAILED`, `DEAD_LETTERED`, `MISFIRED`, `PENDING`) now validate per-claim ownership (`<workerId>:<claimId>`), preventing stale claims from overwriting reclaimed/superseded state or scheduling duplicate retries and next recurring runs.
 - `Scheduler.pollAndExecute()` and `stop()` now track claims immediately upon `claimExecution` with per-claim tokens and release any claimed-before-launched execution back to `PENDING` if shutdown interrupts post-claim setup.
+- `saveExecution` across `MemoryJobStore`, `JdbcJobStore` (PostgreSQL, MySQL, Oracle, H2), and `RedisJobStore` no longer overwrites an already claimed, running, or completed execution when a competing node saves a delayed deterministic `PENDING` execution.
 
 ## [0.5.1] - 2026-10-01
 

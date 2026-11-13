@@ -126,7 +126,7 @@ class JdbcCoverageTest : AbstractJdbcJobStoreTest() {
     fun `dialects cover cleanup completed executions sql`() {
         listOf(PostgresDialect(), H2Dialect(), MySqlDialect(), OracleDialect()).forEach { dialect ->
             val sql = dialect.cleanupCompletedExecutionsSql(3)
-            assertTrue(sql.contains("DELETE FROM khrona_executions"))
+            assertTrue(sql.contains("DELETE") && sql.contains("FROM khrona_executions"))
             assertTrue(sql.contains("completed_at < ?"))
         }
         assertTrue(PostgresDialect().cleanupCompletedExecutionsSql(3).contains("FOR UPDATE SKIP LOCKED"))
@@ -135,7 +135,7 @@ class JdbcCoverageTest : AbstractJdbcJobStoreTest() {
         assertFalse(OracleDialect().cleanupCompletedExecutionsSql(3).contains("FOR UPDATE SKIP LOCKED"))
         val oracleSkipLockedSql = OracleDialect().selectCompletedExecutionsForCleanupSql(3)
         assertTrue(oracleSkipLockedSql.contains("FOR UPDATE SKIP LOCKED"))
-        assertTrue(oracleSkipLockedSql.contains("ROWNUM <= ?"))
+        assertFalse(oracleSkipLockedSql.contains("ROWNUM"))
     }
 
     @Test

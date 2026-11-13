@@ -276,4 +276,27 @@ interface JobStoreContract {
         assertEquals(0, store.cleanupCompletedExecutions(before = futureCutoff, statuses = emptySet()))
         assertEquals(0, store.cleanupCompletedExecutions(before = futureCutoff, statuses = setOf(ExecutionStatus.DEAD_LETTERED), limit = 0))
     }
+
+    @Test
+    fun `saveExecution with PENDING does not overwrite an already claimed running or completed execution`() = runTest {
+        val store = createStore()
+        val now = Instant.now()
+        val claimedExec = JobExecution(
+            jobId = "contract-race-claimed-${UUID.randomUUID()}",
+            scheduledAt = now.minusSeconds(1),
+            status = ExecutionStatus.PENDING
+        )
+        store.saveExecution(claimedExec)
+        assertTrue(store.claimExecution(claimedExec.id, "worker-a", Duration.ofMinutes(5)))
+
+        // Late startup saveExecution with PENDING must not overwrite CLAIMED
+        store.saveExecution(claimedExec.copy(status = ExecutionStatus.PENDING, workerId = null, expiresAt = null))
+        assertEquals(ExecutionStatus.CLAIMED, store.getExecution(claimedExec.id)?.status)
+        assertEquals("worker-a", store.getExecution(claimedExec.id)?.workerId)
+
+        // Transition to SUCCESS and verify late startup saveExecution with PENDING does not overwrite terminal status
+        assertTrue(store.updateExecutionStatus(claimedExec.id, ExecutionStatus.SUCCESS, workerId = "worker-a"))
+        store.saveExecution(claimedExec.copy(status = ExecutionStatus.PENDING, workerId = null, expiresAt = null))
+        assertEquals(ExecutionStatus.SUCCESS, store.getExecution(claimedExec.id)?.status)
+    }
 }

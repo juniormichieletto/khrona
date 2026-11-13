@@ -67,7 +67,7 @@ class OracleJobStoreTest : AbstractJdbcJobStoreTest() {
             val cleaned = store.cleanupCompletedExecutions(
                 before = Instant.now().plusSeconds(60),
                 statuses = setOf(ExecutionStatus.SUCCESS),
-                limit = 10
+                limit = 1
             )
             assertEquals(1, cleaned)
             lockConn.rollback()
