@@ -485,7 +485,7 @@ execute { payload ->
 In production, persistent stores continuously accumulate completed executions. To prevent database bloat and performance degradation, Khrona includes automated, bounded execution cleanup enabled by default.
 
 - **Default retention period:** 14 days (`maxAge = 14.days`).
-- **Cleanup interval:** Runs once per hour (`cleanupInterval = 1.hours`).
+- **Cleanup interval & jitter:** Runs once per hour (`cleanupInterval = 1.hours`) with 10% startup and per-interval jitter (`cleanupJitter = 0.1`) to avoid multi-node thundering herds. PostgreSQL, MySQL, and Oracle use `FOR UPDATE SKIP LOCKED`, and `RedisJobStore` coordinates cleanup with a short-lived distributed lock.
 - **Batch limit:** 1000 records per batch (`batchSize = 1000`) to prevent large database locks and replication lag.
 - **Default statuses purged:** `SUCCESS`, `FAILED` (intermediate retries), `MISFIRED`, and `SUPERSEDED`.
 - **Audit safety:** `DEAD_LETTERED` records are **never deleted automatically by default**, ensuring permanent failures remain available for operator diagnosis.
@@ -500,6 +500,7 @@ val config = Khrona {
         enabled = true                       // true by default
         maxAge = 7.days                      // purge older than 7 days
         cleanupInterval = 30.minutes         // run cleanup every 30 minutes
+        cleanupJitter = 0.1                  // 10% startup & interval randomization
         batchSize = 500                      // bounded batch size
 
         // Optionally include DEAD_LETTERED if you wish to purge dead-lettered jobs:

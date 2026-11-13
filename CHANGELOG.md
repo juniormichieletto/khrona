@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Next release: **0.6.0** (minor release with breaking changes).
 
+### Added
+- **Multi-Node Retention Cleanup Hardening:** Added `RetentionPolicy.cleanupJitter` (default `0.1`, i.e., 10% startup and per-interval jitter), `FOR UPDATE SKIP LOCKED` support for PostgreSQL, MySQL, and Oracle retention cleanup in `khrona-store-jdbc`, and a distributed Redis cleanup lock (`$namespace:cleanup:lock` via `SET NX PX`) in `khrona-store-redis`.
+
 ### Changed
 - **Breaking — custom JobStore implementations:** `heartbeat(id: UUID, leaseDuration: Duration)` is replaced by `heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean`, and `updateExecutionStatus(id: UUID, status: ExecutionStatus, error: String?)` is replaced by `updateExecutionStatus(id: UUID, status: ExecutionStatus, error: String? = null, workerId: String? = null): Boolean`. Implementations and direct callers must update and recompile. Renew or transition only when the execution is `CLAIMED`/`RUNNING` and the stored owner matches `workerId` (plus an unexpired lease for `heartbeat`); validate and update atomically. See the [migration notes](README.md#upgrading-to-060).
 - **Breaking — custom JdbcDialect implementations:** `JdbcJobStore.heartbeat` now binds four positional `?` parameters (`new expires_at`, `id`, `claimed_by`, `now`) instead of two. Custom `JdbcDialect.heartbeatSql()` implementations must update their SQL placeholders to avoid runtime parameter-binding errors.
