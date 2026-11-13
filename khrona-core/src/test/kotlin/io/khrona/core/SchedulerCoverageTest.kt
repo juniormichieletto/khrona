@@ -3,10 +3,12 @@ package io.khrona.core
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.slf4j.MDC
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -612,6 +614,100 @@ class SchedulerCoverageTest {
         assertEquals(ExecutionStatus.SUCCESS, store.getExecution(execution.id)?.status)
     }
 
+    @Test
+    fun `poll releases claim when cancelled right after claiming execution`() = runBlocking {
+        val store = CancellingClaimStore()
+        val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        val execution = JobExecution(jobId = "cancel-after-claim", scheduledAt = Instant.now())
+        val job = job("cancel-after-claim", OneTimeTrigger(Instant.now()))
+        store.saveJob(job)
+        store.saveExecution(execution)
+        val scheduler = Scheduler(
+            config {
+                this.store = store
+                jobs.add(job)
+            },
+            scope
+        )
+
+        scope.launch { scheduler.pollAndExecute() }.join()
+        scheduler.stop()
+        scope.cancel()
+
+        assertEquals(ExecutionStatus.PENDING, store.getExecution(execution.id)?.status)
+    }
+
+    @Test
+    fun `poll catches error when releasing claim after cancellation`() = runBlocking {
+        val store = CancellingClaimStore(throwOnPendingRelease = true)
+        val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        val execution = JobExecution(jobId = "cancel-release-throws", scheduledAt = Instant.now())
+        val job = job("cancel-release-throws", OneTimeTrigger(Instant.now()))
+        store.saveJob(job)
+        store.saveExecution(execution)
+        val scheduler = Scheduler(
+            config {
+                this.store = store
+                jobs.add(job)
+            },
+            scope
+        )
+
+        scope.launch { scheduler.pollAndExecute() }.join()
+        scheduler.stop()
+        scope.cancel()
+
+        assertEquals(ExecutionStatus.CLAIMED, store.getExecution(execution.id)?.status)
+    }
+
+    @Test
+    fun `poll releases claim when cancelled during replace supersede`() = runBlocking {
+        val store = CancellingSupersedeStore()
+        val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        val execution = JobExecution(
+            jobId = "cancel-after-supersede",
+            scheduledAt = Instant.now(),
+            lockKey = "supersede-lock"
+        )
+        val job = job("cancel-after-supersede", OneTimeTrigger(Instant.now())).copy(
+            concurrencyPolicy = ConcurrencyPolicy.REPLACE,
+            lockKey = "supersede-lock"
+        )
+        store.saveJob(job)
+        store.saveExecution(execution)
+        val scheduler = Scheduler(
+            config {
+                this.store = store
+                jobs.add(job)
+            },
+            scope
+        )
+
+        scope.launch { scheduler.pollAndExecute() }.join()
+        scheduler.stop()
+        scope.cancel()
+
+        assertEquals(ExecutionStatus.PENDING, store.getExecution(execution.id)?.status)
+    }
+
+    @Test
+    fun `poll releases claim when activeJobs already contains execution after claim`() = runBlocking {
+        val store = PrePopulatingActiveJobStore()
+        val execution = JobExecution(jobId = "duplicate-active-job", scheduledAt = Instant.now())
+        val job = job("duplicate-active-job", OneTimeTrigger(Instant.now()))
+        store.saveJob(job)
+        store.saveExecution(execution)
+        val scheduler = Scheduler(config {
+            this.store = store
+            jobs.add(job)
+        })
+        store.scheduler = scheduler
+
+        scheduler.pollAndExecute()
+
+        assertEquals(ExecutionStatus.PENDING, store.getExecution(execution.id)?.status)
+    }
+
     private fun config(block: KhronaConfig.() -> Unit = {}) = KhronaConfig().apply {
         store = MockJobStore()
         block()
@@ -766,6 +862,49 @@ class SchedulerCoverageTest {
             heartbeatAttempts++
             currentCoroutineContext().cancel()
             return true
+        }
+    }
+
+    private class CancellingClaimStore(
+        private val throwOnPendingRelease: Boolean = false
+    ) : MockJobStore() {
+        override suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: Duration): Boolean {
+            val claimed = super.claimExecution(id, workerId, leaseDuration)
+            currentCoroutineContext().cancel()
+            return claimed
+        }
+
+        override suspend fun updateExecutionStatus(
+            id: UUID,
+            status: ExecutionStatus,
+            error: String?,
+            workerId: String?
+        ): Boolean {
+            if (throwOnPendingRelease && status == ExecutionStatus.PENDING) {
+                throw IllegalStateException("release failure")
+            }
+            return super.updateExecutionStatus(id, status, error, workerId)
+        }
+    }
+
+    private class CancellingSupersedeStore : MockJobStore() {
+        override suspend fun supersedeExecutionsByLockKey(lockKey: String, excludeExecutionId: UUID?): List<UUID> {
+            currentCoroutineContext().cancel()
+            return emptyList()
+        }
+    }
+
+    private class PrePopulatingActiveJobStore : MockJobStore() {
+        lateinit var scheduler: Scheduler
+
+        @Suppress("UNCHECKED_CAST")
+        override suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: Duration): Boolean {
+            val claimed = super.claimExecution(id, workerId, leaseDuration)
+            val field = Scheduler::class.java.getDeclaredField("activeJobs")
+            field.isAccessible = true
+            val activeJobs = field.get(scheduler) as java.util.concurrent.ConcurrentHashMap<UUID, Job>
+            activeJobs[id] = Job()
+            return claimed
         }
     }
 }

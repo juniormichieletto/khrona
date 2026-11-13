@@ -14,9 +14,9 @@
   },
   "mutationMinThresholdPct": 80.00,
   "mutationDropTolerancePct": 1.00,
-  "mutationAggregate": 87.41,
+  "mutationAggregate": 87.65,
   "mutationModules": {
-    "khrona-core": 84.91,
+    "khrona-core": 85.38,
     "khrona-ktor": 100.00,
     "khrona-store-jdbc": 91.84,
     "khrona-store-memory": 84.31
