@@ -1,6 +1,6 @@
 # Design: v0.4 - Redis Store
 
-Status: **EXPERIMENTAL for production workloads.**
+Status: Production-ready (graduated in v0.6.0).
 
 ## Problem
 
