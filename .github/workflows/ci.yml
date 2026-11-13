@@ -89,3 +89,56 @@ jobs:
       with:
         name: e2e-test-report
         path: "khrona-ktor/build/reports/tests/e2eTest"
+
+  mutation:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up JDK 21
+      uses: actions/setup-java@v4
+      with:
+        java-version: '21'
+        distribution: 'temurin'
+        cache: gradle
+
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
+
+    - name: Run Pitest Mutation Testing
+      run: ./gradlew :khrona-core:pitest :khrona-ktor:pitest :khrona-store-memory:pitest :khrona-store-jdbc:pitest --continue --info
+
+    - name: Verify Mutation Threshold & Generate Summary
+      if: always()
+      run: |
+        set -o pipefail
+        if ls */build/reports/pitest/mutations.xml >/dev/null 2>&1; then
+          python3 .github/scripts/check_mutation_coverage.py | tee -a "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Comment Mutation Report on PR
+      if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPO: ${{ github.repository }}
+      run: |
+        if [ ! -f build/reports/pitest/mutation-summary.md ]; then
+          exit 0
+        fi
+        COMMENT_ID=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
+          --jq '.[] | select(.body | contains("<!-- khrona-mutation-report -->")) | .id' | head -n 1 || true)
+        BODY_JSON=$(python3 -c 'import json, pathlib; print(json.dumps({"body": pathlib.Path("build/reports/pitest/mutation-summary.md").read_text()}))')
+        if [ -n "$COMMENT_ID" ]; then
+          printf '%s' "$BODY_JSON" | gh api -X PATCH "repos/${REPO}/issues/comments/${COMMENT_ID}" --input -
+        else
+          printf '%s' "$BODY_JSON" | gh api -X POST "repos/${REPO}/issues/${PR_NUMBER}/comments" --input -
+        fi
+
+    - name: Upload Pitest Report
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: pitest-report
+        path: "**/build/reports/pitest"

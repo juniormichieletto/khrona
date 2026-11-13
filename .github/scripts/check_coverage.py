@@ -1,14 +1,31 @@
 #!/usr/bin/env python3
-import json
+"""Verify aggregate and per-module JaCoCo coverage against fixed minimum thresholds and render a PR summary."""
+
+from __future__ import annotations
+
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-
 MARKER = "<!-- khrona-coverage-report -->"
-BASELINE_PATH = Path(".github/coverage-baseline.json")
 ROOT_XML = Path("build/reports/jacoco/jacocoRootReport/jacocoRootReport.xml")
 SUMMARY_PATH = Path("build/reports/jacoco/coverage-summary.md")
+
+AGGREGATE_MIN_PCT = {
+    "LINE": 95.00,
+    "INSTRUCTION": 90.00,
+    "BRANCH": 88.00,
+}
+
+MODULES = [
+    "khrona-core",
+    "khrona-ktor",
+    "khrona-store-jdbc",
+    "khrona-store-memory",
+    "khrona-store-redis",
+]
+MODULE_LINE_MIN_PCT = 90.00
+MODULE_BRANCH_MIN_PCT = 85.00
 
 
 def parse_counters(xml_path: Path) -> dict[str, tuple[int, int, float]]:
@@ -19,16 +36,9 @@ def parse_counters(xml_path: Path) -> dict[str, tuple[int, int, float]]:
         covered = int(counter.attrib["covered"])
         missed = int(counter.attrib["missed"])
         total = covered + missed
-        pct = (100.0 * covered / total) if total > 0 else 100.0
+        pct = round((100.0 * covered / total) if total > 0 else 100.0, 2)
         result[ctype] = (covered, total, pct)
     return result
-
-
-def fmt_delta(delta: float) -> str:
-    if abs(delta) < 0.005:
-        return "+0.00%"
-    sign = "+" if delta > 0 else ""
-    return f"{sign}{delta:.2f}%"
 
 
 def main() -> int:
@@ -36,65 +46,69 @@ def main() -> int:
         print(f"Missing JaCoCo aggregate report: {ROOT_XML}", file=sys.stderr)
         return 1
 
-    baseline = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
-    tolerance = float(baseline["maxDropTolerancePct"])
-
     agg_counters = parse_counters(ROOT_XML)
     agg_rows: list[str] = []
     failures: list[str] = []
 
-    for metric in ("LINE", "INSTRUCTION", "BRANCH"):
-        base_pct = float(baseline["aggregate"][metric])
+    for metric, min_pct in AGGREGATE_MIN_PCT.items():
         covered, total, cur_pct = agg_counters.get(metric, (0, 0, 0.0))
-        delta = cur_pct - base_pct
-        ok = cur_pct >= (base_pct - tolerance)
+        ok = cur_pct + 1e-9 >= min_pct
         if not ok:
-            failures.append(f"Aggregate {metric} dropped to {cur_pct:.2f}% (baseline {base_pct:.2f}%, tolerance -{tolerance:.2f}%)")
+            failures.append(
+                f"Aggregate {metric} coverage {cur_pct:.2f}% is below minimum {min_pct:.2f}%"
+            )
         status = "✅" if ok else "❌"
         agg_rows.append(
-            f"| **{metric.title()}** | {base_pct:.2f}% | **{cur_pct:.2f}%** | {fmt_delta(delta)} | {covered}/{total} | {status} |"
+            f"| **{metric.title()}** | {min_pct:.2f}% | **{cur_pct:.2f}%** | {covered}/{total} | {status} |"
         )
 
     mod_rows: list[str] = []
-    for module, base_line_pct in baseline["modules"].items():
+    for module in MODULES:
         xml_path = Path(module) / "build/reports/jacoco/test/jacocoTestReport.xml"
         if not xml_path.exists():
             failures.append(f"Missing module JaCoCo report: {xml_path}")
-            mod_rows.append(f"| `{module}` | {base_line_pct:.2f}% | missing | - | - | - | ❌ |")
+            mod_rows.append(
+                f"| `{module}` | {MODULE_LINE_MIN_PCT:.2f}% | missing | - | {MODULE_BRANCH_MIN_PCT:.2f}% | - | ❌ |"
+            )
             continue
         mod_counters = parse_counters(xml_path)
         l_cov, l_tot, l_pct = mod_counters.get("LINE", (0, 0, 0.0))
         _, _, b_pct = mod_counters.get("BRANCH", (0, 0, 0.0))
-        delta = l_pct - float(base_line_pct)
-        ok = l_pct >= (float(base_line_pct) - tolerance)
-        if not ok:
+        line_ok = l_pct + 1e-9 >= MODULE_LINE_MIN_PCT
+        branch_ok = b_pct + 1e-9 >= MODULE_BRANCH_MIN_PCT
+        if not line_ok:
             failures.append(
-                f"Module `{module}` line coverage dropped to {l_pct:.2f}% (baseline {float(base_line_pct):.2f}%, tolerance -{tolerance:.2f}%)"
+                f"Module `{module}` LINE coverage {l_pct:.2f}% is below minimum {MODULE_LINE_MIN_PCT:.2f}%"
             )
-        status = "✅" if ok else "❌"
+        if not branch_ok:
+            failures.append(
+                f"Module `{module}` BRANCH coverage {b_pct:.2f}% is below minimum {MODULE_BRANCH_MIN_PCT:.2f}%"
+            )
+        status = "✅" if (line_ok and branch_ok) else "❌"
         mod_rows.append(
-            f"| `{module}` | {float(base_line_pct):.2f}% | **{l_pct:.2f}%** | {fmt_delta(delta)} | {l_cov}/{l_tot} | {b_pct:.2f}% | {status} |"
+            f"| `{module}` | {MODULE_LINE_MIN_PCT:.2f}% | **{l_pct:.2f}%** | {l_cov}/{l_tot} "
+            f"| {MODULE_BRANCH_MIN_PCT:.2f}% | {b_pct:.2f}% | {status} |"
         )
 
-    header = "✅ **Coverage Check Passed**" if not failures else "❌ **Coverage Regression Detected**"
+    header = "✅ **Coverage Check Passed**" if not failures else "❌ **Coverage Threshold Not Met**"
     lines = [
         MARKER,
         f"### {header}",
         "",
-        f"Baseline tolerance: up to `-{tolerance:.2f}%` allowed for refactors/deletions. Threshold enforcement: `>=95%` root line, `>=90%` root instruction, `>=88%` root branch.",
+        "Minimum thresholds enforced: `>= 95.00%` root line, `>= 90.00%` root instruction, `>= 88.00%` root branch; per-module `>= 90.00%` line and `>= 85.00%` branch.",
         "",
         "#### Aggregate Coverage",
-        "| Metric | Baseline | Current | Delta | Covered / Total | Status |",
-        "| :--- | ---: | ---: | ---: | ---: | :---: |",
+        "| Metric | Min Required | Current | Covered / Total | Status |",
+        "| :--- | ---: | ---: | ---: | :---: |",
         *agg_rows,
         "",
         "#### Per-Module Coverage",
-        "| Module | Baseline Line % | Current Line % | Delta | Lines (Covered/Total) | Branch % | Status |",
+        "| Module | Min Line % | Current Line % | Lines (Covered/Total) | Min Branch % | Current Branch % | Status |",
         "| :--- | ---: | ---: | ---: | ---: | ---: | :---: |",
         *mod_rows,
     ]
     if failures:
-        lines.extend(["", "#### Failures", *[f"- {msg}" for msg in failures]])
+        lines.extend(["", "#### Failures", *(f"- {msg}" for msg in failures)])
 
     report = "\n".join(lines) + "\n"
     SUMMARY_PATH.parent.mkdir(parents=True, exist_ok=True)

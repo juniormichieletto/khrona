@@ -154,6 +154,54 @@ subprojects {
             }
         }
     }
+
+    if (project.name in setOf("khrona-core", "khrona-ktor", "khrona-store-memory", "khrona-store-jdbc")) {
+        val pitestCli = configurations.create("pitestCli")
+        dependencies {
+            add("pitestCli", "org.pitest:pitest-command-line:1.25.9")
+            add("pitestCli", "org.pitest:pitest-junit5-plugin:1.2.3")
+        }
+
+        tasks.register<JavaExec>("pitest") {
+            group = LifecycleBasePlugin.VERIFICATION_GROUP
+            description = "Runs Pitest mutation testing on unit and in-memory tests (excluding E2E and Docker container tests)."
+            dependsOn(tasks.named("testClasses"))
+            val testSourceSet = project.extensions.getByType<SourceSetContainer>()["test"]
+            classpath = pitestCli + testSourceSet.runtimeClasspath
+            mainClass.set("org.pitest.mutationtest.commandline.MutationCoverageReport")
+            val reportDir = layout.buildDirectory.dir("reports/pitest").get().asFile
+            val mainClassesDir = layout.buildDirectory.dir("classes/kotlin/main").get().asFile
+            val sourceDir = layout.projectDirectory.dir("src/main/kotlin").asFile
+            outputs.dir(reportDir)
+            doFirst {
+                val ownJar = layout.buildDirectory.file("libs/${project.name}-${project.version}.jar").get().asFile
+                val cpEntries = (listOf(mainClassesDir) + (pitestCli + testSourceSet.runtimeClasspath).files)
+                    .filter { it.exists() && it != ownJar }
+                    .distinct()
+                val cpFiles = cpEntries.joinToString(",") { it.absolutePath }
+                args(
+                    "--reportDir", reportDir.absolutePath,
+                    "--classPath", cpFiles,
+                    "--mutableCodePaths", mainClassesDir.absolutePath,
+                    "--targetClasses", "io.khrona.*",
+                    "--targetTests", "io.khrona.*",
+                    "--excludedClasses", "*\$serializer,*\$Companion*,*\$\$inlined\$*",
+                    "--excludedTestClasses", "*PerfTest,*E2ETest,*EndToEndTest,*PostgreSqlJobStoreTest,*MySqlJobStoreTest,*OracleJobStoreTest",
+                    "--excludedGroups", "e2e,perf",
+                    "--excludedMethods", "hashCode,equals,toString,copy,copy\$default,write\$Self,component1,component2,component3,component4,component5,component6,component7,component8,component9,component10,component11,component12,component13",
+                    "--mutators", "CONDITIONALS_BOUNDARY,INCREMENTS,INVERT_NEGS,MATH,NEGATE_CONDITIONALS,EMPTY_RETURNS,FALSE_RETURNS,TRUE_RETURNS,PRIMITIVE_RETURNS",
+                    "--avoidCallsTo", "kotlin.jvm.internal.Intrinsics,kotlin.ResultKt,kotlin.coroutines.intrinsics.IntrinsicsKt,kotlin.jdk7.AutoCloseableKt,kotlin.io.CloseableKt,org.slf4j.Logger",
+                    "--timeoutConst", "1500",
+                    "--sourceDirs", sourceDir.absolutePath,
+                    "--outputFormats", "XML,HTML",
+                    "--mutationThreshold", "90",
+                    "--timestampedReports=false",
+                    "--failWhenNoMutations=false",
+                    "--threads", "4"
+                )
+            }
+        }
+    }
 }
 
 tasks.register<org.gradle.testing.jacoco.tasks.JacocoReport>("jacocoRootReport") {
