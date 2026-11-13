@@ -123,6 +123,18 @@ class JdbcCoverageTest : AbstractJdbcJobStoreTest() {
     }
 
     @Test
+    fun `dialects cover all core sql statements`() {
+        listOf(PostgresDialect(), H2Dialect(), MySqlDialect(), OracleDialect()).forEach { dialect ->
+            assertTrue(dialect.upsertJobSql().contains("khrona_jobs"))
+            assertTrue(dialect.upsertExecutionSql().contains("khrona_executions"))
+            assertTrue(dialect.claimExecutionSql().contains("CLAIMED"))
+            assertTrue(dialect.listEligibleExecutionsSql().contains("SELECT") && dialect.listEligibleExecutionsSql().contains("khrona_executions"))
+            assertTrue(dialect.heartbeatSql().contains("UPDATE khrona_executions"))
+            assertTrue(dialect.resetExpiredExecutionsSql().contains("PENDING"))
+        }
+    }
+
+    @Test
     fun `dialects cover cleanup completed executions sql`() {
         listOf(PostgresDialect(), H2Dialect(), MySqlDialect(), OracleDialect()).forEach { dialect ->
             val sql = dialect.cleanupCompletedExecutionsSql(3)

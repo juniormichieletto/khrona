@@ -11,5 +11,14 @@
     "khrona-store-jdbc": 97.66,
     "khrona-store-memory": 100.00,
     "khrona-store-redis": 98.78
+  },
+  "mutationMinThresholdPct": 80.00,
+  "mutationDropTolerancePct": 1.00,
+  "mutationAggregate": 87.41,
+  "mutationModules": {
+    "khrona-core": 84.91,
+    "khrona-ktor": 100.00,
+    "khrona-store-jdbc": 91.84,
+    "khrona-store-memory": 84.31
   }
 }
