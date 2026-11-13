@@ -162,4 +162,71 @@ class JdbcActiveLoadPerfTest {
             }
         }
     }
+
+    @Test
+    fun `postgres 15-node cluster backlog drain drains 2000 due executions`() = runBlocking {
+        PostgreSQLContainer("postgres:16-alpine").use { container ->
+            container.start()
+            val ds = HikariDataSource(HikariConfig().apply {
+                jdbcUrl = container.jdbcUrl
+                username = container.username
+                password = container.password
+                maximumPoolSize = 30
+            })
+            try {
+                val store = JdbcJobStore(ds)
+                store.migrate()
+
+                val nodeCount = 15
+                val totalJobs = 2000
+                val completed = AtomicInteger(0)
+
+                fun buildConfig() = KhronaConfig().apply {
+                    this.store = store
+                    this.pollingInterval = Duration.ofMillis(50)
+                    this.pollBatchSize = 100
+                    job("cluster-backlog-pg") {
+                        concurrencyPolicy = ConcurrencyPolicy.ALLOW
+                        at(Instant.now().plusSeconds(3600))
+                        execute { completed.incrementAndGet() }
+                    }
+                }
+
+                val configs = List(nodeCount) { buildConfig() }
+                store.saveJob(configs.first().jobs.first())
+
+                val dueAt = Instant.now().minusSeconds(5)
+                repeat(totalJobs) {
+                    store.saveExecution(JobExecution(jobId = "cluster-backlog-pg", scheduledAt = dueAt))
+                }
+
+                val schedulers = configs.map { Scheduler(it) }
+                val cpuSamples = mutableListOf<Double>()
+                var maxMemoryMb = 0L
+                val startMs = System.currentTimeMillis()
+                schedulers.forEach { it.start() }
+
+                while (completed.get() < totalJobs && System.currentTimeMillis() - startMs < 60_000L) {
+                    val cpu = osBean.processCpuLoad * 100.0
+                    if (cpu >= 0) cpuSamples.add(cpu)
+                    val memMb = (runtime.totalMemory() - runtime.freeMemory()) / 1024 / 1024
+                    if (memMb > maxMemoryMb) maxMemoryMb = memMb
+                    delay(50)
+                }
+                val drainMs = System.currentTimeMillis() - startMs
+                schedulers.forEach { it.stop() }
+
+                val sortedCpu = cpuSamples.sorted()
+                val avgCpu = if (sortedCpu.isNotEmpty()) sortedCpu.average() else 0.0
+                val p95Cpu = if (sortedCpu.isNotEmpty()) sortedCpu[((sortedCpu.size - 1) * 0.95).toInt()] else 0.0
+                val throughput = completed.get() / (drainMs / 1000.0).coerceAtLeast(0.001)
+                println("\n--- PostgreSQL $nodeCount-Node Cluster Drain ($totalJobs due executions, batch=100, poll=50ms) ---")
+                println("Drained: ${completed.get()}/$totalJobs in ${drainMs}ms (%.1f exec/s) | Avg CPU: %.2f%% | p95 CPU: %.2f%% | Max Mem: %d MB".format(throughput, avgCpu, p95Cpu, maxMemoryMb))
+
+                assertEquals(totalJobs, completed.get(), "All seeded backlog executions should drain without duplication across $nodeCount nodes")
+            } finally {
+                ds.close()
+            }
+        }
+    }
 }

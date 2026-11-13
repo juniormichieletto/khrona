@@ -113,6 +113,12 @@ This run was performed via `./gradlew perfTest --rerun-tasks` on Gradle `9.9.1` 
 | **PostgreSQL (`JdbcJobStore`)** | 2 | 1000 / 1000 | 1660 ms | 602.4 exec/s | 54 MB |
 | **Redis (`RedisJobStore`)** | 2 | 1000 / 1000 | 1706 ms | 586.2 exec/s | 62 MB |
 
+#### 15-Node Cluster Contention Drain (2,000 due `PENDING` executions, `pollBatchSize = 100`, `pollingInterval = 50ms`)
+| Store | Nodes | Drained | Drain Time | Throughput | Avg CPU | p95 CPU | Max Mem |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **PostgreSQL (`JdbcJobStore`)** | 15 | 2000 / 2000 | 8474 ms | 236.0 exec/s | 48.67% | 59.52% | 59 MB |
+| **Redis (`RedisJobStore`)** | 15 | 2000 / 2000 | 8429 ms | 237.3 exec/s | 56.70% | 70.45% | 72 MB |
+
 ## Key Observations
 
 ### 1. Database-Backed Overhead
