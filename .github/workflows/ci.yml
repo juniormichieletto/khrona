@@ -107,9 +107,9 @@ jobs:
       run: chmod +x gradlew
 
     - name: Run Pitest Mutation Testing
-      run: ./gradlew :khrona-core:pitest :khrona-ktor:pitest :khrona-store-memory:pitest :khrona-store-jdbc:pitest --info
+      run: ./gradlew :khrona-core:pitest :khrona-ktor:pitest :khrona-store-memory:pitest :khrona-store-jdbc:pitest --continue --info
 
-    - name: Verify Mutation Ratchet & Generate Summary
+    - name: Verify Mutation Threshold & Generate Summary
       if: always()
       run: |
         set -o pipefail

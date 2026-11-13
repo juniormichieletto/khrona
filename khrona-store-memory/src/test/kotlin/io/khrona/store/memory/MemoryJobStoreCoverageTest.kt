@@ -33,9 +33,21 @@ class MemoryJobStoreCoverageTest {
         val store = MemoryJobStore()
         val execution = JobExecution(jobId = "status-job", scheduledAt = Instant.now())
         store.saveExecution(execution)
+        assertTrue(store.claimExecution(execution.id, "worker", Duration.ofMinutes(1)))
+        assertNotNull(store.getExecution(execution.id)?.startedAt)
+        assertNotNull(store.getExecution(execution.id)?.expiresAt)
 
-        store.updateExecutionStatus(execution.id, ExecutionStatus.RUNNING)
-        assertNull(store.getExecution(execution.id)?.completedAt)
+        assertTrue(store.updateExecutionStatus(execution.id, ExecutionStatus.RUNNING, workerId = "worker"))
+        val running = store.getExecution(execution.id)
+        assertNull(running?.completedAt)
+        assertNotNull(running?.startedAt)
+        assertNotNull(running?.expiresAt)
+
+        assertTrue(store.updateExecutionStatus(execution.id, ExecutionStatus.PENDING, workerId = "worker"))
+        val released = store.getExecution(execution.id)
+        assertNull(released?.workerId)
+        assertNull(released?.startedAt)
+        assertNull(released?.expiresAt)
 
         listOf(
             ExecutionStatus.SUCCESS,
@@ -59,12 +71,13 @@ class MemoryJobStoreCoverageTest {
         val store = MemoryJobStore()
         val now = Instant.parse("2030-01-01T00:00:00Z")
         val pendingDue = execution("pending-due", now.minusSeconds(1))
+        val pendingExactNow = execution("pending-exact-now", now)
         val future = execution("future", now.plusSeconds(1))
         val expiredClaimed = execution(
             "expired-claimed",
             now.minusSeconds(1),
             status = ExecutionStatus.CLAIMED,
-            expiresAt = now.minusMillis(1)
+            expiresAt = now
         )
         val expiredRunning = execution(
             "expired-running",
@@ -85,12 +98,12 @@ class MemoryJobStoreCoverageTest {
         )
         val success = execution("success", now.minusSeconds(1), status = ExecutionStatus.SUCCESS)
 
-        listOf(pendingDue, future, expiredClaimed, expiredRunning, activeClaimed, claimedWithoutExpiry, success)
+        listOf(pendingDue, pendingExactNow, future, expiredClaimed, expiredRunning, activeClaimed, claimedWithoutExpiry, success)
             .forEach { store.saveExecution(it) }
 
         val eligible = store.listEligibleExecutions(now).map { it.id }.toSet()
 
-        assertEquals(setOf(pendingDue.id, expiredClaimed.id, expiredRunning.id), eligible)
+        assertEquals(setOf(pendingDue.id, pendingExactNow.id, expiredClaimed.id, expiredRunning.id), eligible)
     }
 
     @Test
@@ -149,7 +162,7 @@ class MemoryJobStoreCoverageTest {
     fun `reset expired executions only resets expired claimed or running executions`() = runTest {
         val store = MemoryJobStore()
         val now = Instant.parse("2030-01-01T00:00:00Z")
-        val expiredClaimed = execution("expired-claimed", now, ExecutionStatus.CLAIMED, expiresAt = now.minusSeconds(1))
+        val expiredClaimed = execution("expired-claimed", now, ExecutionStatus.CLAIMED, expiresAt = now)
         val expiredRunning = execution("expired-running", now, ExecutionStatus.RUNNING, expiresAt = now.minusSeconds(1))
         val activeClaimed = execution("active-claimed", now, ExecutionStatus.CLAIMED, expiresAt = now.plusSeconds(1))
         val claimedWithoutExpiry = execution("claimed-without-expiry", now, ExecutionStatus.CLAIMED)
@@ -192,6 +205,31 @@ class MemoryJobStoreCoverageTest {
         assertEquals(ExecutionStatus.RUNNING, store.getExecution(excluded.id)?.status)
         assertEquals(ExecutionStatus.PENDING, store.getExecution(pending.id)?.status)
         assertEquals(ExecutionStatus.RUNNING, store.getExecution(otherLock.id)?.status)
+    }
+
+    @Test
+    fun `cleanupCompletedExecutions respects zero limit and exact before boundary`() = runTest {
+        val store = MemoryJobStore()
+        val base = Instant.parse("2030-01-01T00:00:00Z")
+        val beforeBoundary = execution("before-boundary", base, ExecutionStatus.SUCCESS)
+            .copy(completedAt = base.minusSeconds(10))
+        val afterCutoff = execution("after-cutoff", base, ExecutionStatus.SUCCESS)
+            .copy(completedAt = base.plusSeconds(10))
+        store.saveExecution(beforeBoundary)
+        store.saveExecution(afterCutoff)
+
+        assertEquals(0, store.cleanupCompletedExecutions(base, setOf(ExecutionStatus.SUCCESS), limit = 0))
+        assertEquals(0, store.cleanupCompletedExecutions(base, emptySet(), limit = 10))
+
+        val boundaryCutoff = beforeBoundary.completedAt!!.plusMillis(1)
+        val exactCutoff = execution("exact-cutoff", base, ExecutionStatus.SUCCESS)
+            .copy(completedAt = boundaryCutoff)
+        store.saveExecution(exactCutoff)
+
+        assertEquals(1, store.cleanupCompletedExecutions(boundaryCutoff, setOf(ExecutionStatus.SUCCESS), limit = 10))
+        assertNull(store.getExecution(beforeBoundary.id))
+        assertNotNull(store.getExecution(exactCutoff.id))
+        assertNotNull(store.getExecution(afterCutoff.id))
     }
 
     private fun job(id: String) = JobDefinition(

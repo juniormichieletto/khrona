@@ -24,12 +24,19 @@ class DslCoverageTest {
             heartbeatInterval(250.milliseconds)
             job("dsl-job") {
                 description = "covered"
+                lockKey = "dsl-lock"
+                assertEquals("dsl-job", id)
+                assertEquals("covered", description)
+                assertEquals("dsl-lock", lockKey)
                 retry {
                     maxAttempts = 2
                     initialDelay = Duration.ofMillis(10)
                     maxDelay = Duration.ofMillis(20)
                     factor = 1.5
                     jitter = 0.0
+                    assertEquals(2, maxAttempts)
+                    assertEquals(1.5, factor)
+                    assertEquals(0.0, jitter)
                 }
                 timeout = Duration.ofSeconds(1)
                 at(Instant.parse("2030-01-01T00:00:00Z"))
@@ -44,9 +51,13 @@ class DslCoverageTest {
         assertEquals(Duration.ofMillis(250), config.heartbeatInterval)
         val job = config.jobs.single()
         assertEquals("covered", job.description)
+        assertEquals("dsl-lock", job.lockKey)
         assertEquals(2, job.retryPolicy.maxAttempts)
+        assertEquals(1.5, job.retryPolicy.factor)
+        assertEquals(0.0, job.retryPolicy.jitter)
         assertEquals(Duration.ofSeconds(1), job.timeout)
         assertTrue(job.trigger is OneTimeTrigger)
+        org.junit.jupiter.api.Assertions.assertFalse(RetentionPolicy().apply { enabled = false }.enabled)
     }
 
     @Test
@@ -61,10 +72,13 @@ class DslCoverageTest {
             execute {}
         }.build().trigger is OneTimeTrigger)
 
-        assertEquals("Europe/London", (JobBuilder("zone").apply {
+        val zoneTrigger = JobBuilder("zone").apply {
             cron("0 9 * * *", ZoneId.of("Europe/London"))
             execute {}
-        }.build().trigger as CronTrigger).timeZone)
+        }.build().trigger as CronTrigger
+        assertEquals("0 9 * * *", zoneTrigger.expression)
+        assertEquals("zone", zoneTrigger.context)
+        assertEquals("Europe/London", zoneTrigger.timeZone)
 
         listOf<(JobBuilder) -> Unit>(
             { it.every(Duration.ofMinutes(1)) },
@@ -106,6 +120,17 @@ class DslCoverageTest {
             maxDelay = Duration.ZERO,
             jitter = 1.0
         ).calculateDelay(1).isZero)
+
+        val jitterPolicy = RetryPolicy(
+            initialDelay = Duration.ofMillis(1_000),
+            maxDelay = Duration.ofMillis(5_000),
+            factor = 2.0,
+            jitter = 0.2
+        )
+        repeat(20) {
+            val d = jitterPolicy.calculateDelay(1).toMillis()
+            assertTrue(d in 800L..1_200L, "Expected delay in 800..1200ms, got $d")
+        }
 
         assertThrows(IllegalArgumentException::class.java) {
             RetryPolicy(initialDelay = Duration.ofMillis(-1))

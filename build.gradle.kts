@@ -194,6 +194,7 @@ subprojects {
                     "--timeoutConst", "1500",
                     "--sourceDirs", sourceDir.absolutePath,
                     "--outputFormats", "XML,HTML",
+                    "--mutationThreshold", "90",
                     "--timestampedReports=false",
                     "--failWhenNoMutations=false",
                     "--threads", "4"

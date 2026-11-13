@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
-"""Check Pitest mutation baselines and scores against >= 80% minimum threshold and render a PR summary."""
+"""Verify Pitest mutation scores against >= 90.00% minimum threshold and render a PR summary."""
 
 from __future__ import annotations
 
-import json
 import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
-BASELINE_PATH = Path(".github/coverage-baseline.json")
 SUMMARY_PATH = Path("build/reports/pitest/mutation-summary.md")
 MARKER = "<!-- khrona-mutation-report -->"
-DEFAULT_MIN_THRESHOLD_PCT = 80.00
+MIN_THRESHOLD_PCT = 90.00
+MODULES = [
+    "khrona-core",
+    "khrona-ktor",
+    "khrona-store-jdbc",
+    "khrona-store-memory",
+]
 
 
 @dataclass(frozen=True)
@@ -42,63 +46,25 @@ def parse_mutations_xml(xml_path: Path) -> MutationMetrics:
     return MutationMetrics(detected=detected, total=total, covered=total - no_coverage)
 
 
-def format_delta(current: float, baseline: float) -> str:
-    delta = current - baseline
-    if abs(delta) < 0.005:
-        return "+0.00%"
-    sign = "+" if delta > 0 else ""
-    return f"{sign}{delta:.2f}%"
-
-
-def evaluate_entry(
-    name: str,
-    current: float,
-    baseline: float,
-    min_threshold: float,
-    tolerance: float,
-) -> tuple[str, list[str]]:
-    """Verify minimum baseline, minimum current score, and non-regression ratchet."""
-    violations: list[str] = []
-    if baseline + 1e-9 < min_threshold:
-        violations.append(
-            f"{name}: configured baseline {baseline:.2f}% is below minimum {min_threshold:.2f}%"
-        )
-    if current + 1e-9 < min_threshold:
-        violations.append(
-            f"{name}: current mutation score {current:.2f}% is below minimum {min_threshold:.2f}%"
-        )
-    if current + 1e-9 < (baseline - tolerance):
-        violations.append(
-            f"{name}: current mutation score {current:.2f}% dropped below baseline "
-            f"{baseline:.2f}% (allowed drop tolerance: -{tolerance:.2f}%)"
-        )
-    return ("✅" if not violations else "❌"), violations
+def evaluate_score(name: str, score_pct: float, min_threshold: float) -> tuple[str, list[str]]:
+    """Verify a module or aggregate score meets the minimum mutation threshold."""
+    if score_pct + 1e-9 < min_threshold:
+        return "❌", [f"{name}: mutation score {score_pct:.2f}% is below minimum {min_threshold:.2f}%"]
+    return "✅", []
 
 
 def check_mutation_coverage(
-    baseline_path: Path = BASELINE_PATH,
+    min_threshold: float = MIN_THRESHOLD_PCT,
     summary_path: Path = SUMMARY_PATH,
 ) -> int:
-    """Validate Pitest reports against baseline and minimum threshold; write Markdown summary."""
-    if not baseline_path.is_file():
-        print(f"Error: Baseline file not found at {baseline_path}", file=sys.stderr)
-        return 1
-
-    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
-    min_threshold = float(baseline.get("mutationMinThresholdPct", DEFAULT_MIN_THRESHOLD_PCT))
-    tolerance = float(baseline.get("mutationDropTolerancePct", 1.00))
-    baseline_agg = float(baseline["mutationAggregate"])
-    baseline_modules: dict[str, float] = {
-        k: float(v) for k, v in baseline["mutationModules"].items()
-    }
-
+    """Validate Pitest reports against the fixed minimum threshold and write Markdown summary."""
     module_results: dict[str, MutationMetrics] = {}
     missing_errors: list[str] = []
     tot_detected = 0
     tot_total = 0
     tot_covered = 0
 
-    for module in baseline_modules:
+    for module in MODULES:
         xml_path = Path(module) / "build" / "reports" / "pitest" / "mutations.xml"
         try:
             metrics = parse_mutations_xml(xml_path)
@@ -119,26 +85,20 @@ def check_mutation_coverage(
     failures: list[str] = []
     rows: list[str] = []
 
-    for module, base_pct in baseline_modules.items():
+    for module in MODULES:
         m = module_results[module]
-        badge, entry_failures = evaluate_entry(
-            f"`{module}`", m.mutation_pct, base_pct, min_threshold, tolerance
-        )
+        badge, entry_failures = evaluate_score(f"`{module}`", m.mutation_pct, min_threshold)
         failures.extend(entry_failures)
         rows.append(
-            f"| `{module}` | {min_threshold:.2f}% | {base_pct:.2f}% | **{m.mutation_pct:.2f}%** "
-            f"| {format_delta(m.mutation_pct, base_pct)} | {m.strength_pct:.2f}% "
-            f"| {m.detected}/{m.total} | {badge} |"
+            f"| `{module}` | {min_threshold:.2f}% | **{m.mutation_pct:.2f}%** "
+            f"| {m.strength_pct:.2f}% | {m.detected}/{m.total} | {badge} |"
         )
 
-    agg_badge, agg_failures = evaluate_entry(
-        "Aggregate", agg_metrics.mutation_pct, baseline_agg, min_threshold, tolerance
-    )
+    agg_badge, agg_failures = evaluate_score("Aggregate", agg_metrics.mutation_pct, min_threshold)
     failures.extend(agg_failures)
     rows.append(
-        f"| **Aggregate** | **{min_threshold:.2f}%** | **{baseline_agg:.2f}%** | **{agg_metrics.mutation_pct:.2f}%** "
-        f"| {format_delta(agg_metrics.mutation_pct, baseline_agg)} | {agg_metrics.strength_pct:.2f}% "
-        f"| {agg_metrics.detected}/{agg_metrics.total} | {agg_badge} |"
+        f"| **Aggregate** | **{min_threshold:.2f}%** | **{agg_metrics.mutation_pct:.2f}%** "
+        f"| {agg_metrics.strength_pct:.2f}% | {agg_metrics.detected}/{agg_metrics.total} | {agg_badge} |"
     )
 
     header = (
@@ -150,12 +110,11 @@ def check_mutation_coverage(
         MARKER,
         header,
         "",
-        f"Minimum baseline & score threshold: `>= {min_threshold:.2f}%`. "
-        f"Allowed drop tolerance: `-{tolerance:.2f}%`.",
+        f"Minimum required mutation score: `>= {min_threshold:.2f}%` per module and aggregate. "
         "Scope: unit & H2 tests (excludes E2E, perf, Docker Testcontainers DB tests, and `khrona-store-redis`).",
         "",
-        "| Module | Min Required | Baseline | Current Score | Delta | Test Strength | Killed / Total | Status |",
-        "| :--- | ---: | ---: | ---: | ---: | ---: | ---: | :---: |",
+        "| Module | Min Required | Mutation Score | Test Strength | Killed / Total | Status |",
+        "| :--- | ---: | ---: | ---: | ---: | :---: |",
         *rows,
     ]
 

@@ -708,6 +708,77 @@ class SchedulerCoverageTest {
         assertEquals(ExecutionStatus.PENDING, store.getExecution(execution.id)?.status)
     }
 
+    @Test
+    fun `nextCleanupTime applies deterministic jitter multiplier`() {
+        val scheduler = Scheduler(config {
+            retention {
+                enabled = true
+                cleanupInterval = kotlin.time.Duration.parse("1s")
+                cleanupJitter = 0.2
+            }
+        }).apply {
+            random = object : kotlin.random.Random() {
+                override fun nextBits(bitCount: Int): Int = 0
+                override fun nextDouble(): Double = 0.75
+            }
+        }
+        val method = Scheduler::class.java.getDeclaredMethod("nextCleanupTime", Instant::class.java)
+        method.isAccessible = true
+
+        val next = method.invoke(scheduler, Instant.EPOCH) as Instant
+
+        assertEquals(Instant.EPOCH.plusMillis(1_100), next)
+    }
+
+    @Test
+    fun `retention cleanup caps batches at 5 and stops early on partial batch`() = runBlocking {
+        val fixedClock = Clock.fixed(Instant.parse("2030-01-01T00:00:00Z"), ZoneOffset.UTC)
+
+        val cappedStore = BatchCleanupStore(mutableListOf(10, 10, 10, 10, 10, 10), fixedClock)
+        val cappedScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        val cappedScheduler = Scheduler(
+            config {
+                store = cappedStore
+                pollingInterval = Duration.ofSeconds(10)
+                retention {
+                    enabled = true
+                    cleanupInterval = kotlin.time.Duration.parse("1m")
+                    cleanupJitter = 0.0
+                    batchSize = 10
+                }
+            },
+            cappedScope,
+            fixedClock
+        )
+        cappedScheduler.start()
+        cappedStore.firstPollObserved.await()
+        cappedScheduler.stop()
+        cappedScope.cancel()
+        assertEquals(5, cappedStore.cleanupCalls)
+
+        val partialStore = BatchCleanupStore(mutableListOf(10, 9, 10), fixedClock)
+        val partialScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        val partialScheduler = Scheduler(
+            config {
+                store = partialStore
+                pollingInterval = Duration.ofSeconds(10)
+                retention {
+                    enabled = true
+                    cleanupInterval = kotlin.time.Duration.parse("1m")
+                    cleanupJitter = 0.0
+                    batchSize = 10
+                }
+            },
+            partialScope,
+            fixedClock
+        )
+        partialScheduler.start()
+        partialStore.firstPollObserved.await()
+        partialScheduler.stop()
+        partialScope.cancel()
+        assertEquals(2, partialStore.cleanupCalls)
+    }
+
     private fun config(block: KhronaConfig.() -> Unit = {}) = KhronaConfig().apply {
         store = MockJobStore()
         block()
@@ -905,6 +976,28 @@ class SchedulerCoverageTest {
             val activeJobs = field.get(scheduler) as java.util.concurrent.ConcurrentHashMap<UUID, Job>
             activeJobs[id] = Job()
             return claimed
+        }
+    }
+
+    private class BatchCleanupStore(
+        private val counts: MutableList<Int>,
+        clock: Clock
+    ) : MockJobStore(clock) {
+        var cleanupCalls: Int = 0
+        val firstPollObserved = CompletableDeferred<Unit>()
+
+        override suspend fun cleanupCompletedExecutions(
+            before: Instant,
+            statuses: Set<ExecutionStatus>,
+            limit: Int
+        ): Int {
+            cleanupCalls++
+            return if (counts.isEmpty()) 0 else counts.removeAt(0)
+        }
+
+        override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> {
+            firstPollObserved.complete(Unit)
+            return emptyList()
         }
     }
 }
