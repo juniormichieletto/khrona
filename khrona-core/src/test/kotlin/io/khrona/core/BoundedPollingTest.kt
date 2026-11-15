@@ -201,4 +201,29 @@ class BoundedPollingTest {
         runCurrent()
         assertEquals(1, healthyRuns, "Failure loading one job definition must not abort healthy jobs in the batch")
     }
+
+    @Test
+    fun `locked oldest row does not starve unrelated local job when pollBatchSize is reached`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
+        var healthyRuns = 0
+        val config = KhronaConfig().apply {
+            this.store = store
+            pollBatchSize = 1
+            job("locked") { every(Duration.ofHours(1)); execute {} }
+            job("healthy") { every(Duration.ofHours(1)); execute { healthyRuns++ } }
+        }
+        config.jobs.forEach { store.saveJob(it) }
+        store.saveExecution(JobExecution(jobId = "locked", scheduledAt = Instant.EPOCH.minusSeconds(1), lockKey = "locked"))
+        val holder = JobExecution(jobId = "locked", scheduledAt = Instant.EPOCH, lockKey = "locked")
+        store.saveExecution(holder)
+        store.claimExecution(holder.id, "remote", Duration.ofHours(1))
+        store.saveExecution(JobExecution(jobId = "healthy", scheduledAt = Instant.EPOCH))
+        val scheduler = Scheduler(config, backgroundScope, clock)
+        repeat(3) {
+            scheduler.pollAndExecute()
+            runCurrent()
+        }
+        assertEquals(1, healthyRuns, "Lock-blocked FORBID job must not starve unrelated healthy jobs when pollBatchSize is reached")
+    }
 }
