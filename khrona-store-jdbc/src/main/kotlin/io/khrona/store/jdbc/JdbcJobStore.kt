@@ -135,6 +135,29 @@ class JdbcJobStore(
                             }
                         }
                     }
+
+                    if (dialect is MySqlDialect) {
+                        val alterStatements = listOf(
+                            "ALTER TABLE khrona_executions MODIFY scheduled_at DATETIME(6) NOT NULL",
+                            "ALTER TABLE khrona_executions MODIFY started_at DATETIME(6) NULL",
+                            "ALTER TABLE khrona_executions MODIFY completed_at DATETIME(6) NULL",
+                            "ALTER TABLE khrona_executions MODIFY claimed_at DATETIME(6) NULL",
+                            "ALTER TABLE khrona_executions MODIFY expires_at DATETIME(6) NULL",
+                            "ALTER TABLE khrona_executions MODIFY created_at DATETIME(6) NULL DEFAULT CURRENT_TIMESTAMP(6)",
+                            "ALTER TABLE khrona_jobs MODIFY created_at DATETIME(6) NULL DEFAULT CURRENT_TIMESTAMP(6)"
+                        )
+                        alterStatements.forEach { statement ->
+                            try {
+                                stmt.execute(statement)
+                            } catch (e: Exception) {
+                                if (isIgnorableMigrationError(statement, e)) {
+                                    log.debug("Idempotent column modification already applied, skipping: {}", statement)
+                                } else {
+                                    throw e
+                                }
+                            }
+                        }
+                    }
                 }
                 conn.commit()
             } catch (e: Exception) {

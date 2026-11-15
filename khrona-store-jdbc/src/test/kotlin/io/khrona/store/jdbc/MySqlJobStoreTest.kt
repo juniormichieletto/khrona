@@ -75,4 +75,25 @@ class MySqlJobStoreTest : AbstractJdbcJobStoreTest() {
         assertNotNull(store.getExecution(exec1.id))
         assertNull(store.getExecution(exec2.id))
     }
+
+    @Test
+    fun `migrate must upgrade legacy MySQL timestamp columns`() = runBlocking {
+        dataSource.connection.use { conn ->
+            conn.createStatement().use { stmt ->
+                stmt.execute("DROP TABLE IF EXISTS khrona_executions")
+                stmt.execute("DROP TABLE IF EXISTS khrona_jobs")
+                val oldSchema = JdbcJobStore::class.java.getResource("/khrona_schema.sql")!!.readText()
+                    .replace("CREATE INDEX IF NOT EXISTS", "CREATE INDEX")
+                oldSchema.split(';')
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .forEach { stmt.execute(it) }
+            }
+        }
+        val store = JdbcJobStore(dataSource)
+        store.migrate()
+        val exec = JobExecution(jobId = "once-upgrade", scheduledAt = Instant.EPOCH)
+        store.saveExecution(exec)
+        assertEquals(Instant.EPOCH, store.getExecution(exec.id)?.scheduledAt)
+    }
 }
