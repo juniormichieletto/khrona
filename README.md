@@ -107,7 +107,7 @@ UPDATE khrona_executions SET expires_at = ?
 WHERE id = ? AND claimed_by = ? AND expires_at > ? AND (status = 'CLAIMED' OR status = 'RUNNING')
 ```
 
-**Expired leases cannot be revived by heartbeat**, even when nobody has reclaimed the execution yet. A rejected renewal makes the scheduler request cooperative cancellation of the handler. A GC pause, slow database, or Redis outage that exceeds the remaining lease can therefore cancel otherwise healthy work. The default heartbeat interval is half the lease duration, leaving roughly `executionLeaseDuration - heartbeatInterval` for delays after a heartbeat becomes due. Choose a lease that accommodates expected pauses and storage latency.
+**Expired leases cannot be revived by heartbeat**, even when nobody has reclaimed the execution yet. A rejected renewal makes the scheduler request cooperative cancellation of the handler. A GC pause, slow database, or Redis outage that exceeds the remaining lease can therefore cancel otherwise healthy work. The default heartbeat interval is half the lease duration, leaving roughly `executionLeaseDuration - heartbeatInterval` for delays after a heartbeat becomes due. Choose a lease that accommodates expected pauses and storage latency. The scheduler starts its local lease budget before sending each claim or renewal request, so a delayed response cannot extend ownership. Its watchdog also bounds that budget with monotonic elapsed time, so a stalled or backward-moving wall clock cannot delay local expiration. Cancellation remains cooperative; handlers must still protect external side effects with idempotency.
 
 Redis also requires an unexpired entry in the corresponding claimed/running sorted set; a missing entry causes renewal to fail.
 

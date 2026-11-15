@@ -9,6 +9,7 @@ import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.toJavaDuration
 
 class Scheduler(
@@ -20,6 +21,13 @@ class Scheduler(
     private val store: JobStore
         get() = config.store ?: throw IllegalStateException("JobStore must be configured")
     private val handlerRegistry = HandlerRegistry()
+    private data class LeaseDeadline(val expiresAt: Instant, val startedAtNanos: Long, val duration: Duration) {
+        fun remaining(now: Instant): Duration = minOf(
+            Duration.between(now, expiresAt),
+            duration.minusNanos(System.nanoTime() - startedAtNanos)
+        )
+    }
+
     private val activeJobs = ConcurrentHashMap<UUID, Job>()
     private val activeClaimOwners = ConcurrentHashMap<UUID, String>()
     private val workerId = UUID.randomUUID().toString()
@@ -206,7 +214,9 @@ class Scheduler(
                 }
 
                 val claimOwner = "$workerId:${UUID.randomUUID()}"
-                if (store.claimExecution(execution.id, claimOwner, config.executionLeaseDuration)) {
+                val leaseDuration = config.executionLeaseDuration
+                val initialLeaseDeadline = newLeaseDeadline(leaseDuration)
+                if (store.claimExecution(execution.id, claimOwner, leaseDuration)) {
                     val placeholderJob = Job()
                     val previousJob = activeJobs.putIfAbsent(execution.id, placeholderJob)
                     if (previousJob != null) {
@@ -255,7 +265,7 @@ class Scheduler(
                         val executionJob = scope.launch(start = CoroutineStart.LAZY) {
                             val selfJob = coroutineContext[Job]!!
                             try {
-                                executeJobWithHeartbeat(execution, jobDef, config.executionLeaseDuration, claimOwner)
+                                executeJobWithHeartbeat(execution, jobDef, leaseDuration, claimOwner, initialLeaseDeadline)
                             } finally {
                                 activeJobs.remove(execution.id, selfJob)
                                 activeClaimOwners.remove(execution.id, claimOwner)
@@ -335,40 +345,51 @@ class Scheduler(
         )
     }
 
+    private fun newLeaseDeadline(duration: Duration): LeaseDeadline {
+        val startedAtNanos = System.nanoTime()
+        return LeaseDeadline(Instant.now(clock).plus(duration), startedAtNanos, duration)
+    }
+
     private suspend fun executeJobWithHeartbeat(
         execution: JobExecution,
         jobDef: JobDefinition,
         leaseDuration: Duration,
-        claimOwner: String
+        claimOwner: String,
+        initialLeaseDeadline: LeaseDeadline
     ) {
         coroutineScope {
-            var leaseExpiresAt = Instant.now(clock).plus(leaseDuration)
+            if (initialLeaseDeadline.remaining(Instant.now(clock)) <= Duration.ZERO) return@coroutineScope
+            val leaseDeadline = AtomicReference(initialLeaseDeadline)
             val watchdogJob = launch {
                 while (isActive) {
                     val now = Instant.now(clock)
-                    if (!now.isBefore(leaseExpiresAt)) {
-                        log.warn("[${execution.jobId}] Execution ${execution.id} lease expired at $leaseExpiresAt without renewal; cancelling handler")
+                    val deadline = leaseDeadline.get()
+                    val remaining = deadline.remaining(now)
+                    if (remaining <= Duration.ZERO) {
+                        log.warn("[${execution.jobId}] Execution ${execution.id} lease expired at ${deadline.expiresAt} without renewal; cancelling handler")
                         this@coroutineScope.cancel("Execution ${execution.id} lease expired")
                         break
                     }
-                    val remaining = Duration.between(now, leaseExpiresAt).toMillis().coerceAtLeast(1L)
-                    delay(minOf(heartbeatInterval.toMillis().coerceAtLeast(1L), remaining))
+                    delay(minOf(heartbeatInterval.toMillis().coerceAtLeast(1L), remaining.toMillis().coerceAtLeast(1L)))
                 }
             }
             val heartbeatJob = launch {
                 while (isActive) {
                     delay(heartbeatInterval.toMillis())
+                    // A response can arrive long after the store persisted the renewal.
+                    // Budget from request start so network latency never extends ownership.
+                    val renewalDeadline = newLeaseDeadline(leaseDuration)
                     val renewed = try {
                         val ok = store.heartbeat(execution.id, claimOwner, leaseDuration)
                         if (ok) {
-                            leaseExpiresAt = Instant.now(clock).plus(leaseDuration)
+                            leaseDeadline.set(renewalDeadline)
                         }
                         ok
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
                         log.error("[${execution.jobId}] Error during heartbeat for execution ${execution.id}", e)
-                        Instant.now(clock).isBefore(leaseExpiresAt)
+                        leaseDeadline.get().remaining(Instant.now(clock)) > Duration.ZERO
                     }
                     if (!renewed) {
                         log.warn("[${execution.jobId}] Failed to heartbeat for execution ${execution.id}, it might have been reclaimed or superseded")
