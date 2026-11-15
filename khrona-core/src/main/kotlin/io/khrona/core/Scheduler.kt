@@ -49,6 +49,9 @@ class Scheduler(
         if (config.pollBatchSize <= 0) {
             throw IllegalArgumentException("pollBatchSize must be positive")
         }
+        if (config.maxConcurrentExecutions <= 0) {
+            throw IllegalArgumentException("maxConcurrentExecutions must be positive")
+        }
         if (config.retentionPolicy.enabled) {
             if (!config.retentionPolicy.maxAge.isPositive()) {
                 throw IllegalArgumentException("retentionPolicy.maxAge must be positive")
@@ -169,6 +172,10 @@ class Scheduler(
     }
 
     internal suspend fun pollAndExecute() {
+        if (activeJobs.size >= config.maxConcurrentExecutions) {
+            log.debug("Skipping poll because active executions (${activeJobs.size}) reached maxConcurrentExecutions (${config.maxConcurrentExecutions})")
+            return
+        }
         val now = Instant.now(clock)
         val eligible = store.listEligibleExecutions(now, config.pollBatchSize, handlerRegistry.registeredJobIds())
         
@@ -206,6 +213,11 @@ class Scheduler(
                     log.debug("[${execution.jobId}] Skipping execution ${execution.id} because lock ${jobDef.lockKey} is held")
                     return@forEach
                 }
+            }
+
+            if (activeJobs.size >= config.maxConcurrentExecutions) {
+                log.debug("Stopping claim loop because active executions (${activeJobs.size}) reached maxConcurrentExecutions (${config.maxConcurrentExecutions})")
+                return
             }
 
             val claimOwner = "$workerId:${UUID.randomUUID()}"

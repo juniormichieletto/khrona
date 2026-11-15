@@ -146,6 +146,7 @@ class KhronaConfig {
     var executionLeaseDuration: java.time.Duration = java.time.Duration.ofMinutes(5)
     var heartbeatInterval: java.time.Duration? = null
     var pollBatchSize: Int = 100
+    var maxConcurrentExecutions: Int = 100
     val jobs = mutableListOf<JobDefinition>()
 
     fun pollingInterval(interval: kotlin.time.Duration) {

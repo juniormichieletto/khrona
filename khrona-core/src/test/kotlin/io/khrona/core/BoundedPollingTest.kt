@@ -84,6 +84,14 @@ class BoundedPollingTest {
             }
             Scheduler(config, this)
         }
+
+        assertThrows(IllegalArgumentException::class.java) {
+            val config = KhronaConfig().apply {
+                this.store = store
+                maxConcurrentExecutions = 0
+            }
+            Scheduler(config, this)
+        }
     }
 
     @Test
@@ -125,5 +133,48 @@ class BoundedPollingTest {
 
         assertEquals(1, myRuns.get(), "Local job must execute even when pollBatchSize older foreign rows exist")
         assertEquals(ExecutionStatus.SUCCESS, store.getExecution(myExecution.id)?.status)
+    }
+
+    @Test
+    fun `scheduler bounds concurrent active executions across polls`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
+        val active = AtomicInteger(0)
+        val maxActive = AtomicInteger(0)
+
+        val config = KhronaConfig().apply {
+            this.store = store
+            pollBatchSize = 100
+            maxConcurrentExecutions = 10
+            job("allow-burst") {
+                once()
+                concurrencyPolicy = ConcurrencyPolicy.ALLOW
+                execute {
+                    val current = active.incrementAndGet()
+                    maxActive.accumulateAndGet(current, ::maxOf)
+                    delay(5_000)
+                    active.decrementAndGet()
+                }
+            }
+        }
+
+        val scheduler = Scheduler(config, backgroundScope, clock)
+        val jobDef = config.jobs.first()
+        store.saveJob(jobDef)
+        repeat(1_000) {
+            store.saveExecution(JobExecution(jobId = jobDef.id, scheduledAt = Instant.now(clock).minusSeconds(1)))
+        }
+
+        repeat(10) {
+            scheduler.pollAndExecute()
+            advanceTimeBy(20)
+        }
+
+        assertEquals(
+            10,
+            maxActive.get(),
+            "Concurrent active handlers (${maxActive.get()}) must not exceed maxConcurrentExecutions (10)"
+        )
+        scheduler.stop()
     }
 }
