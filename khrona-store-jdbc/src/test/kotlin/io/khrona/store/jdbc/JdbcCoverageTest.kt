@@ -556,5 +556,119 @@ class JdbcCoverageTest : AbstractJdbcJobStoreTest() {
             hikari.close()
         }
     }
+
+    @Test
+    fun `store binds and reads all JDBC timestamps using explicit UTC Calendar`() = runBlocking<Unit> {
+        val nonUtcBindings = java.util.concurrent.atomic.AtomicInteger(0)
+        val utcBindings = java.util.concurrent.atomic.AtomicInteger(0)
+        val utcReads = java.util.concurrent.atomic.AtomicInteger(0)
+
+        fun wrapResultSet(rs: java.sql.ResultSet): java.sql.ResultSet {
+            return java.lang.reflect.Proxy.newProxyInstance(
+                java.sql.ResultSet::class.java.classLoader,
+                arrayOf(java.sql.ResultSet::class.java)
+            ) { _, method, args ->
+                if (method.name == "getTimestamp") {
+                    if (args != null && args.size == 2 && args[1] is java.util.Calendar) {
+                        val cal = args[1] as java.util.Calendar
+                        if (cal.timeZone.rawOffset == 0) {
+                            utcReads.incrementAndGet()
+                        } else {
+                            nonUtcBindings.incrementAndGet()
+                        }
+                    } else {
+                        nonUtcBindings.incrementAndGet()
+                    }
+                }
+                try {
+                    method.invoke(rs, *(args ?: emptyArray()))
+                } catch (e: java.lang.reflect.InvocationTargetException) {
+                    throw e.targetException
+                }
+            } as java.sql.ResultSet
+        }
+
+        fun wrapStatement(stmt: java.sql.PreparedStatement): java.sql.PreparedStatement {
+            return java.lang.reflect.Proxy.newProxyInstance(
+                java.sql.PreparedStatement::class.java.classLoader,
+                arrayOf(java.sql.PreparedStatement::class.java)
+            ) { _, method, args ->
+                if (method.name == "setTimestamp") {
+                    if (args != null && args.size == 3 && args[2] is java.util.Calendar) {
+                        val cal = args[2] as java.util.Calendar
+                        if (cal.timeZone.rawOffset == 0) {
+                            utcBindings.incrementAndGet()
+                        } else {
+                            nonUtcBindings.incrementAndGet()
+                        }
+                    } else {
+                        nonUtcBindings.incrementAndGet()
+                    }
+                }
+                val result = try {
+                    method.invoke(stmt, *(args ?: emptyArray()))
+                } catch (e: java.lang.reflect.InvocationTargetException) {
+                    throw e.targetException
+                }
+                if (method.name == "executeQuery" && result is java.sql.ResultSet) {
+                    wrapResultSet(result)
+                } else {
+                    result
+                }
+            } as java.sql.PreparedStatement
+        }
+
+        fun wrapConnection(conn: Connection): Connection {
+            return java.lang.reflect.Proxy.newProxyInstance(
+                Connection::class.java.classLoader,
+                arrayOf(Connection::class.java)
+            ) { _, method, args ->
+                val result = try {
+                    method.invoke(conn, *(args ?: emptyArray()))
+                } catch (e: java.lang.reflect.InvocationTargetException) {
+                    throw e.targetException
+                }
+                if (method.name == "prepareStatement" && result is java.sql.PreparedStatement) {
+                    wrapStatement(result)
+                } else {
+                    result
+                }
+            } as Connection
+        }
+
+        val trackingDs = java.lang.reflect.Proxy.newProxyInstance(
+            DataSource::class.java.classLoader,
+            arrayOf(DataSource::class.java)
+        ) { _, method, args ->
+            val result = try {
+                method.invoke(dataSource, *(args ?: emptyArray()))
+            } catch (e: java.lang.reflect.InvocationTargetException) {
+                throw e.targetException
+            }
+            if (method.name == "getConnection" && result is Connection) {
+                wrapConnection(result)
+            } else {
+                result
+            }
+        } as DataSource
+
+        val utcStore = JdbcJobStore(trackingDs, H2Dialect())
+        val now = Instant.parse("2026-04-20T12:00:00Z")
+        val exec = JobExecution(jobId = "utc-cal-job", scheduledAt = now, lockKey = "utc-lock")
+        utcStore.saveExecution(exec)
+        assertEquals(now, utcStore.getExecution(exec.id)?.scheduledAt)
+        assertEquals(1, utcStore.listEligibleExecutions(now.plusSeconds(1), 10, setOf("utc-cal-job")).size)
+        assertTrue(utcStore.claimExecution(exec.id, "worker-1", Duration.ofSeconds(30)))
+        assertTrue(utcStore.heartbeat(exec.id, "worker-1", Duration.ofSeconds(60)))
+        assertTrue(utcStore.isLockHeld("utc-lock", null))
+        assertEquals(1, utcStore.supersedeExecutionsByLockKey("utc-lock", null).size)
+        assertEquals(0, utcStore.resetExpiredExecutions(now.plusSeconds(120)))
+        assertTrue(utcStore.updateExecutionStatus(exec.id, ExecutionStatus.SUCCESS))
+        assertEquals(1, utcStore.cleanupCompletedExecutions(Instant.now().plusSeconds(60)))
+
+        assertEquals(0, nonUtcBindings.get(), "All setTimestamp and getTimestamp calls must pass an explicit UTC Calendar")
+        assertTrue(utcBindings.get() > 0)
+        assertTrue(utcReads.get() > 0)
+    }
 }
 

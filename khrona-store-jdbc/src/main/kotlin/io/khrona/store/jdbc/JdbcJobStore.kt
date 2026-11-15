@@ -265,12 +265,14 @@ class JdbcJobStore(
         return json.encodeToString(kotlinx.serialization.json.JsonObject.serializer(), updated)
     }
 
+    private fun utcCalendar(): Calendar = UTC_CALENDAR.get()
+
     private fun upsertExecution(conn: java.sql.Connection, dialect: JdbcDialect, execution: JobExecution) {
         conn.prepareStatementWithTimeout(dialect.upsertExecutionSql()).use { stmt ->
             stmt.setString(1, execution.id.toString())
             stmt.setString(2, execution.jobId)
             stmt.setString(3, execution.status.name)
-            stmt.setTimestamp(4, Timestamp.from(execution.scheduledAt))
+            stmt.setTimestamp(4, Timestamp.from(execution.scheduledAt), utcCalendar())
             stmt.setInt(5, execution.attempt)
             
             val payloadJson = execution.payload?.let { 
@@ -347,7 +349,7 @@ class JdbcJobStore(
                 status == ExecutionStatus.DEAD_LETTERED ||
                 status == ExecutionStatus.MISFIRED ||
                 status == ExecutionStatus.SUPERSEDED
-            stmt.setTimestamp(3, if (isTerminal) Timestamp.from(Instant.now()) else null)
+            stmt.setTimestamp(3, if (isTerminal) Timestamp.from(Instant.now()) else null, utcCalendar())
             stmt.setString(4, id.toString())
             if (workerId != null) {
                 stmt.setString(5, workerId)
@@ -386,8 +388,8 @@ class JdbcJobStore(
         dataSource.connection.use { conn ->
             conn.prepareStatementWithTimeout(dialect.listEligibleExecutionsSql(orderedJobIds.size)).use { stmt ->
                 var paramIndex = 1
-                stmt.setTimestamp(paramIndex++, Timestamp.from(now))
-                stmt.setTimestamp(paramIndex++, Timestamp.from(now))
+                stmt.setTimestamp(paramIndex++, Timestamp.from(now), utcCalendar())
+                stmt.setTimestamp(paramIndex++, Timestamp.from(now), utcCalendar())
                 orderedJobIds.forEach { jobId ->
                     stmt.setString(paramIndex++, jobId)
                 }
@@ -419,12 +421,12 @@ class JdbcJobStore(
             conn.prepareStatementWithTimeout(dialect.claimExecutionSql()).use { stmt ->
                 val now = Instant.now()
                 val expiresAt = now.plus(leaseDuration)
-                stmt.setTimestamp(1, Timestamp.from(now))
+                stmt.setTimestamp(1, Timestamp.from(now), utcCalendar())
                 stmt.setString(2, workerId)
-                stmt.setTimestamp(3, Timestamp.from(expiresAt))
-                stmt.setTimestamp(4, Timestamp.from(now))
+                stmt.setTimestamp(3, Timestamp.from(expiresAt), utcCalendar())
+                stmt.setTimestamp(4, Timestamp.from(now), utcCalendar())
                 stmt.setString(5, id.toString())
-                stmt.setTimestamp(6, Timestamp.from(now))
+                stmt.setTimestamp(6, Timestamp.from(now), utcCalendar())
                 stmt.executeUpdate() > 0
             }
         }
@@ -436,10 +438,10 @@ class JdbcJobStore(
             conn.prepareStatementWithTimeout(dialect.heartbeatSql()).use { stmt ->
                 val now = Instant.now()
                 val expiresAt = now.plus(leaseDuration)
-                stmt.setTimestamp(1, Timestamp.from(expiresAt))
+                stmt.setTimestamp(1, Timestamp.from(expiresAt), utcCalendar())
                 stmt.setString(2, id.toString())
                 stmt.setString(3, workerId)
-                stmt.setTimestamp(4, Timestamp.from(now))
+                stmt.setTimestamp(4, Timestamp.from(now), utcCalendar())
                 stmt.executeUpdate() > 0
             }
         }
@@ -451,7 +453,7 @@ class JdbcJobStore(
             val sql = dialect.isLockHeldSql(excludeExecutionId != null)
             conn.prepareStatementWithTimeout(sql).use { stmt ->
                 stmt.setString(1, lockKey)
-                stmt.setTimestamp(2, Timestamp.from(Instant.now()))
+                stmt.setTimestamp(2, Timestamp.from(Instant.now()), utcCalendar())
                 if (excludeExecutionId != null) {
                     stmt.setString(3, excludeExecutionId.toString())
                 }
@@ -465,7 +467,7 @@ class JdbcJobStore(
         val dialect = getDialect()
         withWriteConnection { conn ->
             conn.prepareStatementWithTimeout(dialect.resetExpiredExecutionsSql()).use { stmt ->
-                stmt.setTimestamp(1, Timestamp.from(now))
+                stmt.setTimestamp(1, Timestamp.from(now), utcCalendar())
                 stmt.executeUpdate()
             }
         }
@@ -498,7 +500,7 @@ class JdbcJobStore(
                     val updateSql = "UPDATE khrona_executions SET status = ?, completed_at = ? WHERE id IN ($placeholders)"
                     conn.prepareStatementWithTimeout(updateSql).use { stmt ->
                         stmt.setString(1, ExecutionStatus.SUPERSEDED.name)
-                        stmt.setTimestamp(2, Timestamp.from(Instant.now()))
+                        stmt.setTimestamp(2, Timestamp.from(Instant.now()), utcCalendar())
                         superseded.forEachIndexed { index, id ->
                             stmt.setString(index + 3, id.toString())
                         }
@@ -535,7 +537,7 @@ class JdbcJobStore(
                 statusList.forEach { status ->
                     stmt.setString(paramIdx++, status.name)
                 }
-                stmt.setTimestamp(paramIdx++, Timestamp.from(before))
+                stmt.setTimestamp(paramIdx++, Timestamp.from(before), utcCalendar())
                 stmt.setInt(paramIdx, limit)
                 stmt.executeUpdate()
             }
@@ -560,7 +562,7 @@ class JdbcJobStore(
                     statusList.forEach { status ->
                         stmt.setString(paramIdx++, status.name)
                     }
-                    stmt.setTimestamp(paramIdx, Timestamp.from(before))
+                    stmt.setTimestamp(paramIdx, Timestamp.from(before), utcCalendar())
                     stmt.executeQuery().use { rs ->
                         while (rs.next() && idsToDelete.size < limit) {
                             idsToDelete.add(rs.getString(1))
@@ -649,10 +651,10 @@ class JdbcJobStore(
             id = UUID.fromString(idStr),
             jobId = rs.getString("job_id"),
             status = ExecutionStatus.valueOf(rs.getString("status")),
-            scheduledAt = rs.getTimestamp("scheduled_at").toInstant(),
-            startedAt = rs.getTimestamp("started_at")?.toInstant(),
-            completedAt = rs.getTimestamp("completed_at")?.toInstant(),
-            expiresAt = rs.getTimestamp("expires_at")?.toInstant(),
+            scheduledAt = rs.getTimestamp("scheduled_at", utcCalendar()).toInstant(),
+            startedAt = rs.getTimestamp("started_at", utcCalendar())?.toInstant(),
+            completedAt = rs.getTimestamp("completed_at", utcCalendar())?.toInstant(),
+            expiresAt = rs.getTimestamp("expires_at", utcCalendar())?.toInstant(),
             attempt = rs.getInt("attempt"),
             workerId = rs.getString("claimed_by"),
             lockKey = rs.getString("lock_key"),
@@ -665,6 +667,10 @@ class JdbcJobStore(
     companion object {
         const val DEFAULT_QUERY_TIMEOUT_SECONDS = 30
         private const val SEEDED_EXECUTION_ID_KEY = "_seededExecutionId"
+        private val UTC_TIME_ZONE: TimeZone = TimeZone.getTimeZone("UTC")
+        private val UTC_CALENDAR: ThreadLocal<Calendar> = ThreadLocal.withInitial {
+            Calendar.getInstance(UTC_TIME_ZONE)
+        }
 
         fun resolveDialect(dataSource: DataSource): JdbcDialect {
             return dataSource.connection.use { conn ->
