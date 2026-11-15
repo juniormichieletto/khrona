@@ -832,5 +832,50 @@ class SchedulerTest {
 
         assertEquals(1, runs.get(), "once() job must not run a second time after retention cleanup and restart")
     }
+
+    @Test
+    fun `transient store failure after handler success does not break recurring chain`() = runTest {
+        val clock = TestClock(testScheduler)
+        val failNextSave = java.util.concurrent.atomic.AtomicBoolean(false)
+        val handlerRuns = java.util.concurrent.atomic.AtomicInteger(0)
+        val store = object : MockJobStore(clock) {
+            override suspend fun saveExecution(execution: JobExecution) {
+                if (failNextSave.getAndSet(false)) {
+                    throw java.sql.SQLTransientConnectionException("db blip")
+                }
+                super.saveExecution(execution)
+            }
+        }
+        val config = KhronaConfig().apply {
+            this.store = store
+            job("recurring-atomic") {
+                cron("*/5 * * * *")
+                execute {
+                    handlerRuns.incrementAndGet()
+                    failNextSave.set(true)
+                }
+            }
+        }
+        val scheduler = Scheduler(config, backgroundScope, clock)
+        val jobDef = config.jobs.first()
+        store.saveJob(jobDef)
+        val initialExec = JobExecution(
+            jobId = "recurring-atomic",
+            scheduledAt = Instant.now(clock),
+            lockKey = jobDef.lockKey
+        )
+        store.saveExecution(initialExec)
+
+        scheduler.pollAndExecute()
+        advanceUntilIdle()
+        scheduler.stop()
+
+        assertEquals(1, handlerRuns.get())
+        assertEquals(ExecutionStatus.SUCCESS, store.getExecution(initialExec.id)?.status)
+        val pendingNext = store.executions.values.filter {
+            it.jobId == "recurring-atomic" && it.status == ExecutionStatus.PENDING
+        }
+        assertEquals(1, pendingNext.size, "Next recurring execution must be scheduled despite transient store error")
+    }
 }
 

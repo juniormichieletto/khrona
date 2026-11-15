@@ -301,27 +301,25 @@ class Scheduler(
 
     private suspend fun handleMisfire(execution: JobExecution, jobDef: JobDefinition, now: Instant, claimOwner: String) {
         log.info("[${execution.jobId}] Misfire detected (scheduled at ${execution.scheduledAt}), ignoring due to IGNORE policy")
-        if (!store.updateExecutionStatus(execution.id, ExecutionStatus.MISFIRED, "Misfire threshold exceeded", workerId = claimOwner)) {
-            return
-        }
-        
-        // Schedule next run
         val next = jobDef.trigger.nextExecutionTime(now)
             ?.truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
-        if (next != null) {
-            val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
-            if (store.getExecution(deterministicId) == null) {
-                store.saveExecution(
-                    JobExecution(
-                        id = deterministicId,
-                        jobId = jobDef.id,
-                        scheduledAt = next,
-                        lockKey = jobDef.lockKey
-                        // Do NOT propagate correlationId to next recurring run
-                    )
-                )
-            }
+        val nextExecution = next?.let {
+            val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$it".toByteArray())
+            JobExecution(
+                id = deterministicId,
+                jobId = jobDef.id,
+                scheduledAt = it,
+                lockKey = jobDef.lockKey
+                // Do NOT propagate correlationId to next recurring run
+            )
         }
+        store.completeExecution(
+            id = execution.id,
+            status = ExecutionStatus.MISFIRED,
+            error = "Misfire threshold exceeded",
+            workerId = claimOwner,
+            nextExecution = nextExecution
+        )
     }
 
     private suspend fun executeJobWithHeartbeat(
@@ -358,16 +356,16 @@ class Scheduler(
     private suspend fun executeJob(execution: JobExecution, jobDef: JobDefinition, claimOwner: String) {
         val correlationId = execution.correlationId ?: execution.id.toString()
         withContext(MDCContext(mapOf("correlationId" to correlationId))) {
-            try {
-                log.info("[${execution.jobId}] [$correlationId] Executing job (execution: ${execution.id})")
-                if (!store.updateExecutionStatus(execution.id, ExecutionStatus.RUNNING, workerId = claimOwner)) {
-                    log.warn("[${execution.jobId}] [$correlationId] Execution ${execution.id} is no longer owned by $claimOwner before start; aborting")
-                    return@withContext
-                }
+            log.info("[${execution.jobId}] [$correlationId] Executing job (execution: ${execution.id})")
+            if (!store.updateExecutionStatus(execution.id, ExecutionStatus.RUNNING, workerId = claimOwner)) {
+                log.warn("[${execution.jobId}] [$correlationId] Execution ${execution.id} is no longer owned by $claimOwner before start; aborting")
+                return@withContext
+            }
 
-                val handler = handlerRegistry.get(jobDef.id) 
+            val handlerFailure: Exception? = try {
+                val handler = handlerRegistry.get(jobDef.id)
                     ?: throw IllegalStateException("No handler registered for job ${jobDef.id}")
-                
+
                 if (jobDef.timeout != null) {
                     withTimeout(jobDef.timeout.toMillis()) {
                         handler(execution.payload)
@@ -375,13 +373,7 @@ class Scheduler(
                 } else {
                     handler(execution.payload)
                 }
-
-                if (store.updateExecutionStatus(execution.id, ExecutionStatus.SUCCESS, workerId = claimOwner)) {
-                    log.info("[${execution.jobId}] [$correlationId] Job finished successfully")
-                    scheduleNextRunIfRecurring(execution, jobDef)
-                } else {
-                    log.warn("[${execution.jobId}] [$correlationId] Execution ${execution.id} lost ownership before completion; skipping SUCCESS and next-run scheduling")
-                }
+                null
             } catch (e: Exception) {
                 if (e is CancellationException && e !is TimeoutCancellationException) {
                     log.info("[${execution.jobId}] [$correlationId] Job was cancelled (superseded or shutdown)")
@@ -389,33 +381,60 @@ class Scheduler(
                     // But to be safe, we can ensure it's not DEAD_LETTERED
                     return@withContext
                 }
-                
-                log.error("[${execution.jobId}] [$correlationId] Job failed", e)
+                e
+            }
+
+            if (handlerFailure == null) {
+                val nextExecution = buildNextRecurringExecution(execution, jobDef)
+                if (completeExecutionWithRetry(
+                        id = execution.id,
+                        status = ExecutionStatus.SUCCESS,
+                        workerId = claimOwner,
+                        nextExecution = nextExecution
+                    )
+                ) {
+                    log.info("[${execution.jobId}] [$correlationId] Job finished successfully")
+                } else {
+                    log.warn("[${execution.jobId}] [$correlationId] Execution ${execution.id} lost ownership before completion; skipping SUCCESS and next-run scheduling")
+                }
+            } else {
+                log.error("[${execution.jobId}] [$correlationId] Job failed", handlerFailure)
                 val nextAttempt = execution.attempt + 1
                 if (nextAttempt < jobDef.retryPolicy.maxAttempts) {
                     val nextDelay = jobDef.retryPolicy.calculateDelay(nextAttempt)
                     val nextRun = Instant.now(clock).plus(nextDelay)
+                    val retryExecution = JobExecution(
+                        jobId = execution.jobId,
+                        scheduledAt = nextRun,
+                        attempt = nextAttempt,
+                        payload = execution.payload,
+                        lockKey = jobDef.lockKey,
+                        correlationId = correlationId // Propagate correlationId to retries of the SAME execution
+                    )
 
-                    if (store.updateExecutionStatus(execution.id, ExecutionStatus.FAILED, e.message, workerId = claimOwner)) {
-                        // Create a new execution for the retry
-                        store.saveExecution(
-                            JobExecution(
-                                jobId = execution.jobId,
-                                scheduledAt = nextRun,
-                                attempt = nextAttempt,
-                                payload = execution.payload,
-                                lockKey = jobDef.lockKey,
-                                correlationId = correlationId // Propagate correlationId to retries of the SAME execution
-                            )
+                    if (completeExecutionWithRetry(
+                            id = execution.id,
+                            status = ExecutionStatus.FAILED,
+                            error = handlerFailure.message,
+                            workerId = claimOwner,
+                            nextExecution = retryExecution
                         )
+                    ) {
                         log.info("[${execution.jobId}] [$correlationId] Scheduled retry at $nextRun (attempt $nextAttempt)")
                     } else {
                         log.warn("[${execution.jobId}] [$correlationId] Execution ${execution.id} lost ownership before failure transition; skipping retry scheduling")
                     }
                 } else {
-                    if (store.updateExecutionStatus(execution.id, ExecutionStatus.DEAD_LETTERED, e.message, workerId = claimOwner)) {
+                    val nextExecution = buildNextRecurringExecution(execution, jobDef)
+                    if (completeExecutionWithRetry(
+                            id = execution.id,
+                            status = ExecutionStatus.DEAD_LETTERED,
+                            error = handlerFailure.message,
+                            workerId = claimOwner,
+                            nextExecution = nextExecution
+                        )
+                    ) {
                         log.warn("[${execution.jobId}] [$correlationId] Reached max attempts (${jobDef.retryPolicy.maxAttempts}) and is now DEAD_LETTERED")
-                        scheduleNextRunIfRecurring(execution, jobDef)
                     } else {
                         log.warn("[${execution.jobId}] [$correlationId] Execution ${execution.id} lost ownership before DEAD_LETTERED transition; skipping next-run scheduling")
                     }
@@ -424,10 +443,39 @@ class Scheduler(
         }
     }
 
-    private suspend fun scheduleNextRunIfRecurring(execution: JobExecution, jobDef: JobDefinition) {
+    private suspend fun completeExecutionWithRetry(
+        id: UUID,
+        status: ExecutionStatus,
+        error: String? = null,
+        workerId: String,
+        nextExecution: JobExecution? = null
+    ): Boolean {
+        repeat(2) { attempt ->
+            try {
+                return store.completeExecution(
+                    id = id,
+                    status = status,
+                    error = error,
+                    workerId = workerId,
+                    nextExecution = nextExecution
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (attempt == 1) {
+                    log.error("Failed to complete execution $id with status $status after retry", e)
+                } else {
+                    log.warn("Transient failure completing execution $id with status $status; retrying once", e)
+                }
+            }
+        }
+        return false
+    }
+
+    private fun buildNextRecurringExecution(execution: JobExecution, jobDef: JobDefinition): JobExecution? {
         // Use plusMillis(1) to ensure we look for the NEXT execution after this one
         // (important for inclusive triggers like OneTimeTrigger), and clamp to 'now'
-        // so an overdue FIRE_NOW execution does not replay every missed historical occurrence.
+        // when misfired so an overdue FIRE_NOW execution does not replay missed historical occurrences.
         val now = Instant.now(clock)
         val isMisfired = Duration.between(execution.scheduledAt, now) > config.misfireThreshold
         val baseline = if (isMisfired) {
@@ -437,20 +485,15 @@ class Scheduler(
         }
         val next = jobDef.trigger.nextExecutionTime(baseline)
             ?.truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
-        if (next != null) {
-            val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
-            if (store.getExecution(deterministicId) == null) {
-                store.saveExecution(
-                    JobExecution(
-                        id = deterministicId,
-                        jobId = jobDef.id,
-                        scheduledAt = next,
-                        lockKey = jobDef.lockKey
-                        // Do NOT propagate correlationId to next recurring run
-                    )
-                )
-            }
-        }
+            ?: return null
+        val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
+        return JobExecution(
+            id = deterministicId,
+            jobId = jobDef.id,
+            scheduledAt = next,
+            lockKey = jobDef.lockKey
+            // Do NOT propagate correlationId to next recurring run
+        )
     }
 
     suspend fun stop() {

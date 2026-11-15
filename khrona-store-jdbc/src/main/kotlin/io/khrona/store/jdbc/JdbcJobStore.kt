@@ -276,32 +276,69 @@ class JdbcJobStore(
         workerId: String?
     ): Boolean = inJdbcContext {
         dataSource.connection.use { conn ->
-            val setClause = if (status == ExecutionStatus.PENDING) {
-                "status = ?, error = ?, completed_at = ?, claimed_at = NULL, claimed_by = NULL, expires_at = NULL, started_at = NULL"
-            } else {
-                "status = ?, error = ?, completed_at = ?"
-            }
-            val whereClause = if (workerId != null) {
-                "WHERE id = ? AND claimed_by = ? AND (status = 'CLAIMED' OR status = 'RUNNING')"
-            } else {
-                "WHERE id = ?"
-            }
-            val sql = "UPDATE khrona_executions SET $setClause $whereClause"
-            conn.prepareStatementWithTimeout(sql).use { stmt ->
-                stmt.setString(1, status.name)
-                stmt.setString(2, error)
-                val isTerminal = status == ExecutionStatus.SUCCESS || 
-                                status == ExecutionStatus.FAILED || 
-                                status == ExecutionStatus.DEAD_LETTERED || 
-                                status == ExecutionStatus.MISFIRED ||
-                                status == ExecutionStatus.SUPERSEDED
-                stmt.setTimestamp(3, if (isTerminal) Timestamp.from(Instant.now()) else null)
-                stmt.setString(4, id.toString())
-                if (workerId != null) {
-                    stmt.setString(5, workerId)
+            return@inJdbcContext updateExecutionStatusInternal(conn, id, status, error, workerId)
+        }
+    }
+
+    override suspend fun completeExecution(
+        id: UUID,
+        status: ExecutionStatus,
+        error: String?,
+        workerId: String?,
+        nextExecution: JobExecution?
+    ): Boolean = inJdbcContext {
+        val dialect = getDialect()
+        dataSource.connection.use { conn ->
+            val originalAutoCommit = conn.autoCommit
+            try {
+                conn.autoCommit = false
+                val updated = updateExecutionStatusInternal(conn, id, status, error, workerId)
+                if (updated && nextExecution != null) {
+                    upsertExecution(conn, dialect, nextExecution)
                 }
-                return@inJdbcContext stmt.executeUpdate() > 0
+                conn.commit()
+                return@inJdbcContext updated
+            } catch (e: Exception) {
+                conn.rollback()
+                throw e
+            } finally {
+                conn.autoCommit = originalAutoCommit
             }
+        }
+    }
+
+    private fun updateExecutionStatusInternal(
+        conn: java.sql.Connection,
+        id: UUID,
+        status: ExecutionStatus,
+        error: String?,
+        workerId: String?
+    ): Boolean {
+        val setClause = if (status == ExecutionStatus.PENDING) {
+            "status = ?, error = ?, completed_at = ?, claimed_at = NULL, claimed_by = NULL, expires_at = NULL, started_at = NULL"
+        } else {
+            "status = ?, error = ?, completed_at = ?"
+        }
+        val whereClause = if (workerId != null) {
+            "WHERE id = ? AND claimed_by = ? AND (status = 'CLAIMED' OR status = 'RUNNING')"
+        } else {
+            "WHERE id = ?"
+        }
+        val sql = "UPDATE khrona_executions SET $setClause $whereClause"
+        conn.prepareStatementWithTimeout(sql).use { stmt ->
+            stmt.setString(1, status.name)
+            stmt.setString(2, error)
+            val isTerminal = status == ExecutionStatus.SUCCESS ||
+                status == ExecutionStatus.FAILED ||
+                status == ExecutionStatus.DEAD_LETTERED ||
+                status == ExecutionStatus.MISFIRED ||
+                status == ExecutionStatus.SUPERSEDED
+            stmt.setTimestamp(3, if (isTerminal) Timestamp.from(Instant.now()) else null)
+            stmt.setString(4, id.toString())
+            if (workerId != null) {
+                stmt.setString(5, workerId)
+            }
+            return stmt.executeUpdate() > 0
         }
     }
 

@@ -156,9 +156,18 @@ class RedisJobStore private constructor(
         status: ExecutionStatus,
         error: String?,
         workerId: String?
+    ): Boolean = completeExecution(id, status, error, workerId, null)
+
+    override suspend fun completeExecution(
+        id: UUID,
+        status: ExecutionStatus,
+        error: String?,
+        workerId: String?,
+        nextExecution: JobExecution?
     ): Boolean = inRedisContext {
         val current = getStoredExecution(id) ?: return@inRedisContext false
         val completedAt = if (status.isTerminal()) Instant.now().toString() else current.completedAt ?: ""
+        val nextStored = nextExecution?.toStored()
         commands.eval<Long>(
             UPDATE_EXECUTION_STATUS_SCRIPT,
             ScriptOutputType.INTEGER,
@@ -171,7 +180,10 @@ class RedisJobStore private constructor(
             current.scheduledAt.toScore().toString(),
             keys.lockPrefix,
             keys.claimLockPrefix,
-            workerId ?: ""
+            workerId ?: "",
+            nextStored?.id ?: "",
+            nextStored?.let { json.encodeToString(it) } ?: "",
+            nextStored?.scheduledAt?.toScore()?.toString() ?: ""
         ) == 1L
     }
 
@@ -908,6 +920,13 @@ class RedisJobStore private constructor(
                 local lock_index = ARGV[7] .. lock_key
                 redis.call('SADD', lock_index, id)
                 redis.call('SADD', KEYS[5], lock_index)
+            end
+
+            if ARGV[10] and ARGV[10] ~= '' then
+                if redis.call('HEXISTS', KEYS[1], ARGV[10]) == 0 then
+                    redis.call('HSET', KEYS[1], ARGV[10], ARGV[11])
+                    redis.call('ZADD', KEYS[2], tonumber(ARGV[12]), ARGV[10])
+                end
             end
 
             return 1

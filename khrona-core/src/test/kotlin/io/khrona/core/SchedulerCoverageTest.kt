@@ -799,6 +799,65 @@ class SchedulerCoverageTest {
         assertEquals(2, partialStore.cleanupCalls)
     }
 
+    @Test
+    fun `executeJob leaves execution RUNNING when store completeExecution fails persistently or cancels`() = runBlocking {
+        val failingStore = object : MockJobStore() {
+            override suspend fun completeExecution(
+                id: UUID,
+                status: ExecutionStatus,
+                error: String?,
+                workerId: String?,
+                nextExecution: JobExecution?
+            ): Boolean {
+                throw IllegalStateException("persistent db outage")
+            }
+        }
+        val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        val exec1 = JobExecution(jobId = "complete-fails", scheduledAt = Instant.now())
+        val job1 = job("complete-fails", OneTimeTrigger(Instant.now()))
+        failingStore.saveJob(job1)
+        failingStore.saveExecution(exec1)
+        val scheduler1 = Scheduler(
+            config {
+                store = failingStore
+                jobs.add(job1)
+            },
+            scope
+        )
+        scheduler1.pollAndExecute()
+        delay(50)
+        scheduler1.stop()
+        assertEquals(ExecutionStatus.RUNNING, failingStore.getExecution(exec1.id)?.status)
+
+        val cancellingStore = object : MockJobStore() {
+            override suspend fun completeExecution(
+                id: UUID,
+                status: ExecutionStatus,
+                error: String?,
+                workerId: String?,
+                nextExecution: JobExecution?
+            ): Boolean {
+                throw kotlinx.coroutines.CancellationException("cancelled during completion")
+            }
+        }
+        val exec2 = JobExecution(jobId = "complete-cancelled", scheduledAt = Instant.now())
+        val job2 = job("complete-cancelled", OneTimeTrigger(Instant.now()))
+        cancellingStore.saveJob(job2)
+        cancellingStore.saveExecution(exec2)
+        val scheduler2 = Scheduler(
+            config {
+                store = cancellingStore
+                jobs.add(job2)
+            },
+            scope
+        )
+        scheduler2.pollAndExecute()
+        delay(50)
+        scheduler2.stop()
+        scope.cancel()
+        assertEquals(ExecutionStatus.RUNNING, cancellingStore.getExecution(exec2.id)?.status)
+    }
+
     private fun config(block: KhronaConfig.() -> Unit = {}) = KhronaConfig().apply {
         store = MockJobStore()
         block()

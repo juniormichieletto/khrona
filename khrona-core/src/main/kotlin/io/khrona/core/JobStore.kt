@@ -38,6 +38,32 @@ interface JobStore {
         workerId: String? = null
     ): Boolean
 
+    /**
+     * Atomically updates the status of execution [id] to [status] and persists [nextExecution]
+     * (such as a recurring follow-up or retry execution) when non-null and not already present.
+     *
+     * When [workerId] is non-null, the store verifies that [id] is currently in an active
+     * (`CLAIMED` or `RUNNING`) state and owned by [workerId] before applying the transition or
+     * persisting [nextExecution].
+     */
+    suspend fun completeExecution(
+        id: UUID,
+        status: ExecutionStatus,
+        error: String? = null,
+        workerId: String? = null,
+        nextExecution: JobExecution? = null
+    ): Boolean {
+        val current = getExecution(id) ?: return false
+        if (workerId != null) {
+            val isActive = current.status == ExecutionStatus.CLAIMED || current.status == ExecutionStatus.RUNNING
+            if (!isActive || current.workerId != workerId) return false
+        }
+        if (nextExecution != null && getExecution(nextExecution.id) == null) {
+            saveExecution(nextExecution)
+        }
+        return updateExecutionStatus(id, status, error, workerId)
+    }
+
     suspend fun getExecution(id: UUID): JobExecution?
     
     suspend fun listEligibleExecutions(now: Instant, limit: Int = Int.MAX_VALUE): List<JobExecution>

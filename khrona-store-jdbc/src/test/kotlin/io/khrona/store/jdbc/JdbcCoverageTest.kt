@@ -475,5 +475,31 @@ class JdbcCoverageTest : AbstractJdbcJobStoreTest() {
             JdbcJobStore(dataSource, queryTimeoutSeconds = -5)
         }
     }
+
+    @Test
+    fun `completeExecution rolls back status update when follow-up persistence fails`() = runBlocking<Unit> {
+        val current = JobExecution(jobId = "rollback-complete", scheduledAt = Instant.now())
+        store.saveExecution(current)
+        assertTrue(store.claimExecution(current.id, "worker-1", Duration.ofMinutes(5)))
+
+        val invalidFollowUp = JobExecution(
+            jobId = "rollback-complete",
+            scheduledAt = Instant.now().plusSeconds(60),
+            payload = Any()
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking {
+                store.completeExecution(
+                    id = current.id,
+                    status = ExecutionStatus.SUCCESS,
+                    workerId = "worker-1",
+                    nextExecution = invalidFollowUp
+                )
+            }
+        }
+
+        assertEquals(ExecutionStatus.CLAIMED, store.getExecution(current.id)?.status)
+        org.junit.jupiter.api.Assertions.assertNull(store.getExecution(invalidFollowUp.id))
+    }
 }
 

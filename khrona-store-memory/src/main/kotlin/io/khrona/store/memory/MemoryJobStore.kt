@@ -53,7 +53,15 @@ class MemoryJobStore : JobStore {
         status: ExecutionStatus,
         error: String?,
         workerId: String?
-    ): Boolean {
+    ): Boolean = completeExecution(id, status, error, workerId, null)
+
+    override suspend fun completeExecution(
+        id: UUID,
+        status: ExecutionStatus,
+        error: String?,
+        workerId: String?,
+        nextExecution: JobExecution?
+    ): Boolean = synchronized(executions) {
         var updated = false
         executions.computeIfPresent(id) { _, exec ->
             if (workerId != null) {
@@ -76,6 +84,9 @@ class MemoryJobStore : JobStore {
                     status == ExecutionStatus.SUPERSEDED
                 ) Instant.now() else exec.completedAt
             )
+        }
+        if (updated && nextExecution != null) {
+            executions.putIfAbsent(nextExecution.id, nextExecution)
         }
         return updated
     }

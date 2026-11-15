@@ -370,4 +370,47 @@ interface JobStoreContract {
         val filtered = store.listEligibleExecutions(now, limit = 1, jobIds = setOf(localJobId))
         assertEquals(listOf(localExec.id), filtered.map { it.id })
     }
+
+    @Test
+    fun `completeExecution atomically updates status and schedules follow-up when ownership matches`() = runTest {
+        val store = createStore()
+        val now = Instant.now()
+        val jobId = "contract-complete-${UUID.randomUUID()}"
+        val current = JobExecution(jobId = jobId, scheduledAt = now.minusSeconds(10))
+        val followUp = JobExecution(jobId = jobId, scheduledAt = now.plusSeconds(60))
+        store.saveExecution(current)
+
+        assertFalse(
+            store.completeExecution(
+                id = UUID.randomUUID(),
+                status = ExecutionStatus.SUCCESS,
+                workerId = "worker-1",
+                nextExecution = followUp
+            )
+        )
+        assertNull(store.getExecution(followUp.id))
+
+        assertTrue(store.claimExecution(current.id, "worker-1", Duration.ofMinutes(5)))
+        assertFalse(
+            store.completeExecution(
+                id = current.id,
+                status = ExecutionStatus.SUCCESS,
+                workerId = "wrong-worker",
+                nextExecution = followUp
+            ),
+            "Mismatched workerId must not complete execution or schedule follow-up"
+        )
+        assertNull(store.getExecution(followUp.id))
+
+        assertTrue(
+            store.completeExecution(
+                id = current.id,
+                status = ExecutionStatus.SUCCESS,
+                workerId = "worker-1",
+                nextExecution = followUp
+            )
+        )
+        assertEquals(ExecutionStatus.SUCCESS, store.getExecution(current.id)?.status)
+        assertEquals(ExecutionStatus.PENDING, store.getExecution(followUp.id)?.status)
+    }
 }
