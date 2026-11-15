@@ -77,6 +77,26 @@ open class MockJobStore(private val clock: java.time.Clock = java.time.Clock.sys
         return updated
     }
 
+    override suspend fun completeExecution(
+        id: UUID,
+        status: ExecutionStatus,
+        error: String?,
+        workerId: String?,
+        nextExecution: JobExecution?
+    ): Boolean {
+        val current = executions[id] ?: return false
+        if (workerId != null) {
+            val isActive = current.status == ExecutionStatus.CLAIMED || current.status == ExecutionStatus.RUNNING
+            if (!isActive || current.workerId != workerId) {
+                return false
+            }
+        }
+        if (nextExecution != null && !executions.containsKey(nextExecution.id)) {
+            saveExecution(nextExecution)
+        }
+        return updateExecutionStatus(id, status, error, workerId)
+    }
+
     override suspend fun getExecution(id: UUID): JobExecution? = executions[id]
 
     override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> {

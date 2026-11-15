@@ -134,6 +134,18 @@ class JdbcCoverageTest : AbstractJdbcJobStoreTest() {
             assertTrue(dialect.heartbeatSql().contains("UPDATE khrona_executions"))
             assertTrue(dialect.resetExpiredExecutionsSql().contains("PENDING"))
         }
+        val legacyCustomDialect = object : JdbcDialect {
+            override fun upsertJobSql(): String = "INSERT INTO custom_jobs"
+            override fun upsertExecutionSql(): String = "INSERT INTO custom_executions"
+            override fun claimExecutionSql(): String = "UPDATE custom_executions"
+            override fun listEligibleExecutionsSql(): String = "SELECT * FROM custom_executions"
+            override fun heartbeatSql(): String = "UPDATE custom_executions"
+            override fun isLockHeldSql(excludeId: Boolean): String = "SELECT COUNT(*)"
+            override fun resetExpiredExecutionsSql(): String = "UPDATE custom_executions"
+            override fun cleanupCompletedExecutionsSql(statusCount: Int): String = "DELETE FROM custom_executions"
+        }
+        assertEquals("SELECT * FROM custom_executions", legacyCustomDialect.listEligibleExecutionsSql(3))
+        assertEquals("SELECT COUNT(*)", legacyCustomDialect.isLockHeldSql())
     }
 
     @Test

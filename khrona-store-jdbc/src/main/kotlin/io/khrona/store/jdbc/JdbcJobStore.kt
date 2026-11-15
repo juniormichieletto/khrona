@@ -109,8 +109,11 @@ class JdbcJobStore(
         }
 
         if (dialect is MySqlDialect) {
-            // MySQL doesn't support IF NOT EXISTS for indexes in a simple way
+            // MySQL doesn't support IF NOT EXISTS for indexes in a simple way,
+            // and MySQL TIMESTAMP rejects Instant.EPOCH ('1970-01-01 00:00:00' used by once()).
             sql = sql.replace("CREATE INDEX IF NOT EXISTS", "CREATE INDEX")
+                .replace(" TIMESTAMP", " DATETIME(6)")
+                .replace("DEFAULT CURRENT_TIMESTAMP", "DEFAULT CURRENT_TIMESTAMP(6)")
         }
         
         dataSource.connection.use { conn ->

@@ -201,5 +201,58 @@ class DslCoverageTest {
             listOf(otherExec.id),
             store.listEligibleExecutions(Instant.now(), limit = 1, jobIds = setOf("other-job")).map { it.id }
         )
+
+        // Default completeExecution must update status before saving nextExecution so a stale worker never writes follow-ups
+        val losingOwnerDelegate = object : MockJobStore() {
+            override suspend fun updateExecutionStatus(
+                id: UUID,
+                status: ExecutionStatus,
+                error: String?,
+                workerId: String?
+            ): Boolean = false
+        }
+        val losingStore = object : JobStore by losingOwnerDelegate {
+            override suspend fun completeExecution(
+                id: UUID,
+                status: ExecutionStatus,
+                error: String?,
+                workerId: String?,
+                nextExecution: JobExecution?
+            ): Boolean = super.completeExecution(id, status, error, workerId, nextExecution)
+        }
+        val activeExec = JobExecution(
+            jobId = "default-complete",
+            scheduledAt = Instant.EPOCH,
+            status = ExecutionStatus.RUNNING,
+            workerId = "worker-1"
+        )
+        val followUpExec = JobExecution(jobId = "default-complete", scheduledAt = Instant.EPOCH.plusSeconds(60))
+        losingOwnerDelegate.saveExecution(activeExec)
+        org.junit.jupiter.api.Assertions.assertFalse(
+            losingStore.completeExecution(
+                id = activeExec.id,
+                status = ExecutionStatus.SUCCESS,
+                workerId = "worker-1",
+                nextExecution = followUpExec
+            )
+        )
+        assertNull(
+            losingOwnerDelegate.getExecution(followUpExec.id),
+            "Default completeExecution must not save nextExecution when updateExecutionStatus returns false"
+        )
+
+        val defaultCompleteStore = object : JobStore by delegate {
+            override suspend fun completeExecution(
+                id: UUID,
+                status: ExecutionStatus,
+                error: String?,
+                workerId: String?,
+                nextExecution: JobExecution?
+            ): Boolean = super.completeExecution(id, status, error, workerId, nextExecution)
+        }
+        assertTrue(defaultCompleteStore.completeExecution(exec.id, ExecutionStatus.SUCCESS, nextExecution = followUpExec))
+        assertEquals(ExecutionStatus.PENDING, delegate.getExecution(followUpExec.id)?.status)
+        assertTrue(defaultCompleteStore.completeExecution(otherExec.id, ExecutionStatus.SUCCESS, nextExecution = followUpExec))
+        assertTrue(defaultCompleteStore.completeExecution(otherExec.id, ExecutionStatus.FAILED, error = "err", nextExecution = null))
     }
 }

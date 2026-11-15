@@ -4,7 +4,8 @@ interface JdbcDialect {
     fun upsertJobSql(): String
     fun upsertExecutionSql(): String
     fun claimExecutionSql(): String
-    fun listEligibleExecutionsSql(jobIdCount: Int = 0): String
+    fun listEligibleExecutionsSql(): String
+    fun listEligibleExecutionsSql(jobIdCount: Int): String = listEligibleExecutionsSql()
 
     /**
      * Returns the SQL UPDATE statement used to atomically extend an active execution lease.
@@ -52,6 +53,8 @@ class PostgresDialect : JdbcDialect {
             FOR UPDATE SKIP LOCKED
         )
     """.trimIndent()
+
+    override fun listEligibleExecutionsSql(): String = listEligibleExecutionsSql(0)
 
     override fun listEligibleExecutionsSql(jobIdCount: Int): String = """
         SELECT * FROM khrona_executions 
@@ -120,6 +123,8 @@ class H2Dialect : JdbcDialect {
         SET status = 'CLAIMED', claimed_at = ?, claimed_by = ?, expires_at = ?, started_at = ?
         WHERE id = ? AND (status = 'PENDING' OR ((status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?))
     """.trimIndent()
+
+    override fun listEligibleExecutionsSql(): String = listEligibleExecutionsSql(0)
 
     override fun listEligibleExecutionsSql(jobIdCount: Int): String = """
         SELECT * FROM khrona_executions 
@@ -193,6 +198,8 @@ class MySqlDialect : JdbcDialect {
         )
     """.trimIndent()
 
+    override fun listEligibleExecutionsSql(): String = listEligibleExecutionsSql(0)
+
     override fun listEligibleExecutionsSql(jobIdCount: Int): String = """
         SELECT * FROM khrona_executions 
         WHERE (status = 'PENDING' OR ((status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?))
@@ -261,6 +268,8 @@ class OracleDialect : JdbcDialect {
         SET status = 'CLAIMED', claimed_at = ?, claimed_by = ?, expires_at = ?, started_at = ?
         WHERE id = ? AND (status = 'PENDING' OR ((status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?))
     """.trimIndent()
+
+    override fun listEligibleExecutionsSql(): String = listEligibleExecutionsSql(0)
 
     override fun listEligibleExecutionsSql(jobIdCount: Int): String = """
         SELECT * FROM khrona_executions 

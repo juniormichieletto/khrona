@@ -11,9 +11,13 @@ interface JobStore {
     suspend fun saveExecution(execution: JobExecution)
 
     /**
-     * Atomically seeds the initial scheduled execution for a job only if no execution with
+     * Seeds the initial scheduled execution for a job only if no execution with
      * [execution.id] already exists and no non-terminal (`PENDING`, `CLAIMED`, or `RUNNING`)
      * execution currently exists for [execution.jobId].
+     *
+     * Built-in stores (`MemoryJobStore`, `JdbcJobStore`, `RedisJobStore`) execute this check
+     * and persist a durable seed marker atomically. The default implementation is a non-atomic
+     * fallback for minimal custom/test stores; production custom stores must override this method.
      *
      * Returns `true` if [execution] was persisted, or `false` if seeding was skipped.
      */
@@ -39,12 +43,18 @@ interface JobStore {
     ): Boolean
 
     /**
-     * Atomically updates the status of execution [id] to [status] and persists [nextExecution]
+     * Updates the status of execution [id] to [status] and persists [nextExecution]
      * (such as a recurring follow-up or retry execution) when non-null and not already present.
      *
      * When [workerId] is non-null, the store verifies that [id] is currently in an active
      * (`CLAIMED` or `RUNNING`) state and owned by [workerId] before applying the transition or
      * persisting [nextExecution].
+     *
+     * Built-in stores (`MemoryJobStore`, `JdbcJobStore`, `RedisJobStore`) execute both steps
+     * atomically. The default implementation is a sequential fallback for custom/test stores
+     * that updates the status of [id] first (enforcing [workerId] ownership) and only saves
+     * [nextExecution] if the status transition succeeded; production custom stores must override
+     * this method inside a single store transaction.
      */
     suspend fun completeExecution(
         id: UUID,
@@ -53,15 +63,11 @@ interface JobStore {
         workerId: String? = null,
         nextExecution: JobExecution? = null
     ): Boolean {
-        val current = getExecution(id) ?: return false
-        if (workerId != null) {
-            val isActive = current.status == ExecutionStatus.CLAIMED || current.status == ExecutionStatus.RUNNING
-            if (!isActive || current.workerId != workerId) return false
-        }
+        if (!updateExecutionStatus(id, status, error, workerId)) return false
         if (nextExecution != null && getExecution(nextExecution.id) == null) {
             saveExecution(nextExecution)
         }
-        return updateExecutionStatus(id, status, error, workerId)
+        return true
     }
 
     suspend fun getExecution(id: UUID): JobExecution?
