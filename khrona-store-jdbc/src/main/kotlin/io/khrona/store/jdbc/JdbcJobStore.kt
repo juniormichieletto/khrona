@@ -368,6 +368,7 @@ class JdbcJobStore(
         val dialect = getDialect()
         val orderedJobIds = jobIds?.toList().orEmpty()
         val executions = mutableListOf<JobExecution>()
+        val corruptRows = mutableListOf<Pair<UUID, String?>>()
         dataSource.connection.use { conn ->
             conn.prepareStatementWithTimeout(dialect.listEligibleExecutionsSql(orderedJobIds.size)).use { stmt ->
                 var paramIndex = 1
@@ -379,8 +380,17 @@ class JdbcJobStore(
                 stmt.setInt(paramIndex, limit)
                 val rs = stmt.executeQuery()
                 while (rs.next()) {
-                    executions.add(mapExecution(rs))
+                    val idStr = rs.getString("id")
+                    try {
+                        executions.add(mapExecution(rs))
+                    } catch (e: Exception) {
+                        log.error("Quarantining corrupt execution row $idStr as DEAD_LETTERED", e)
+                        corruptRows.add(UUID.fromString(idStr) to e.message)
+                    }
                 }
+            }
+            corruptRows.forEach { (id, errorMessage) ->
+                updateExecutionStatusInternal(conn, id, ExecutionStatus.DEAD_LETTERED, errorMessage, null)
             }
         }
         return@inJdbcContext executions

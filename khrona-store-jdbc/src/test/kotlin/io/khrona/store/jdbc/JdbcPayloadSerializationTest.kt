@@ -159,4 +159,42 @@ class JdbcPayloadSerializationTest {
             runBlocking { store.getExecution(execution.id) }
         }
     }
+
+    @Test
+    fun `listEligibleExecutions isolates and dead-letters corrupt payload row without halting poll`() = kotlinx.coroutines.test.runTest {
+        val validExecution = JobExecution(
+            id = UUID.randomUUID(),
+            jobId = "ok-job",
+            scheduledAt = Instant.now().minusSeconds(5),
+            payload = mapOf("status" to "ok")
+        )
+        val corruptExecution = JobExecution(
+            id = UUID.randomUUID(),
+            jobId = "corrupt-job",
+            scheduledAt = Instant.now().minusSeconds(10)
+        )
+        store.saveExecution(validExecution)
+        store.saveExecution(corruptExecution)
+
+        dataSource.connection.use { conn ->
+            conn.prepareStatement("UPDATE khrona_executions SET payload_json = ? WHERE id = ?").use { stmt ->
+                stmt.setString(1, "{not json")
+                stmt.setString(2, corruptExecution.id.toString())
+                stmt.executeUpdate()
+            }
+        }
+
+        val eligible = store.listEligibleExecutions(Instant.now(), 100)
+        assertEquals(listOf(validExecution.id), eligible.map { it.id })
+
+        dataSource.connection.use { conn ->
+            conn.prepareStatement("SELECT status, error FROM khrona_executions WHERE id = ?").use { stmt ->
+                stmt.setString(1, corruptExecution.id.toString())
+                val rs = stmt.executeQuery()
+                assertTrue(rs.next())
+                assertEquals(ExecutionStatus.DEAD_LETTERED.name, rs.getString("status"))
+                assertNotNull(rs.getString("error"))
+            }
+        }
+    }
 }
