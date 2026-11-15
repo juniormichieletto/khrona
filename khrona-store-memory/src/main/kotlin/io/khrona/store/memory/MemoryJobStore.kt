@@ -31,6 +31,20 @@ class MemoryJobStore : JobStore {
         }
     }
 
+    override suspend fun seedInitialExecution(execution: JobExecution): Boolean = synchronized(executions) {
+        val hasActiveOrPending = executions.values.any {
+            it.id == execution.id ||
+                (it.jobId == execution.jobId && (
+                    it.status == ExecutionStatus.PENDING ||
+                        it.status == ExecutionStatus.CLAIMED ||
+                        it.status == ExecutionStatus.RUNNING
+                    ))
+        }
+        if (hasActiveOrPending) return false
+        executions[execution.id] = execution
+        return true
+    }
+
     override suspend fun updateExecutionStatus(
         id: UUID,
         status: ExecutionStatus,

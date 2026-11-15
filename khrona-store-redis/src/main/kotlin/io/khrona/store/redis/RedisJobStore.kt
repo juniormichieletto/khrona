@@ -138,6 +138,19 @@ class RedisJobStore private constructor(
         saveStoredExecution(execution.toStored())
     }
 
+    override suspend fun seedInitialExecution(execution: JobExecution): Boolean = inRedisContext {
+        val stored = execution.toStored()
+        commands.eval<Long>(
+            SEED_INITIAL_EXECUTION_SCRIPT,
+            ScriptOutputType.INTEGER,
+            arrayOf(keys.executions, keys.pending, keys.claimed, keys.running),
+            stored.id,
+            stored.jobId,
+            json.encodeToString(stored),
+            stored.scheduledAt.toScore().toString()
+        ) == 1L
+    }
+
     override suspend fun updateExecutionStatus(
         id: UUID,
         status: ExecutionStatus,
@@ -498,6 +511,34 @@ class RedisJobStore private constructor(
             appendFrom(KEYS[3], 'CLAIMED')
             appendFrom(KEYS[4], 'RUNNING')
             return jsons
+        """
+
+        private const val SEED_INITIAL_EXECUTION_SCRIPT = """
+            local id = ARGV[1]
+            local job_id = ARGV[2]
+            if redis.call('HEXISTS', KEYS[1], id) == 1 then
+                return 0
+            end
+            local function hasJobInIndex(zkey)
+                local ids = redis.call('ZRANGE', zkey, 0, -1)
+                for _, existing_id in ipairs(ids) do
+                    local raw = redis.call('HGET', KEYS[1], existing_id)
+                    if raw then
+                        local exec = cjson.decode(raw)
+                        local status = exec['status'] or 'PENDING'
+                        if exec['jobId'] == job_id and (status == 'PENDING' or status == 'CLAIMED' or status == 'RUNNING') then
+                            return true
+                        end
+                    end
+                end
+                return false
+            end
+            if hasJobInIndex(KEYS[2]) or hasJobInIndex(KEYS[3]) or hasJobInIndex(KEYS[4]) then
+                return 0
+            end
+            redis.call('HSET', KEYS[1], id, ARGV[3])
+            redis.call('ZADD', KEYS[2], tonumber(ARGV[4]), id)
+            return 1
         """
 
         private const val SAVE_EXECUTION_SCRIPT = """

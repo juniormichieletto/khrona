@@ -179,4 +179,17 @@ class DslCoverageTest {
         assertNotNull(job.hashCode())
         assertNull(copiedJob.timeout)
     }
+
+    @Test
+    fun `JobStore default seedInitialExecution delegates to getExecution and saveExecution`() = kotlinx.coroutines.runBlocking {
+        val delegate = MockJobStore()
+        val store = object : JobStore by delegate {
+            override suspend fun seedInitialExecution(execution: JobExecution): Boolean {
+                return super.seedInitialExecution(execution)
+            }
+        }
+        val exec = JobExecution(jobId = "default-seed", scheduledAt = Instant.now())
+        assertTrue(store.seedInitialExecution(exec))
+        org.junit.jupiter.api.Assertions.assertFalse(store.seedInitialExecution(exec))
+    }
 }

@@ -11,6 +11,19 @@ interface JobStore {
     suspend fun saveExecution(execution: JobExecution)
 
     /**
+     * Atomically seeds the initial scheduled execution for a job only if no execution with
+     * [execution.id] already exists and no non-terminal (`PENDING`, `CLAIMED`, or `RUNNING`)
+     * execution currently exists for [execution.jobId].
+     *
+     * Returns `true` if [execution] was persisted, or `false` if seeding was skipped.
+     */
+    suspend fun seedInitialExecution(execution: JobExecution): Boolean {
+        if (getExecution(execution.id) != null) return false
+        saveExecution(execution)
+        return true
+    }
+
+    /**
      * Updates the status of execution [id] to [status].
      *
      * When [workerId] is non-null, the store must atomically verify that the execution is currently

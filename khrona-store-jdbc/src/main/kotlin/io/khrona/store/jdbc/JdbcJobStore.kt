@@ -165,21 +165,61 @@ class JdbcJobStore(
     override suspend fun saveExecution(execution: JobExecution): Unit = inJdbcContext {
         val dialect = getDialect()
         dataSource.connection.use { conn ->
-            conn.prepareStatementWithTimeout(dialect.upsertExecutionSql()).use { stmt ->
-                stmt.setString(1, execution.id.toString())
-                stmt.setString(2, execution.jobId)
-                stmt.setString(3, execution.status.name)
-                stmt.setTimestamp(4, Timestamp.from(execution.scheduledAt))
-                stmt.setInt(5, execution.attempt)
-                
-                val payloadJson = execution.payload?.let { 
-                    json.encodeToString(it.toJsonElement("$"))
+            upsertExecution(conn, dialect, execution)
+        }
+    }
+
+    override suspend fun seedInitialExecution(execution: JobExecution): Boolean = inJdbcContext {
+        val dialect = getDialect()
+        dataSource.connection.use { conn ->
+            val originalAutoCommit = conn.autoCommit
+            conn.autoCommit = false
+            try {
+                conn.prepareStatementWithTimeout("SELECT id FROM khrona_jobs WHERE id = ? FOR UPDATE").use { lockStmt ->
+                    lockStmt.setString(1, execution.jobId)
+                    lockStmt.executeQuery().close()
                 }
-                stmt.setString(6, payloadJson)
-                stmt.setString(7, execution.lockKey)
-                stmt.setString(8, execution.correlationId)
-                stmt.executeUpdate()
+                val existsSql = """
+                    SELECT COUNT(*) FROM khrona_executions
+                    WHERE id = ? OR (job_id = ? AND status IN ('PENDING', 'CLAIMED', 'RUNNING'))
+                """.trimIndent()
+                val alreadyExists = conn.prepareStatementWithTimeout(existsSql).use { checkStmt ->
+                    checkStmt.setString(1, execution.id.toString())
+                    checkStmt.setString(2, execution.jobId)
+                    val rs = checkStmt.executeQuery()
+                    rs.next() && rs.getInt(1) > 0
+                }
+                if (alreadyExists) {
+                    conn.commit()
+                    return@inJdbcContext false
+                }
+                upsertExecution(conn, dialect, execution)
+                conn.commit()
+                return@inJdbcContext true
+            } catch (e: Exception) {
+                conn.rollback()
+                throw e
+            } finally {
+                conn.autoCommit = originalAutoCommit
             }
+        }
+    }
+
+    private fun upsertExecution(conn: java.sql.Connection, dialect: JdbcDialect, execution: JobExecution) {
+        conn.prepareStatementWithTimeout(dialect.upsertExecutionSql()).use { stmt ->
+            stmt.setString(1, execution.id.toString())
+            stmt.setString(2, execution.jobId)
+            stmt.setString(3, execution.status.name)
+            stmt.setTimestamp(4, Timestamp.from(execution.scheduledAt))
+            stmt.setInt(5, execution.attempt)
+            
+            val payloadJson = execution.payload?.let { 
+                json.encodeToString(it.toJsonElement("$"))
+            }
+            stmt.setString(6, payloadJson)
+            stmt.setString(7, execution.lockKey)
+            stmt.setString(8, execution.correlationId)
+            stmt.executeUpdate()
         }
     }
 

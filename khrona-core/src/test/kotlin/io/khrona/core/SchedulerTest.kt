@@ -733,5 +733,71 @@ class SchedulerTest {
         )
         assertNull(afterStop?.workerId)
     }
+
+    @Test
+    fun `restarting node or starting second node later does not create duplicate interval execution chains`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
+        fun createConfig() = KhronaConfig().apply {
+            this.store = store
+            job("hourly-interval") {
+                every(Duration.ofHours(1))
+                execute {}
+            }
+        }
+
+        val firstNode = Scheduler(createConfig(), backgroundScope, clock)
+        firstNode.start()
+        advanceTimeBy(100)
+        firstNode.stop()
+
+        // Advance clock by 5 seconds to simulate node restart or second node starting later
+        advanceTimeBy(5_000)
+
+        val secondNode = Scheduler(createConfig(), backgroundScope, clock)
+        secondNode.start()
+        advanceTimeBy(100)
+        secondNode.registerJob(createConfig().jobs.first())
+        secondNode.stop()
+
+        val pending = store.executions.values.filter {
+            it.jobId == "hourly-interval" && it.status == ExecutionStatus.PENDING
+        }
+        assertEquals(1, pending.size, "Restart or second node must not create a second interval execution chain")
+        assertEquals(Instant.EPOCH.plus(Duration.ofHours(1)), pending.single().scheduledAt)
+    }
+
+    @Test
+    fun `interval trigger honors initialDelay when seeding initial execution`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
+        val jobDef = JobDefinition(
+            id = "delayed-interval",
+            trigger = IntervalTrigger(interval = Duration.ofMinutes(10), initialDelay = Duration.ofSeconds(15)),
+            handler = {}
+        )
+        val config = KhronaConfig().apply {
+            this.store = store
+            jobs.add(jobDef)
+        }
+
+        val scheduler = Scheduler(config, backgroundScope, clock)
+        scheduler.start()
+        advanceTimeBy(100)
+
+        val initialPending = store.executions.values.single {
+            it.jobId == "delayed-interval" && it.status == ExecutionStatus.PENDING
+        }
+        assertEquals(Instant.EPOCH.plusSeconds(15), initialPending.scheduledAt)
+
+        // Advance to 16s so the initial execution runs and schedules the next interval
+        advanceTimeBy(16_000)
+        scheduler.stop()
+
+        val nextPending = store.executions.values.single {
+            it.jobId == "delayed-interval" && it.status == ExecutionStatus.PENDING
+        }
+        assertEquals(Instant.EPOCH.plusSeconds(15).plus(Duration.ofMinutes(10)), nextPending.scheduledAt)
+    }
 }
 

@@ -78,31 +78,7 @@ class Scheduler(
             
             // Basic initial scheduling: for each job, create its first execution if none exist
             config.jobs.forEach { jobDef ->
-                // Truncate to seconds to ensure deterministic UUID matching across nodes
-                val now = Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
-                // For OneTimeTrigger, use EPOCH to pick up past executions.
-                // For others, use 'now' to avoid catching up from 1970.
-                val next = if (jobDef.trigger is OneTimeTrigger) {
-                    jobDef.trigger.nextExecutionTime(Instant.EPOCH)
-                } else {
-                    jobDef.trigger.nextExecutionTime(now)
-                }
-                
-                if (next != null) {
-                    // Use a deterministic UUID for the first execution to avoid duplicates when multiple nodes start.
-                    val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
-                    if (store.getExecution(deterministicId) == null) {
-                        store.saveExecution(
-                            JobExecution(
-                                id = deterministicId,
-                                jobId = jobDef.id,
-                                scheduledAt = next,
-                                lockKey = jobDef.lockKey,
-                                correlationId = correlationId ?: deterministicId.toString()
-                            )
-                        )
-                    }
-                }
+                seedFirstExecution(jobDef, correlationId)
             }
 
             var lastRecovery = Instant.MIN
@@ -520,26 +496,35 @@ class Scheduler(
         handlerRegistry.register(jobDef.id, jobDef.handler)
         val correlationId = MDC.get("correlationId")
         store.saveJob(jobDef)
-        // Schedule the first execution if it's a recurring/deferred job
+        seedFirstExecution(jobDef, correlationId)
+    }
+
+    private suspend fun seedFirstExecution(jobDef: JobDefinition, correlationId: String?) {
+        // Truncate to seconds to ensure deterministic UUID matching across nodes
         val now = Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
-        val next = if (jobDef.trigger is OneTimeTrigger) {
-            jobDef.trigger.nextExecutionTime(Instant.EPOCH)
-        } else {
-            jobDef.trigger.nextExecutionTime(now)
+        val next = when (val trigger = jobDef.trigger) {
+            is OneTimeTrigger -> trigger.nextExecutionTime(Instant.EPOCH)
+            is IntervalTrigger -> {
+                if (!trigger.initialDelay.isZero) {
+                    now.plus(trigger.initialDelay).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+                } else {
+                    trigger.nextExecutionTime(now)
+                }
+            }
+            else -> trigger.nextExecutionTime(now)
         }
         if (next != null) {
+            // Use a deterministic UUID for the first execution to avoid duplicates when multiple nodes start.
             val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
-            if (store.getExecution(deterministicId) == null) {
-                store.saveExecution(
-                    JobExecution(
-                        id = deterministicId,
-                        jobId = jobDef.id,
-                        scheduledAt = next,
-                        lockKey = jobDef.lockKey,
-                        correlationId = correlationId ?: deterministicId.toString()
-                    )
+            store.seedInitialExecution(
+                JobExecution(
+                    id = deterministicId,
+                    jobId = jobDef.id,
+                    scheduledAt = next,
+                    lockKey = jobDef.lockKey,
+                    correlationId = correlationId ?: deterministicId.toString()
                 )
-            }
+            )
         }
     }
 

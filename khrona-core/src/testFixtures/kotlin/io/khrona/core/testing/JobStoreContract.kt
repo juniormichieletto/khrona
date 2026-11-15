@@ -299,4 +299,32 @@ interface JobStoreContract {
         store.saveExecution(claimedExec.copy(status = ExecutionStatus.PENDING, workerId = null, expiresAt = null))
         assertEquals(ExecutionStatus.SUCCESS, store.getExecution(claimedExec.id)?.status)
     }
+
+    @Test
+    fun `seedInitialExecution skips seeding when another non-terminal execution exists for the job`() = runTest {
+        val store = createStore()
+        val jobId = "contract-seed-job-${UUID.randomUUID()}"
+        val job = JobDefinition(
+            id = jobId,
+            handler = {},
+            trigger = IntervalTrigger(Duration.ofHours(1))
+        )
+        store.saveJob(job)
+
+        val firstTime = Instant.parse("2030-01-01T10:00:00Z")
+        val secondTime = Instant.parse("2030-01-01T10:00:05Z")
+        val firstExec = JobExecution(jobId = jobId, scheduledAt = firstTime)
+        val secondExec = JobExecution(jobId = jobId, scheduledAt = secondTime)
+
+        assertTrue(store.seedInitialExecution(firstExec))
+        assertFalse(store.seedInitialExecution(firstExec), "Same execution ID must not be seeded twice")
+        assertFalse(store.seedInitialExecution(secondExec), "Second chain must not be seeded while first is PENDING")
+        assertNull(store.getExecution(secondExec.id))
+
+        assertTrue(store.claimExecution(firstExec.id, "worker-1", Duration.ofMinutes(5)))
+        assertFalse(store.seedInitialExecution(secondExec), "Second chain must not be seeded while first is CLAIMED")
+
+        assertTrue(store.updateExecutionStatus(firstExec.id, ExecutionStatus.RUNNING, workerId = "worker-1"))
+        assertFalse(store.seedInitialExecution(secondExec), "Second chain must not be seeded while first is RUNNING")
+    }
 }
