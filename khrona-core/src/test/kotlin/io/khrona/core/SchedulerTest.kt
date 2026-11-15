@@ -877,5 +877,37 @@ class SchedulerTest {
         }
         assertEquals(1, pendingNext.size, "Next recurring execution must be scheduled despite transient store error")
     }
+
+    @Test
+    fun `handler throwing Error transitions execution to FAILED and schedules retry instead of staying RUNNING`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
+        val config = KhronaConfig().apply {
+            this.store = store
+            job("todo-job") {
+                once()
+                execute {
+                    TODO("not implemented")
+                }
+            }
+        }
+        val scheduler = Scheduler(config, backgroundScope, clock)
+        val jobDef = config.jobs.first()
+        store.saveJob(jobDef)
+        val exec = JobExecution(jobId = "todo-job", scheduledAt = Instant.now(clock))
+        store.saveExecution(exec)
+
+        scheduler.pollAndExecute()
+        advanceTimeBy(200)
+        scheduler.stop()
+
+        assertEquals(
+            ExecutionStatus.FAILED,
+            store.getExecution(exec.id)?.status,
+            "Execution throwing NotImplementedError must transition out of RUNNING to FAILED"
+        )
+        val retryExec = store.executions.values.find { it.jobId == "todo-job" && it.attempt == 1 }
+        assertNotNull(retryExec, "Retry execution with attempt=1 should be scheduled")
+    }
 }
 

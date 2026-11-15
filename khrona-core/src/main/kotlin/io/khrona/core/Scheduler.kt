@@ -374,7 +374,7 @@ class Scheduler(
                 return@withContext
             }
 
-            val handlerFailure: Exception? = try {
+            val handlerFailure: Throwable? = try {
                 val handler = handlerRegistry.get(jobDef.id)
                     ?: throw IllegalStateException("No handler registered for job ${jobDef.id}")
 
@@ -386,7 +386,7 @@ class Scheduler(
                     handler(execution.payload)
                 }
                 null
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 if (e is CancellationException && e !is TimeoutCancellationException) {
                     log.info("[${execution.jobId}] [$correlationId] Job was cancelled (superseded or shutdown)")
                     // We don't update status to FAILED here if it was already updated to SUPERSEDED
