@@ -417,6 +417,8 @@ job("long-report") {
 
 Persistent stores such as `JdbcJobStore` keep execution state across application restarts. If the application crashes or restarts while a job is `CLAIMED` or `RUNNING`, heartbeats stop, the execution lease eventually expires, and the scheduler can pick the execution up again after restart. This starts the handler again from the beginning; Khrona does not resume from the last line of code that ran.
 
+If the configured store changes, subsequent polls and registrations use the new store. Executions already claimed keep using their original store for heartbeat, completion, retries, and shutdown release. Keep the original store open until that work finishes. Changing the store does not migrate existing job definitions or pending executions.
+
 Design long-running handlers to be idempotent, checkpoint progress externally, or split the work into smaller executions. This avoids duplicate side effects when a restarted or reclaimed execution runs again.
 
 ### Graceful Shutdown and Cancellation
