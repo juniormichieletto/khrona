@@ -989,5 +989,33 @@ class SchedulerTest {
         runCurrent()
         assertTrue(cancelled, "Handler must be cancelled once heartbeat errors exceed executionLeaseDuration")
     }
+
+    @Test
+    fun `stop deadline bounds store release calls when store is slow`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = object : MockJobStore(clock) {
+            override suspend fun getExecution(id: UUID): JobExecution? {
+                delay(10_000)
+                return super.getExecution(id)
+            }
+        }
+        val config = KhronaConfig().apply {
+            this.store = store
+            shutdownTimeout = Duration.ofMillis(100)
+            job("busy-slow-release") {
+                every(Duration.ofHours(1))
+                execute { awaitCancellation() }
+            }
+        }
+        config.jobs.forEach { store.saveJob(it) }
+        store.saveExecution(JobExecution(jobId = "busy-slow-release", scheduledAt = Instant.EPOCH))
+        val scheduler = Scheduler(config, backgroundScope, clock)
+        scheduler.pollAndExecute()
+        runCurrent()
+        val before = testScheduler.currentTime
+        scheduler.stop()
+        val elapsed = testScheduler.currentTime - before
+        assertTrue(elapsed <= 300, "stop() took ${elapsed}ms when store release hung")
+    }
 }
 

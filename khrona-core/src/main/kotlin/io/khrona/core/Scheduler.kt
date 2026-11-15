@@ -545,8 +545,12 @@ class Scheduler(
     suspend fun stop() {
         log.info("Stopping Khrona Scheduler")
         stopping = true
-        job?.cancel() // Stop polling for new jobs
+        val pollingJob = job
         job = null
+        pollingJob?.cancel() // Stop polling for new jobs
+        withTimeoutOrNull(config.shutdownTimeout.toMillis().coerceAtMost(200L)) {
+            pollingJob?.join()
+        }
         
         if (activeJobs.isNotEmpty()) {
             val remainingOwners = activeJobs.keys.associateWith { activeClaimOwners[it] }
@@ -566,20 +570,24 @@ class Scheduler(
                 }
                 
                 // Explicitly release any executions that didn't complete normally and are still owned by this claim
-                remainingOwners.forEach { (executionId, claimOwner) ->
-                    try {
-                        val currentExec = store.getExecution(executionId)
-                        if (currentExec?.status == ExecutionStatus.CLAIMED || currentExec?.status == ExecutionStatus.RUNNING) {
-                            log.info("Releasing execution $executionId back to PENDING due to shutdown")
-                            store.updateExecutionStatus(
-                                executionId,
-                                ExecutionStatus.PENDING,
-                                "Released during scheduler shutdown",
-                                workerId = claimOwner
-                            )
+                withTimeoutOrNull(config.shutdownTimeout.toMillis().coerceAtMost(200L)) {
+                    remainingOwners.forEach { (executionId, claimOwner) ->
+                        try {
+                            val currentExec = store.getExecution(executionId)
+                            if (currentExec?.status == ExecutionStatus.CLAIMED || currentExec?.status == ExecutionStatus.RUNNING) {
+                                log.info("Releasing execution $executionId back to PENDING due to shutdown")
+                                store.updateExecutionStatus(
+                                    executionId,
+                                    ExecutionStatus.PENDING,
+                                    "Released during scheduler shutdown",
+                                    workerId = claimOwner
+                                )
+                            }
+                        } catch (ce: CancellationException) {
+                            throw ce
+                        } catch (ex: Exception) {
+                            log.error("Failed to release execution $executionId during shutdown", ex)
                         }
-                    } catch (ex: Exception) {
-                        log.error("Failed to release execution $executionId during shutdown", ex)
                     }
                 }
             }
