@@ -17,7 +17,8 @@ class Scheduler(
     private val clock: Clock = Clock.systemUTC()
 ) {
     private val log = LoggerFactory.getLogger(Scheduler::class.java)
-    private val store = config.store ?: throw IllegalStateException("JobStore must be configured")
+    private val store: JobStore
+        get() = config.store ?: throw IllegalStateException("JobStore must be configured")
     private val handlerRegistry = HandlerRegistry()
     private val activeJobs = ConcurrentHashMap<UUID, Job>()
     private val activeClaimOwners = ConcurrentHashMap<UUID, String>()
@@ -38,35 +39,8 @@ class Scheduler(
     }
 
     private fun validateConfig() {
-        if (config.executionLeaseDuration.isNegative || config.executionLeaseDuration.isZero) {
-            throw IllegalArgumentException("executionLeaseDuration must be positive")
-        }
-        if (heartbeatInterval.isNegative || heartbeatInterval.isZero) {
-            throw IllegalArgumentException("heartbeatInterval must be positive")
-        }
-        if (heartbeatInterval >= config.executionLeaseDuration) {
-            throw IllegalArgumentException("heartbeatInterval must be strictly less than executionLeaseDuration")
-        }
-        if (config.pollBatchSize <= 0) {
-            throw IllegalArgumentException("pollBatchSize must be positive")
-        }
-        if (config.maxConcurrentExecutions <= 0) {
-            throw IllegalArgumentException("maxConcurrentExecutions must be positive")
-        }
-        if (config.retentionPolicy.enabled) {
-            if (!config.retentionPolicy.maxAge.isPositive()) {
-                throw IllegalArgumentException("retentionPolicy.maxAge must be positive")
-            }
-            if (!config.retentionPolicy.cleanupInterval.isPositive()) {
-                throw IllegalArgumentException("retentionPolicy.cleanupInterval must be positive")
-            }
-            if (config.retentionPolicy.batchSize <= 0) {
-                throw IllegalArgumentException("retentionPolicy.batchSize must be positive")
-            }
-            if (config.retentionPolicy.cleanupJitter !in 0.0..1.0) {
-                throw IllegalArgumentException("retentionPolicy.cleanupJitter must be between 0.0 and 1.0")
-            }
-        }
+        checkNotNull(config.store) { "JobStore must be configured" }
+        config.validate()
     }
 
     fun start() {

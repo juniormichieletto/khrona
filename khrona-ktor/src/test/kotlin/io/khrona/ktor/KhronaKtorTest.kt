@@ -136,4 +136,37 @@ class KhronaKtorTest {
             assertEquals("updated", config.jobs.first { it.id == "initial-job" }.description)
         }
     }
+
+    @Test
+    fun `scheduler configuration must reject heartbeat interval beyond lease`() = testApplication {
+        application {
+            install(Khrona) { store = MemoryJobStore() }
+            assertThrows(IllegalArgumentException::class.java) {
+                runBlocking {
+                    scheduler {
+                        executionLeaseDuration = Duration.ofSeconds(2)
+                        heartbeatInterval = Duration.ofSeconds(5)
+                    }
+                }
+            }
+        }
+        startApplication()
+    }
+
+    @Test
+    fun `configured replacement store must receive newly registered jobs`() = testApplication {
+        application {
+            val original = MemoryJobStore()
+            val replacement = MemoryJobStore()
+            install(Khrona) { store = original }
+            runBlocking {
+                scheduler {
+                    store = replacement
+                    job("moved") { every(Duration.ofHours(1)); execute {} }
+                }
+                assertNotNull(replacement.getJob("moved"), "configuration points to replacement but scheduler writes to original")
+            }
+        }
+        startApplication()
+    }
 }
