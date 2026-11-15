@@ -1,5 +1,18 @@
 # ROADMAP — Khrona
 
+## 1.0 Readiness Acceptance
+
+Detailed deliverables, acceptance evidence, and Dockerized Ktor generator coverage are tracked in [the 1.0 readiness notes](../../docs/1.0-readiness.md).
+
+- [ ] API-1: Stable handler/store API and SPI, execution context, compatibility checks, and deprecation policy.
+- [ ] OBS-1: Metrics, tracing/integration hooks, scheduler/store health, and failure diagnostics.
+- [ ] OPS-1: Queries, pause/resume, supported cancellation, DLQ inspection/replay, and job reconciliation. Manual triggering already exists.
+- [ ] UPG-1: Versioned migrations, populated-data upgrades, and rollback/recovery procedures.
+- [ ] DIST-1: Clock-skew/crash-recovery policy, partitions/failover evidence, soak tests, and blocking/cancellation limits.
+- [ ] REL-1: Test-gated publishing, scanning/security reporting, deployment support matrix, and operations runbook.
+
+The current generated-app E2E baseline covers Memory, PostgreSQL, and Redis via `./gradlew :khrona-ktor:e2eTest`. Extend it as consumer-facing capabilities land, alongside focused contract, upgrade, and failure tests. Release numbering for this work must be reconciled with the Android SQLite v0.7 plan below.
+
 ## Next Tasks
 - [x] Run Redis v0.4 release-readiness review
 - [ ] Implement Core Job Management API (v0.5)

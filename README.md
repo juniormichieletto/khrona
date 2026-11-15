@@ -338,13 +338,15 @@ Khrona includes an opt-in end-to-end test suite (`@Tag("e2e")`) that is excluded
 
 1. Publishes all Khrona modules (`khrona-core`, `khrona-ktor`, `khrona-store-memory`, `khrona-store-jdbc`, `khrona-store-redis`) to `mavenLocal()`.
 2. Starts a Docker container and scaffolds a brand-new Ktor application from scratch using the official Ktor CLI generator (`ktor new`).
-3. Configures `khrona-ktor` and the target `JobStore` inside the generated project, boots the Ktor server (`./gradlew run`), and verifies triggers (`once`, `every`, `cron`, manual `trigger`), structured payloads, MDC `correlationId` propagation, retries, timeouts (`DEAD_LETTERED`), concurrency policies (`FORBID`, `REPLACE`), misfire handling (`IGNORE`), retention cleanup, stale recovery, and lease/status-transition fencing over HTTP.
+3. Configures `khrona-ktor` and the target `JobStore` inside the generated project, boots the Ktor server (`./gradlew run`), and verifies one-time/interval/manual execution, cron registration, structured payloads, MDC `correlationId` propagation, retries, timeouts (`DEAD_LETTERED`), concurrency policies (`FORBID`, `REPLACE`), misfire handling (`IGNORE`), retention cleanup, stale recovery, and lease/status-transition fencing over HTTP.
 
 Run the E2E suite on demand (requires Docker):
 
 ```bash
 ./gradlew :khrona-ktor:e2eTest
 ```
+
+See the [1.0 readiness notes](docs/1.0-readiness.md) for the six remaining acceptance areas, the current E2E coverage and its limits, and planned generated-app upgrade, observability, and management scenarios.
 
 ## Performance Benchmark Suite
 
