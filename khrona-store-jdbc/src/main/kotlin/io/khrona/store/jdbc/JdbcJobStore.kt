@@ -414,19 +414,26 @@ class JdbcJobStore(
         val executions = mutableListOf<JobExecution>()
         val corruptRows = mutableListOf<Pair<UUID, String?>>()
         dataSource.connection.use { conn ->
-            conn.prepareStatementWithTimeout(dialect.listEligibleExecutionsSql(orderedJobIds.size)).use { stmt ->
+            val sql = dialect.listEligibleExecutionsSql(orderedJobIds.size)
+            val bindsJobIds = sql.contains("job_id IN", ignoreCase = true)
+            conn.prepareStatementWithTimeout(sql).use { stmt ->
                 var paramIndex = 1
                 stmt.setTimestamp(paramIndex++, Timestamp.from(now), utcCalendar())
                 stmt.setTimestamp(paramIndex++, Timestamp.from(now), utcCalendar())
-                orderedJobIds.forEach { jobId ->
-                    stmt.setString(paramIndex++, jobId)
+                if (bindsJobIds && orderedJobIds.isNotEmpty()) {
+                    orderedJobIds.forEach { jobId ->
+                        stmt.setString(paramIndex++, jobId)
+                    }
                 }
                 stmt.setInt(paramIndex, limit)
                 val rs = stmt.executeQuery()
                 while (rs.next()) {
                     val idStr = rs.getString("id")
                     try {
-                        executions.add(mapExecution(rs))
+                        val exec = mapExecution(rs)
+                        if (bindsJobIds || jobIds == null || exec.jobId in jobIds) {
+                            executions.add(exec)
+                        }
                     } catch (e: Exception) {
                         log.error("Quarantining corrupt execution row $idStr as DEAD_LETTERED", e)
                         corruptRows.add(UUID.fromString(idStr) to e.message)

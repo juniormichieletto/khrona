@@ -682,5 +682,32 @@ class JdbcCoverageTest : AbstractJdbcJobStoreTest() {
         assertTrue(utcBindings.get() > 0)
         assertTrue(utcReads.get() > 0)
     }
+
+    @Test
+    fun `legacy custom dialect must execute filtered polling`() = runBlocking {
+        HikariDataSource(HikariConfig().apply {
+            jdbcUrl = "jdbc:h2:mem:custom_${java.util.UUID.randomUUID()};MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1"
+            username = "sa"
+            password = ""
+        }).use { ds ->
+            val h2 = H2Dialect()
+            val legacy = object : JdbcDialect {
+                override fun upsertJobSql() = h2.upsertJobSql()
+                override fun upsertExecutionSql() = h2.upsertExecutionSql()
+                override fun claimExecutionSql() = h2.claimExecutionSql()
+                override fun listEligibleExecutionsSql() = h2.listEligibleExecutionsSql()
+                override fun heartbeatSql() = h2.heartbeatSql()
+                override fun isLockHeldSql(excludeId: Boolean) = h2.isLockHeldSql(excludeId)
+                override fun resetExpiredExecutionsSql() = h2.resetExpiredExecutionsSql()
+                override fun cleanupCompletedExecutionsSql(statusCount: Int) = h2.cleanupCompletedExecutionsSql(statusCount)
+            }
+            val store = JdbcJobStore(ds, legacy)
+            store.migrate()
+            val job = io.khrona.core.JobDefinition(id = "custom-job", trigger = io.khrona.core.OneTimeTrigger(Instant.EPOCH))
+            store.saveJob(job)
+            store.saveExecution(JobExecution(jobId = job.id, scheduledAt = Instant.EPOCH))
+            assertEquals(1, store.listEligibleExecutions(Instant.now(), 10, setOf(job.id)).size)
+        }
+    }
 }
 
