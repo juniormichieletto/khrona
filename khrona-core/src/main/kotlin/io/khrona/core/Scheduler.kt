@@ -526,8 +526,10 @@ class Scheduler(
                 log.warn("Shutdown timeout reached. Cancelling ${activeJobs.size} remaining jobs.")
                 activeJobs.values.forEach { it.cancel("Scheduler stopping (timeout)") }
                 
-                // Wait for cancellations to finish
-                activeJobs.values.joinAll()
+                // Wait briefly for cooperative cancellations to finish, bounded so blocked handlers cannot hang stop()
+                withTimeoutOrNull(config.shutdownTimeout.toMillis().coerceAtMost(200L)) {
+                    activeJobs.values.joinAll()
+                }
                 
                 // Explicitly release any executions that didn't complete normally and are still owned by this claim
                 remainingOwners.forEach { (executionId, claimOwner) ->

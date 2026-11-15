@@ -909,5 +909,51 @@ class SchedulerTest {
         val retryExec = store.executions.values.find { it.jobId == "todo-job" && it.attempt == 1 }
         assertNotNull(retryExec, "Retry execution with attempt=1 should be scheduled")
     }
+
+    @Test
+    fun `stop respects shutdownTimeout even when handler blocks thread non-cooperatively`() = runBlocking {
+        val store = MockJobStore()
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        val started = java.util.concurrent.CountDownLatch(1)
+        val unblockHandler = java.util.concurrent.CountDownLatch(1)
+        val config = KhronaConfig().apply {
+            this.store = store
+            this.shutdownTimeout = Duration.ofMillis(100)
+            job("blocking-job") {
+                once()
+                execute {
+                    started.countDown()
+                    unblockHandler.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                }
+            }
+        }
+        val scheduler = Scheduler(config, scope)
+        val jobDef = config.jobs.first()
+        store.saveJob(jobDef)
+        val exec = JobExecution(jobId = "blocking-job", scheduledAt = Instant.now().minusSeconds(1))
+        store.saveExecution(exec)
+
+        try {
+            scheduler.pollAndExecute()
+            assertTrue(started.await(2, java.util.concurrent.TimeUnit.SECONDS), "Handler should start")
+
+            val t0 = System.nanoTime()
+            scheduler.stop()
+            val elapsedMs = (System.nanoTime() - t0) / 1_000_000
+
+            assertTrue(
+                elapsedMs < 1_000,
+                "scheduler.stop() with 100ms shutdownTimeout took ${elapsedMs}ms when handler blocked"
+            )
+            assertEquals(
+                ExecutionStatus.PENDING,
+                store.getExecution(exec.id)?.status,
+                "Blocked execution should be released back to PENDING upon shutdown timeout"
+            )
+        } finally {
+            unblockHandler.countDown()
+            scope.cancel()
+        }
+    }
 }
 
