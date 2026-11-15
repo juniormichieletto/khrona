@@ -1017,5 +1017,40 @@ class SchedulerTest {
         val elapsed = testScheduler.currentTime - before
         assertTrue(elapsed <= 300, "stop() took ${elapsed}ms when store release hung")
     }
+
+    @Test
+    fun `hung heartbeat must cancel handler before lease expires`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = object : MockJobStore(clock) {
+            override suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean {
+                delay(10_000)
+                return false
+            }
+        }
+        var cancelled = false
+        val config = KhronaConfig().apply {
+            this.store = store
+            executionLeaseDuration = Duration.ofSeconds(2)
+            heartbeatInterval = Duration.ofMillis(500)
+            job("busy") {
+                every(Duration.ofHours(1))
+                execute {
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        cancelled = true
+                    }
+                }
+            }
+        }
+        config.jobs.forEach { store.saveJob(it) }
+        store.saveExecution(JobExecution(jobId = "busy", scheduledAt = Instant.EPOCH))
+        val scheduler = Scheduler(config, backgroundScope, clock)
+        scheduler.pollAndExecute()
+        runCurrent()
+        advanceTimeBy(5000)
+        runCurrent()
+        assertTrue(cancelled, "handler still running after lease expiry")
+    }
 }
 

@@ -369,6 +369,18 @@ class Scheduler(
     ) {
         coroutineScope {
             var leaseExpiresAt = Instant.now(clock).plus(leaseDuration)
+            val watchdogJob = launch {
+                while (isActive) {
+                    val now = Instant.now(clock)
+                    if (!now.isBefore(leaseExpiresAt)) {
+                        log.warn("[${execution.jobId}] Execution ${execution.id} lease expired at $leaseExpiresAt without renewal; cancelling handler")
+                        this@coroutineScope.cancel("Execution ${execution.id} lease expired")
+                        break
+                    }
+                    val remaining = Duration.between(now, leaseExpiresAt).toMillis().coerceAtLeast(1L)
+                    delay(minOf(heartbeatInterval.toMillis().coerceAtLeast(1L), remaining))
+                }
+            }
             val heartbeatJob = launch {
                 while (isActive) {
                     delay(heartbeatInterval.toMillis())
@@ -396,6 +408,7 @@ class Scheduler(
                 executeJob(execution, jobDef, claimOwner)
             } finally {
                 heartbeatJob.cancel()
+                watchdogJob.cancel()
             }
         }
     }
