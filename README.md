@@ -100,6 +100,8 @@ suspend fun updateExecutionStatus(
 
 For `heartbeat`, the store must atomically check that the execution is `CLAIMED` or `RUNNING`, belongs to `workerId`, and has an unexpired lease before extending it. Return `false` without changing the execution if any check fails. For `updateExecutionStatus`, when `workerId` is non-null, the store must atomically verify that the execution is currently active (`CLAIMED` or `RUNNING`) and owned by `workerId`, clearing claim metadata (`workerId`, `startedAt`, `expiresAt`) when releasing back to `PENDING`, and return `true` only when the transition was applied. The scheduler supplies a unique per-claim token (`<workerId>:<claimId>`) on every claim, heartbeat, and status transition, and only schedules retries or next recurring runs when the status transition succeeds.
 
+Legacy custom dialects that only implement `listEligibleExecutionsSql()` remain supported. When filtering by registered job IDs, JDBC expands the legacy query as needed and applies the result limit to matching executions. For large shared backlogs, override `listEligibleExecutionsSql(jobIdCount)` to filter in SQL, binding the job IDs between the two time parameters and the final limit parameter.
+
 **Breaking `JdbcDialect.heartbeatSql()` parameter contract:** `JdbcJobStore.heartbeat` now binds four positional `?` parameters in order: `(1) new expires_at (Timestamp)`, `(2) execution id (String)`, `(3) claimed_by / workerId (String)`, and `(4) current timestamp now (Timestamp)`. Custom `JdbcDialect` implementations that still return a two-parameter SQL statement will compile but fail at runtime when binding parameters 3 and 4; update `heartbeatSql()` to match:
 
 ```sql

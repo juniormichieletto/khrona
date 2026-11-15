@@ -412,34 +412,50 @@ class JdbcJobStore(
         val dialect = getDialect()
         val orderedJobIds = jobIds?.toList().orEmpty()
         val executions = mutableListOf<JobExecution>()
-        val corruptRows = mutableListOf<Pair<UUID, String?>>()
+        val corruptRows = linkedMapOf<UUID, String?>()
         dataSource.connection.use { conn ->
             val sql = dialect.listEligibleExecutionsSql(orderedJobIds.size)
-            val bindsJobIds = sql.contains("job_id IN", ignoreCase = true)
-            conn.prepareStatementWithTimeout(sql).use { stmt ->
-                var paramIndex = 1
-                stmt.setTimestamp(paramIndex++, Timestamp.from(now), utcCalendar())
-                stmt.setTimestamp(paramIndex++, Timestamp.from(now), utcCalendar())
-                if (bindsJobIds && orderedJobIds.isNotEmpty()) {
-                    orderedJobIds.forEach { jobId ->
-                        stmt.setString(paramIndex++, jobId)
-                    }
-                }
-                stmt.setInt(paramIndex, limit)
-                val rs = stmt.executeQuery()
-                while (rs.next()) {
-                    val idStr = rs.getString("id")
-                    try {
-                        val exec = mapExecution(rs)
-                        if (bindsJobIds || jobIds == null || exec.jobId in jobIds) {
-                            executions.add(exec)
+            // A legacy dialect inherits the overload that returns its original, unfiltered SQL.
+            val bindsJobIds = orderedJobIds.isNotEmpty() && sql != dialect.listEligibleExecutionsSql()
+            var queryLimit = limit
+            var needsMoreRows: Boolean
+            do {
+                executions.clear()
+                var rowsRead = 0
+                conn.prepareStatementWithTimeout(sql).use { stmt ->
+                    var paramIndex = 1
+                    stmt.setTimestamp(paramIndex++, Timestamp.from(now), utcCalendar())
+                    stmt.setTimestamp(paramIndex++, Timestamp.from(now), utcCalendar())
+                    if (bindsJobIds) {
+                        orderedJobIds.forEach { jobId ->
+                            stmt.setString(paramIndex++, jobId)
                         }
-                    } catch (e: Exception) {
-                        log.error("Quarantining corrupt execution row $idStr as DEAD_LETTERED", e)
-                        corruptRows.add(UUID.fromString(idStr) to e.message)
+                    }
+                    stmt.setInt(paramIndex, queryLimit)
+                    stmt.executeQuery().use { rs ->
+                        while (executions.size < limit && rs.next()) {
+                            rowsRead++
+                            val idStr = rs.getString("id")
+                            try {
+                                val exec = mapExecution(rs)
+                                if (bindsJobIds || jobIds == null || exec.jobId in jobIds) {
+                                    executions.add(exec)
+                                }
+                            } catch (e: Exception) {
+                                log.error("Quarantining corrupt execution row $idStr as DEAD_LETTERED", e)
+                                corruptRows[UUID.fromString(idStr)] = e.message
+                            }
+                        }
                     }
                 }
-            }
+                // Expand the legacy query only until enough matching rows are found or it is exhausted.
+                // Keep the returned batch bounded and avoid an unbounded query for small backlogs.
+                needsMoreRows = !bindsJobIds && jobIds != null && executions.size < limit &&
+                    rowsRead == queryLimit && queryLimit < Int.MAX_VALUE
+                if (needsMoreRows) {
+                    queryLimit = (queryLimit.toLong() * 2).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                }
+            } while (needsMoreRows)
             corruptRows.forEach { (id, errorMessage) ->
                 updateExecutionStatusInternal(conn, id, ExecutionStatus.DEAD_LETTERED, errorMessage, null)
             }

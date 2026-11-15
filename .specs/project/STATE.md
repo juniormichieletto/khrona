@@ -53,3 +53,9 @@
 - Optional database-native wake-up mechanisms after the portable adaptive loop exists.
 - Android OS wake-up integration beyond storage, such as exact alarms or first-class WorkManager orchestration.
 - Redis Cluster-specific sharding and Pub/Sub wake-up optimizations after the baseline Redis store exists.
+
+## PR #11 Follow-up Fixes (2026-11-15)
+
+- Completed conservative request-start lease budgeting with a monotonic watchdog bound, original-store claim lifecycle binding, and starvation-free filtering for legacy JDBC dialects.
+- Added ten behavioral regression/boundary tests. Verified 403 unit/integration tests, 13 performance tests, 3 Ktor E2E tests, all coverage gates, and 91.61% aggregate mutation coverage.
+- Details and remaining operational limits: `.specs/quick/001-pr11-followup/SUMMARY.md`.
