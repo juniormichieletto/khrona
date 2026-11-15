@@ -425,9 +425,12 @@ class Scheduler(
     }
 
     private suspend fun scheduleNextRunIfRecurring(execution: JobExecution, jobDef: JobDefinition) {
-        // Use plusMillis(1) to ensure we look for the NEXT execution after this one,
-        // which is important for inclusive triggers like OneTimeTrigger.
-        val next = jobDef.trigger.nextExecutionTime(execution.scheduledAt.plusMillis(1))
+        // Use plusMillis(1) to ensure we look for the NEXT execution after this one
+        // (important for inclusive triggers like OneTimeTrigger), and clamp to 'now'
+        // so an overdue FIRE_NOW execution does not replay every missed historical occurrence.
+        val now = Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+        val baseline = maxOf(execution.scheduledAt.plusMillis(1), now)
+        val next = jobDef.trigger.nextExecutionTime(baseline)
             ?.truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
         if (next != null) {
             val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
