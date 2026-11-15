@@ -575,7 +575,10 @@ class Scheduler(
             }
 
             if (activeJobs.isNotEmpty()) {
-                val remainingClaims = activeClaims.toMap()
+                // The last claim can disappear between a size check and reading an entry.
+                // Copy by traversal instead of using Kotlin's size-based singleton shortcut.
+                val remainingClaims = mutableMapOf<UUID, ActiveClaim>()
+                activeClaims.forEach { executionId, claim -> remainingClaims[executionId] = claim }
                 val graceTimeoutMs = (totalTimeoutMs * 0.7).toLong().coerceAtLeast(1L)
                 val completedCleanly = withTimeoutOrNull(graceTimeoutMs) {
                     log.info("Waiting up to ${graceTimeoutMs}ms for ${activeJobs.size} active jobs to complete...")
