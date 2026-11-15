@@ -25,13 +25,16 @@ open class MockJobStore(private val clock: java.time.Clock = java.time.Clock.sys
 
     override suspend fun seedInitialExecution(execution: JobExecution): Boolean {
         if (seededExecutionsByJob[execution.jobId] == execution.id) return false
+        if (executions.containsKey(execution.id)) {
+            seededExecutionsByJob[execution.jobId] = execution.id
+            return false
+        }
         val hasActiveOrPending = executions.values.any {
-            it.id == execution.id ||
-                (it.jobId == execution.jobId && (
-                    it.status == ExecutionStatus.PENDING ||
-                        it.status == ExecutionStatus.CLAIMED ||
-                        it.status == ExecutionStatus.RUNNING
-                    ))
+            it.jobId == execution.jobId && (
+                it.status == ExecutionStatus.PENDING ||
+                    it.status == ExecutionStatus.CLAIMED ||
+                    it.status == ExecutionStatus.RUNNING
+                )
         }
         if (hasActiveOrPending) return false
         seededExecutionsByJob[execution.jobId] = execution.id

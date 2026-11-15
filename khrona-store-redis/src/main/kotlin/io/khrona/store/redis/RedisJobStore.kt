@@ -547,6 +547,7 @@ class RedisJobStore private constructor(
                 return 0
             end
             if redis.call('HEXISTS', KEYS[1], id) == 1 then
+                redis.call('HSET', KEYS[5], job_id, id)
                 return 0
             end
             local function hasJobInIndex(zkey)

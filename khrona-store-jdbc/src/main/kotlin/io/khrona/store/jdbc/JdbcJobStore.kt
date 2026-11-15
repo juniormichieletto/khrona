@@ -67,6 +67,23 @@ class JdbcJobStore(
         return stmt
     }
 
+    private fun <T> inTransaction(block: (java.sql.Connection) -> T): T {
+        return dataSource.connection.use { conn ->
+            val originalAutoCommit = conn.autoCommit
+            conn.autoCommit = false
+            try {
+                val result = block(conn)
+                conn.commit()
+                result
+            } catch (e: Exception) {
+                conn.rollback()
+                throw e
+            } finally {
+                conn.autoCommit = originalAutoCommit
+            }
+        }
+    }
+
     private fun <T> withWriteConnection(block: (java.sql.Connection) -> T): T {
         return dataSource.connection.use { conn ->
             val result = block(conn)
@@ -139,7 +156,7 @@ class JdbcJobStore(
 
     override suspend fun saveJob(job: JobDefinition): Unit = inJdbcContext {
         val dialect = getDialect()
-        withWriteConnection { conn ->
+        inTransaction { conn ->
             val existingSeededId = readSeededExecutionId(conn, job.id)
             conn.prepareStatementWithTimeout(dialect.upsertJobSql()).use { stmt ->
                 stmt.setString(1, job.id)
@@ -186,59 +203,54 @@ class JdbcJobStore(
 
     override suspend fun seedInitialExecution(execution: JobExecution): Boolean = inJdbcContext {
         val dialect = getDialect()
-        dataSource.connection.use { conn ->
-            val originalAutoCommit = conn.autoCommit
-            conn.autoCommit = false
-            try {
-                var jobDefinitionJson: String? = null
-                conn.prepareStatementWithTimeout("SELECT definition_json FROM khrona_jobs WHERE id = ? FOR UPDATE").use { lockStmt ->
-                    lockStmt.setString(1, execution.jobId)
-                    val rs = lockStmt.executeQuery()
-                    if (rs.next()) {
-                        jobDefinitionJson = rs.getString("definition_json")
-                    }
+        inTransaction { conn ->
+            var jobDefinitionJson: String? = null
+            conn.prepareStatementWithTimeout("SELECT definition_json FROM khrona_jobs WHERE id = ? FOR UPDATE").use { lockStmt ->
+                lockStmt.setString(1, execution.jobId)
+                val rs = lockStmt.executeQuery()
+                if (rs.next()) {
+                    jobDefinitionJson = rs.getString("definition_json")
                 }
-                val existingSeededId = jobDefinitionJson?.let { extractSeededExecutionId(it) }
-                if (existingSeededId == execution.id.toString()) {
-                    conn.commit()
-                    return@inJdbcContext false
-                }
-                val existsSql = """
-                    SELECT COUNT(*) FROM khrona_executions
-                    WHERE id = ? OR (job_id = ? AND status IN ('PENDING', 'CLAIMED', 'RUNNING'))
-                """.trimIndent()
-                val alreadyExists = conn.prepareStatementWithTimeout(existsSql).use { checkStmt ->
-                    checkStmt.setString(1, execution.id.toString())
-                    checkStmt.setString(2, execution.jobId)
-                    val rs = checkStmt.executeQuery()
-                    rs.next() && rs.getInt(1) > 0
-                }
-                if (alreadyExists) {
-                    conn.commit()
-                    return@inJdbcContext false
-                }
-                if (jobDefinitionJson != null) {
-                    val updatedJson = withSeededExecutionId(jobDefinitionJson, execution.id.toString())
-                    conn.prepareStatementWithTimeout(dialect.upsertJobSql()).use { jobStmt ->
-                        jobStmt.setString(1, execution.jobId)
-                        jobStmt.setString(2, updatedJson)
-                        jobStmt.executeUpdate()
-                    }
-                }
-                upsertExecution(conn, dialect, execution)
-                conn.commit()
-                return@inJdbcContext true
-            } catch (e: Exception) {
-                conn.rollback()
-                throw e
-            } finally {
-                conn.autoCommit = originalAutoCommit
             }
+            val existingSeededId = jobDefinitionJson?.let { extractSeededExecutionId(it) }
+            if (existingSeededId == execution.id.toString()) {
+                return@inTransaction false
+            }
+            val existsSql = """
+                SELECT id FROM khrona_executions
+                WHERE id = ? OR (job_id = ? AND status IN ('PENDING', 'CLAIMED', 'RUNNING'))
+            """.trimIndent()
+            var matchedAny = false
+            var matchedSameId = false
+            conn.prepareStatementWithTimeout(existsSql).use { checkStmt ->
+                checkStmt.setString(1, execution.id.toString())
+                checkStmt.setString(2, execution.jobId)
+                val rs = checkStmt.executeQuery()
+                while (rs.next()) {
+                    matchedAny = true
+                    if (rs.getString(1) == execution.id.toString()) {
+                        matchedSameId = true
+                    }
+                }
+            }
+            if ((!matchedAny || matchedSameId) && jobDefinitionJson != null) {
+                val updatedJson = withSeededExecutionId(jobDefinitionJson, execution.id.toString())
+                conn.prepareStatementWithTimeout(dialect.upsertJobSql()).use { jobStmt ->
+                    jobStmt.setString(1, execution.jobId)
+                    jobStmt.setString(2, updatedJson)
+                    jobStmt.executeUpdate()
+                }
+            }
+            if (matchedAny) {
+                return@inTransaction false
+            }
+            upsertExecution(conn, dialect, execution)
+            true
         }
     }
 
     private fun readSeededExecutionId(conn: java.sql.Connection, jobId: String): String? {
-        conn.prepareStatementWithTimeout("SELECT definition_json FROM khrona_jobs WHERE id = ?").use { stmt ->
+        conn.prepareStatementWithTimeout("SELECT definition_json FROM khrona_jobs WHERE id = ? FOR UPDATE").use { stmt ->
             stmt.setString(1, jobId)
             val rs = stmt.executeQuery()
             if (rs.next()) {
@@ -304,22 +316,12 @@ class JdbcJobStore(
         nextExecution: JobExecution?
     ): Boolean = inJdbcContext {
         val dialect = getDialect()
-        dataSource.connection.use { conn ->
-            val originalAutoCommit = conn.autoCommit
-            try {
-                conn.autoCommit = false
-                val updated = updateExecutionStatusInternal(conn, id, status, error, workerId)
-                if (updated && nextExecution != null) {
-                    upsertExecution(conn, dialect, nextExecution)
-                }
-                conn.commit()
-                return@inJdbcContext updated
-            } catch (e: Exception) {
-                conn.rollback()
-                throw e
-            } finally {
-                conn.autoCommit = originalAutoCommit
+        inTransaction { conn ->
+            val updated = updateExecutionStatusInternal(conn, id, status, error, workerId)
+            if (updated && nextExecution != null) {
+                upsertExecution(conn, dialect, nextExecution)
             }
+            updated
         }
     }
 
@@ -475,45 +477,34 @@ class JdbcJobStore(
 
     override suspend fun supersedeExecutionsByLockKey(lockKey: String, excludeExecutionId: UUID?): List<UUID> = inJdbcContext {
         val superseded = mutableListOf<UUID>()
-        dataSource.connection.use { conn ->
-            val originalAutoCommit = conn.autoCommit
-            conn.autoCommit = false
-            try {
-                val selectSql = buildString {
-                    append("SELECT id FROM khrona_executions WHERE lock_key = ? AND status IN ('CLAIMED', 'RUNNING')")
-                    if (excludeExecutionId != null) append(" AND id != ?")
-                    append(" FOR UPDATE")
+        inTransaction { conn ->
+            val selectSql = buildString {
+                append("SELECT id FROM khrona_executions WHERE lock_key = ? AND status IN ('CLAIMED', 'RUNNING')")
+                if (excludeExecutionId != null) append(" AND id != ?")
+                append(" FOR UPDATE")
+            }
+            conn.prepareStatementWithTimeout(selectSql).use { stmt ->
+                stmt.setString(1, lockKey)
+                if (excludeExecutionId != null) {
+                    stmt.setString(2, excludeExecutionId.toString())
                 }
-                conn.prepareStatementWithTimeout(selectSql).use { stmt ->
-                    stmt.setString(1, lockKey)
-                    if (excludeExecutionId != null) {
-                        stmt.setString(2, excludeExecutionId.toString())
-                    }
-                    val rs = stmt.executeQuery()
-                    while (rs.next()) {
-                        superseded.add(UUID.fromString(rs.getString("id")))
-                    }
+                val rs = stmt.executeQuery()
+                while (rs.next()) {
+                    superseded.add(UUID.fromString(rs.getString("id")))
                 }
+            }
 
-                if (superseded.isNotEmpty()) {
-                    val placeholders = superseded.joinToString(",") { "?" }
-                    val updateSql = "UPDATE khrona_executions SET status = ?, completed_at = ? WHERE id IN ($placeholders)"
-                    conn.prepareStatementWithTimeout(updateSql).use { stmt ->
-                        stmt.setString(1, ExecutionStatus.SUPERSEDED.name)
-                        stmt.setTimestamp(2, Timestamp.from(Instant.now()), utcCalendar())
-                        superseded.forEachIndexed { index, id ->
-                            stmt.setString(index + 3, id.toString())
-                        }
-                        stmt.executeUpdate()
+            if (superseded.isNotEmpty()) {
+                val placeholders = superseded.joinToString(",") { "?" }
+                val updateSql = "UPDATE khrona_executions SET status = ?, completed_at = ? WHERE id IN ($placeholders)"
+                conn.prepareStatementWithTimeout(updateSql).use { stmt ->
+                    stmt.setString(1, ExecutionStatus.SUPERSEDED.name)
+                    stmt.setTimestamp(2, Timestamp.from(Instant.now()), utcCalendar())
+                    superseded.forEachIndexed { index, id ->
+                        stmt.setString(index + 3, id.toString())
                     }
+                    stmt.executeUpdate()
                 }
-
-                conn.commit()
-            } catch (e: Exception) {
-                conn.rollback()
-                throw e
-            } finally {
-                conn.autoCommit = originalAutoCommit
             }
         }
         return@inJdbcContext superseded

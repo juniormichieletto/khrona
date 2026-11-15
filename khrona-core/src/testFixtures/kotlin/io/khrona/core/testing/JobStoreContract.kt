@@ -413,4 +413,26 @@ interface JobStoreContract {
         assertEquals(ExecutionStatus.SUCCESS, store.getExecution(current.id)?.status)
         assertEquals(ExecutionStatus.PENDING, store.getExecution(followUp.id)?.status)
     }
+
+    @Test
+    fun `seedInitialExecution backfills completion marker for legacy completed execution before retention cleanup`() = runTest {
+        val store = createStore()
+        val jobId = "once-upgrade-${UUID.randomUUID()}"
+        val job = JobDefinition(id = jobId, trigger = io.khrona.core.OneTimeTrigger(Instant.EPOCH))
+        val execution = JobExecution(jobId = jobId, scheduledAt = Instant.EPOCH)
+
+        // Simulate a job and completed execution persisted prior to upgrade (via saveJob + saveExecution)
+        store.saveJob(job)
+        store.saveExecution(execution)
+        store.updateExecutionStatus(execution.id, ExecutionStatus.SUCCESS)
+
+        assertFalse(store.seedInitialExecution(execution), "First seed after upgrade should skip existing completed row")
+        assertTrue(store.cleanupCompletedExecutions(Instant.now().plusSeconds(3600)) >= 1)
+        assertNull(store.getExecution(execution.id))
+
+        assertFalse(
+            store.seedInitialExecution(execution),
+            "Legacy completed one-time job must remain marked as seeded even after retention cleanup"
+        )
+    }
 }
