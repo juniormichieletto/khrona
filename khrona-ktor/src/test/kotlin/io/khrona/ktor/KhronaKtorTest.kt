@@ -84,4 +84,56 @@ class KhronaKtorTest {
             }
         }
     }
+
+    @Test
+    fun `scheduler extension propagates all configuration properties`() = testApplication {
+        application {
+            val store = MemoryJobStore()
+            install(Khrona) {
+                this.store = store
+                job("initial-job") {
+                    every(Duration.ofSeconds(5))
+                    execute {}
+                }
+            }
+
+            runBlocking {
+                scheduler {
+                    pollingInterval = Duration.ofMillis(250)
+                    misfireThreshold = Duration.ofSeconds(15)
+                    shutdownTimeout = Duration.ofSeconds(10)
+                    executionLeaseDuration = Duration.ofSeconds(40)
+                    heartbeatInterval = Duration.ofSeconds(10)
+                    pollBatchSize = 25
+                    maxConcurrentExecutions = 8
+                    retention {
+                        enabled = false
+                        batchSize = 500
+                    }
+                    job("initial-job") {
+                        description = "updated"
+                        every(Duration.ofSeconds(10))
+                        execute {}
+                    }
+                    job("second-job") {
+                        every(Duration.ofSeconds(20))
+                        execute {}
+                    }
+                }
+            }
+
+            val config = plugin(Khrona).scheduler.config
+            assertEquals(Duration.ofMillis(250), config.pollingInterval)
+            assertEquals(Duration.ofSeconds(15), config.misfireThreshold)
+            assertEquals(Duration.ofSeconds(10), config.shutdownTimeout)
+            assertEquals(Duration.ofSeconds(40), config.executionLeaseDuration)
+            assertEquals(Duration.ofSeconds(10), config.heartbeatInterval)
+            assertEquals(25, config.pollBatchSize)
+            assertEquals(8, config.maxConcurrentExecutions)
+            assertFalse(config.retentionPolicy.enabled)
+            assertEquals(500, config.retentionPolicy.batchSize)
+            assertEquals(listOf("initial-job", "second-job"), config.jobs.map { it.id })
+            assertEquals("updated", config.jobs.first { it.id == "initial-job" }.description)
+        }
+    }
 }

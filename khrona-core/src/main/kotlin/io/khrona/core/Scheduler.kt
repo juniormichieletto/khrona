@@ -22,7 +22,8 @@ class Scheduler(
     private val activeJobs = ConcurrentHashMap<UUID, Job>()
     private val activeClaimOwners = ConcurrentHashMap<UUID, String>()
     private val workerId = UUID.randomUUID().toString()
-    private val heartbeatInterval = config.heartbeatInterval ?: config.executionLeaseDuration.dividedBy(2)
+    private val heartbeatInterval: Duration
+        get() = config.heartbeatInterval ?: config.executionLeaseDuration.dividedBy(2)
     private var job: Job? = null
     @Volatile
     private var stopping = false
