@@ -341,18 +341,26 @@ class Scheduler(
         claimOwner: String
     ) {
         coroutineScope {
+            var leaseExpiresAt = Instant.now(clock).plus(leaseDuration)
             val heartbeatJob = launch {
                 while (isActive) {
                     delay(heartbeatInterval.toMillis())
-                    try {
-                        // Check if we are still RUNNING/CLAIMED (not superseded) while heartbeating
-                        if (!store.heartbeat(execution.id, claimOwner, leaseDuration)) {
-                            log.warn("[${execution.jobId}] Failed to heartbeat for execution ${execution.id}, it might have been reclaimed or superseded")
-                            this@coroutineScope.cancel("Execution ${execution.id} is no longer valid (superseded or reclaimed)")
-                            break
+                    val renewed = try {
+                        val ok = store.heartbeat(execution.id, claimOwner, leaseDuration)
+                        if (ok) {
+                            leaseExpiresAt = Instant.now(clock).plus(leaseDuration)
                         }
+                        ok
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         log.error("[${execution.jobId}] Error during heartbeat for execution ${execution.id}", e)
+                        Instant.now(clock).isBefore(leaseExpiresAt)
+                    }
+                    if (!renewed) {
+                        log.warn("[${execution.jobId}] Failed to heartbeat for execution ${execution.id}, it might have been reclaimed or superseded")
+                        this@coroutineScope.cancel("Execution ${execution.id} is no longer valid (superseded or reclaimed)")
+                        break
                     }
                 }
             }

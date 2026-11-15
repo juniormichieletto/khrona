@@ -955,5 +955,39 @@ class SchedulerTest {
             scope.cancel()
         }
     }
+
+    @Test
+    fun `heartbeat outage cancels handler once lease expires`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = object : MockJobStore(clock) {
+            override suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean {
+                error("store unavailable")
+            }
+        }
+        var cancelled = false
+        val config = KhronaConfig().apply {
+            this.store = store
+            executionLeaseDuration = Duration.ofSeconds(2)
+            heartbeatInterval = Duration.ofMillis(500)
+            job("busy-heartbeat-outage") {
+                every(Duration.ofHours(1))
+                execute {
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        cancelled = true
+                    }
+                }
+            }
+        }
+        config.jobs.forEach { store.saveJob(it) }
+        store.saveExecution(JobExecution(jobId = "busy-heartbeat-outage", scheduledAt = Instant.EPOCH))
+        val scheduler = Scheduler(config, backgroundScope, clock)
+        scheduler.pollAndExecute()
+        runCurrent()
+        advanceTimeBy(5_000)
+        runCurrent()
+        assertTrue(cancelled, "Handler must be cancelled once heartbeat errors exceed executionLeaseDuration")
+    }
 }
 
