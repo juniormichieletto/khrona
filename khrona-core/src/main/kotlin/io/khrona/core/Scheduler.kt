@@ -192,7 +192,7 @@ class Scheduler(
             }
 
             // Re-fetch job def in case it changed or for fresh state
-            val jobDef = store.getJob(execution.jobId) ?: return@forEach
+            val jobDef = loadJobDefinition(execution.jobId) ?: return@forEach
             
             // Check for misfire
             if (Duration.between(execution.scheduledAt, now) > config.misfireThreshold) {
@@ -304,6 +304,17 @@ class Scheduler(
                     }
                 }
             }
+        }
+    }
+
+    private suspend fun loadJobDefinition(jobId: String): JobDefinition? {
+        return try {
+            store.getJob(jobId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log.error("[$jobId] Failed to load job definition; skipping job for this poll cycle", e)
+            null
         }
     }
 

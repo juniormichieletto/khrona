@@ -177,4 +177,28 @@ class BoundedPollingTest {
         )
         scheduler.stop()
     }
+
+    @Test
+    fun `bad job definition does not abort healthy execution batch`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = object : MockJobStore(clock) {
+            override suspend fun getJob(jobId: String): JobDefinition? {
+                if (jobId == "bad") error("unsupported trigger in stored definition")
+                return super.getJob(jobId)
+            }
+        }
+        var healthyRuns = 0
+        val config = KhronaConfig().apply {
+            this.store = store
+            job("bad") { every(Duration.ofHours(1)); execute {} }
+            job("healthy") { every(Duration.ofHours(1)); execute { healthyRuns++ } }
+        }
+        config.jobs.forEach { store.saveJob(it) }
+        store.saveExecution(JobExecution(jobId = "bad", scheduledAt = Instant.EPOCH.minusSeconds(1)))
+        store.saveExecution(JobExecution(jobId = "healthy", scheduledAt = Instant.EPOCH))
+        val scheduler = Scheduler(config, backgroundScope, clock)
+        scheduler.pollAndExecute()
+        runCurrent()
+        assertEquals(1, healthyRuns, "Failure loading one job definition must not abort healthy jobs in the batch")
+    }
 }
