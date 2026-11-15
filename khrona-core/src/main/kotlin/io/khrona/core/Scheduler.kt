@@ -562,51 +562,55 @@ class Scheduler(
         val pollingJob = job
         job = null
         pollingJob?.cancel() // Stop polling for new jobs
-        withTimeoutOrNull(config.shutdownTimeout.toMillis().coerceAtMost(200L)) {
-            pollingJob?.join()
-        }
-        
-        if (activeJobs.isNotEmpty()) {
-            val remainingOwners = activeJobs.keys.associateWith { activeClaimOwners[it] }
-            try {
-                withTimeout(config.shutdownTimeout.toMillis()) {
-                    log.info("Waiting up to ${config.shutdownTimeout} for ${activeJobs.size} active jobs to complete...")
+
+        val totalTimeoutMs = config.shutdownTimeout.toMillis()
+        withTimeoutOrNull(totalTimeoutMs + 5L) {
+            withTimeoutOrNull(minOf(50L, totalTimeoutMs)) {
+                pollingJob?.join()
+            }
+
+            if (activeJobs.isNotEmpty()) {
+                val remainingOwners = activeJobs.keys.associateWith { activeClaimOwners[it] }
+                val graceTimeoutMs = (totalTimeoutMs * 0.7).toLong().coerceAtLeast(1L)
+                val completedCleanly = withTimeoutOrNull(graceTimeoutMs) {
+                    log.info("Waiting up to ${graceTimeoutMs}ms for ${activeJobs.size} active jobs to complete...")
                     activeJobs.values.joinAll()
+                    true
+                } ?: false
+
+                if (completedCleanly) {
                     log.info("All active jobs completed cleanly during shutdown.")
-                }
-            } catch (e: TimeoutCancellationException) {
-                log.warn("Shutdown timeout reached. Cancelling ${activeJobs.size} remaining jobs.")
-                activeJobs.values.forEach { it.cancel("Scheduler stopping (timeout)") }
-                
-                // Wait briefly for cooperative cancellations to finish, bounded so blocked handlers cannot hang stop()
-                withTimeoutOrNull(config.shutdownTimeout.toMillis().coerceAtMost(200L)) {
-                    activeJobs.values.joinAll()
-                }
-                
-                // Explicitly release any executions that didn't complete normally and are still owned by this claim
-                withTimeoutOrNull(config.shutdownTimeout.toMillis().coerceAtMost(200L)) {
-                    remainingOwners.forEach { (executionId, claimOwner) ->
-                        try {
-                            val currentExec = store.getExecution(executionId)
-                            if (currentExec?.status == ExecutionStatus.CLAIMED || currentExec?.status == ExecutionStatus.RUNNING) {
-                                log.info("Releasing execution $executionId back to PENDING due to shutdown")
-                                store.updateExecutionStatus(
-                                    executionId,
-                                    ExecutionStatus.PENDING,
-                                    "Released during scheduler shutdown",
-                                    workerId = claimOwner
-                                )
+                } else {
+                    log.warn("Shutdown timeout reached. Cancelling ${activeJobs.size} remaining jobs.")
+                    activeJobs.values.forEach { it.cancel("Scheduler stopping (timeout)") }
+
+                    val releaseJob = scope.launch(Dispatchers.IO + NonCancellable) {
+                        remainingOwners.forEach { (executionId, claimOwner) ->
+                            try {
+                                val currentExec = store.getExecution(executionId)
+                                if (currentExec?.status == ExecutionStatus.CLAIMED || currentExec?.status == ExecutionStatus.RUNNING) {
+                                    log.info("Releasing execution $executionId back to PENDING due to shutdown")
+                                    store.updateExecutionStatus(
+                                        executionId,
+                                        ExecutionStatus.PENDING,
+                                        "Released during scheduler shutdown",
+                                        workerId = claimOwner
+                                    )
+                                }
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } catch (ex: Exception) {
+                                log.error("Failed to release execution $executionId during shutdown", ex)
                             }
-                        } catch (ce: CancellationException) {
-                            throw ce
-                        } catch (ex: Exception) {
-                            log.error("Failed to release execution $executionId during shutdown", ex)
                         }
+                    }
+                    withTimeoutOrNull((totalTimeoutMs - graceTimeoutMs).coerceAtLeast(50L)) {
+                        releaseJob.join()
                     }
                 }
             }
         }
-        
+
         activeJobs.clear()
         activeClaimOwners.clear()
         log.info("Khrona Scheduler stopped")

@@ -1015,7 +1015,43 @@ class SchedulerTest {
         val before = testScheduler.currentTime
         scheduler.stop()
         val elapsed = testScheduler.currentTime - before
-        assertTrue(elapsed <= 300, "stop() took ${elapsed}ms when store release hung")
+        assertTrue(elapsed <= 110, "stop took ${elapsed}ms for a 100ms shutdownTimeout")
+    }
+
+    @Test
+    fun `blocking store release must not overrun shutdown deadline`() = runBlocking {
+        val store = object : MockJobStore() {
+            override suspend fun getExecution(id: UUID): JobExecution? = withContext(Dispatchers.IO) {
+                Thread.sleep(600)
+                super.getExecution(id)
+            }
+        }
+        val entered = CompletableDeferred<Unit>()
+        val workerScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        val config = KhronaConfig().apply {
+            this.store = store
+            shutdownTimeout = Duration.ofMillis(100)
+            job("busy") {
+                every(Duration.ofHours(1))
+                execute {
+                    entered.complete(Unit)
+                    awaitCancellation()
+                }
+            }
+        }
+        config.jobs.forEach { store.saveJob(it) }
+        store.saveExecution(JobExecution(jobId = "busy", scheduledAt = Instant.EPOCH))
+        val scheduler = Scheduler(config, workerScope)
+        try {
+            scheduler.pollAndExecute()
+            withTimeout(3000) { entered.await() }
+            val before = System.nanoTime()
+            scheduler.stop()
+            val elapsed = (System.nanoTime() - before) / 1_000_000
+            assertTrue(elapsed < 400, "stop took ${elapsed}ms for a 100ms timeout")
+        } finally {
+            workerScope.cancel()
+        }
     }
 
     @Test
