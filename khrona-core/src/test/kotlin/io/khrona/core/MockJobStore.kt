@@ -8,6 +8,7 @@ import java.util.concurrent.ConcurrentHashMap
 open class MockJobStore(private val clock: java.time.Clock = java.time.Clock.systemUTC()) : JobStore {
     val jobs = ConcurrentHashMap<String, JobDefinition>()
     val executions = ConcurrentHashMap<UUID, JobExecution>()
+    val seededExecutionsByJob = ConcurrentHashMap<String, UUID>()
     val updatedStatuses = mutableListOf<Pair<UUID, ExecutionStatus>>()
 
     override suspend fun saveJob(job: JobDefinition) {
@@ -23,6 +24,7 @@ open class MockJobStore(private val clock: java.time.Clock = java.time.Clock.sys
     }
 
     override suspend fun seedInitialExecution(execution: JobExecution): Boolean {
+        if (seededExecutionsByJob[execution.jobId] == execution.id) return false
         val hasActiveOrPending = executions.values.any {
             it.id == execution.id ||
                 (it.jobId == execution.jobId && (
@@ -32,6 +34,7 @@ open class MockJobStore(private val clock: java.time.Clock = java.time.Clock.sys
                     ))
         }
         if (hasActiveOrPending) return false
+        seededExecutionsByJob[execution.jobId] = execution.id
         saveExecution(execution)
         return true
     }

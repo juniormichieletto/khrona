@@ -143,7 +143,7 @@ class RedisJobStore private constructor(
         commands.eval<Long>(
             SEED_INITIAL_EXECUTION_SCRIPT,
             ScriptOutputType.INTEGER,
-            arrayOf(keys.executions, keys.pending, keys.claimed, keys.running),
+            arrayOf(keys.executions, keys.pending, keys.claimed, keys.running, keys.seededExecutions),
             stored.id,
             stored.jobId,
             json.encodeToString(stored),
@@ -516,6 +516,9 @@ class RedisJobStore private constructor(
         private const val SEED_INITIAL_EXECUTION_SCRIPT = """
             local id = ARGV[1]
             local job_id = ARGV[2]
+            if redis.call('HGET', KEYS[5], job_id) == id then
+                return 0
+            end
             if redis.call('HEXISTS', KEYS[1], id) == 1 then
                 return 0
             end
@@ -536,6 +539,7 @@ class RedisJobStore private constructor(
             if hasJobInIndex(KEYS[2]) or hasJobInIndex(KEYS[3]) or hasJobInIndex(KEYS[4]) then
                 return 0
             end
+            redis.call('HSET', KEYS[5], job_id, id)
             redis.call('HSET', KEYS[1], id, ARGV[3])
             redis.call('ZADD', KEYS[2], tonumber(ARGV[4]), id)
             return 1
@@ -952,6 +956,7 @@ private fun StoredExecution.toExecution(): JobExecution {
 private data class RedisKeys(private val namespace: String) {
     val jobs = "$namespace:jobs"
     val executions = "$namespace:executions"
+    val seededExecutions = "$namespace:seeded-executions"
     val pending = "$namespace:pending"
     val claimed = "$namespace:claimed"
     val running = "$namespace:running"

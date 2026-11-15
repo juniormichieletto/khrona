@@ -12,6 +12,7 @@ import java.util.concurrent.ConcurrentHashMap
 class MemoryJobStore : JobStore {
     private val jobs = ConcurrentHashMap<String, JobDefinition>()
     private val executions = ConcurrentHashMap<UUID, JobExecution>()
+    private val seededExecutionsByJob = ConcurrentHashMap<String, UUID>()
 
     override suspend fun saveJob(job: JobDefinition) {
         jobs[job.id] = job
@@ -32,6 +33,7 @@ class MemoryJobStore : JobStore {
     }
 
     override suspend fun seedInitialExecution(execution: JobExecution): Boolean = synchronized(executions) {
+        if (seededExecutionsByJob[execution.jobId] == execution.id) return false
         val hasActiveOrPending = executions.values.any {
             it.id == execution.id ||
                 (it.jobId == execution.jobId && (
@@ -41,6 +43,7 @@ class MemoryJobStore : JobStore {
                     ))
         }
         if (hasActiveOrPending) return false
+        seededExecutionsByJob[execution.jobId] = execution.id
         executions[execution.id] = execution
         return true
     }

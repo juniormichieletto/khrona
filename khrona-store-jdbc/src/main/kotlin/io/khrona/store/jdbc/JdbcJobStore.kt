@@ -126,9 +126,10 @@ class JdbcJobStore(
     override suspend fun saveJob(job: JobDefinition): Unit = inJdbcContext {
         val dialect = getDialect()
         dataSource.connection.use { conn ->
+            val existingSeededId = readSeededExecutionId(conn, job.id)
             conn.prepareStatementWithTimeout(dialect.upsertJobSql()).use { stmt ->
                 stmt.setString(1, job.id)
-                stmt.setString(2, json.encodeToString(job))
+                stmt.setString(2, encodeJobDefinitionJson(job, existingSeededId))
                 stmt.executeUpdate()
             }
         }
@@ -175,9 +176,18 @@ class JdbcJobStore(
             val originalAutoCommit = conn.autoCommit
             conn.autoCommit = false
             try {
-                conn.prepareStatementWithTimeout("SELECT id FROM khrona_jobs WHERE id = ? FOR UPDATE").use { lockStmt ->
+                var jobDefinitionJson: String? = null
+                conn.prepareStatementWithTimeout("SELECT definition_json FROM khrona_jobs WHERE id = ? FOR UPDATE").use { lockStmt ->
                     lockStmt.setString(1, execution.jobId)
-                    lockStmt.executeQuery().close()
+                    val rs = lockStmt.executeQuery()
+                    if (rs.next()) {
+                        jobDefinitionJson = rs.getString("definition_json")
+                    }
+                }
+                val existingSeededId = jobDefinitionJson?.let { extractSeededExecutionId(it) }
+                if (existingSeededId == execution.id.toString()) {
+                    conn.commit()
+                    return@inJdbcContext false
                 }
                 val existsSql = """
                     SELECT COUNT(*) FROM khrona_executions
@@ -193,6 +203,14 @@ class JdbcJobStore(
                     conn.commit()
                     return@inJdbcContext false
                 }
+                if (jobDefinitionJson != null) {
+                    val updatedJson = withSeededExecutionId(jobDefinitionJson, execution.id.toString())
+                    conn.prepareStatementWithTimeout(dialect.upsertJobSql()).use { jobStmt ->
+                        jobStmt.setString(1, execution.jobId)
+                        jobStmt.setString(2, updatedJson)
+                        jobStmt.executeUpdate()
+                    }
+                }
                 upsertExecution(conn, dialect, execution)
                 conn.commit()
                 return@inJdbcContext true
@@ -203,6 +221,34 @@ class JdbcJobStore(
                 conn.autoCommit = originalAutoCommit
             }
         }
+    }
+
+    private fun readSeededExecutionId(conn: java.sql.Connection, jobId: String): String? {
+        conn.prepareStatementWithTimeout("SELECT definition_json FROM khrona_jobs WHERE id = ?").use { stmt ->
+            stmt.setString(1, jobId)
+            val rs = stmt.executeQuery()
+            if (rs.next()) {
+                return rs.getString("definition_json")?.let { extractSeededExecutionId(it) }
+            }
+        }
+        return null
+    }
+
+    private fun extractSeededExecutionId(definitionJson: String): String? {
+        val obj = json.parseToJsonElement(definitionJson) as? kotlinx.serialization.json.JsonObject ?: return null
+        val primitive = obj[SEEDED_EXECUTION_ID_KEY] as? JsonPrimitive ?: return null
+        return if (primitive.isString) primitive.content else null
+    }
+
+    private fun encodeJobDefinitionJson(job: JobDefinition, seededExecutionId: String?): String {
+        val encoded = json.encodeToString(job)
+        return if (seededExecutionId != null) withSeededExecutionId(encoded, seededExecutionId) else encoded
+    }
+
+    private fun withSeededExecutionId(definitionJson: String, seededExecutionId: String): String {
+        val obj = json.parseToJsonElement(definitionJson) as kotlinx.serialization.json.JsonObject
+        val updated = kotlinx.serialization.json.JsonObject(obj + (SEEDED_EXECUTION_ID_KEY to JsonPrimitive(seededExecutionId)))
+        return json.encodeToString(kotlinx.serialization.json.JsonObject.serializer(), updated)
     }
 
     private fun upsertExecution(conn: java.sql.Connection, dialect: JdbcDialect, execution: JobExecution) {
@@ -541,6 +587,7 @@ class JdbcJobStore(
 
     companion object {
         const val DEFAULT_QUERY_TIMEOUT_SECONDS = 30
+        private const val SEEDED_EXECUTION_ID_KEY = "_seededExecutionId"
 
         fun resolveDialect(dataSource: DataSource): JdbcDialect {
             return dataSource.connection.use { conn ->

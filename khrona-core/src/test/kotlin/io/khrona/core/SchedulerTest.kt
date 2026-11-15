@@ -799,5 +799,38 @@ class SchedulerTest {
         }
         assertEquals(Instant.EPOCH.plusSeconds(15).plus(Duration.ofMinutes(10)), nextPending.scheduledAt)
     }
+
+    @Test
+    fun `once job does not re-run on restart after retention cleanup deletes completed execution`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
+        val runs = java.util.concurrent.atomic.AtomicInteger(0)
+        fun createConfig() = KhronaConfig().apply {
+            this.store = store
+            misfireThreshold = Duration.ofDays(365 * 100)
+            job("migrate-once") {
+                once()
+                execute {
+                    runs.incrementAndGet()
+                }
+            }
+        }
+
+        val firstScheduler = Scheduler(createConfig(), backgroundScope, clock)
+        firstScheduler.start()
+        advanceTimeBy(1_500)
+        firstScheduler.stop()
+        assertEquals(1, runs.get(), "once() job should run once on initial start")
+
+        val deleted = store.cleanupCompletedExecutions(Instant.parse("2100-01-01T00:00:00Z"))
+        assertEquals(1, deleted, "Completed execution should be purged by retention cleanup")
+
+        val restartedScheduler = Scheduler(createConfig(), backgroundScope, clock)
+        restartedScheduler.start()
+        advanceTimeBy(1_500)
+        restartedScheduler.stop()
+
+        assertEquals(1, runs.get(), "once() job must not run a second time after retention cleanup and restart")
+    }
 }
 

@@ -326,5 +326,20 @@ interface JobStoreContract {
 
         assertTrue(store.updateExecutionStatus(firstExec.id, ExecutionStatus.RUNNING, workerId = "worker-1"))
         assertFalse(store.seedInitialExecution(secondExec), "Second chain must not be seeded while first is RUNNING")
+
+        // Complete and purge the execution via retention cleanup; re-saving the job and re-seeding the same deterministic ID must still be skipped
+        assertTrue(store.updateExecutionStatus(firstExec.id, ExecutionStatus.SUCCESS, workerId = "worker-1"))
+        val purged = store.cleanupCompletedExecutions(
+            before = Instant.now().plusSeconds(3600),
+            statuses = setOf(ExecutionStatus.SUCCESS),
+            limit = 10_000
+        )
+        assertTrue(purged >= 1)
+        assertNull(store.getExecution(firstExec.id))
+        store.saveJob(job)
+        assertFalse(
+            store.seedInitialExecution(firstExec),
+            "Previously seeded deterministic execution must not be re-seeded after retention cleanup and restart"
+        )
     }
 }
