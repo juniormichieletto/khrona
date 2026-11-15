@@ -342,4 +342,32 @@ interface JobStoreContract {
             "Previously seeded deterministic execution must not be re-seeded after retention cleanup and restart"
         )
     }
+
+    @Test
+    fun `listEligibleExecutions filters by jobIds before applying limit`() = runTest {
+        val store = createStore()
+        val now = Instant.now()
+        val foreignJobId = "contract-foreign-${UUID.randomUUID()}"
+        val localJobId = "contract-local-${UUID.randomUUID()}"
+
+        repeat(3) { idx ->
+            store.saveExecution(
+                JobExecution(
+                    jobId = foreignJobId,
+                    scheduledAt = now.minusSeconds(100L - idx)
+                )
+            )
+        }
+        val localExec = JobExecution(
+            jobId = localJobId,
+            scheduledAt = now.minusSeconds(10)
+        )
+        store.saveExecution(localExec)
+
+        assertTrue(store.listEligibleExecutions(now, limit = 0, jobIds = setOf(localJobId)).isEmpty())
+        assertTrue(store.listEligibleExecutions(now, limit = 2, jobIds = emptySet()).isEmpty())
+
+        val filtered = store.listEligibleExecutions(now, limit = 1, jobIds = setOf(localJobId))
+        assertEquals(listOf(localExec.id), filtered.map { it.id })
+    }
 }

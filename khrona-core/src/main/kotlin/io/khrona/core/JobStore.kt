@@ -41,6 +41,19 @@ interface JobStore {
     suspend fun getExecution(id: UUID): JobExecution?
     
     suspend fun listEligibleExecutions(now: Instant, limit: Int = Int.MAX_VALUE): List<JobExecution>
+
+    suspend fun listEligibleExecutions(
+        now: Instant,
+        limit: Int = Int.MAX_VALUE,
+        jobIds: Set<String>?
+    ): List<JobExecution> {
+        if (limit <= 0) return emptyList()
+        val eligible = listEligibleExecutions(now, if (jobIds == null) limit else Int.MAX_VALUE)
+        if (jobIds == null) return eligible.take(limit)
+        if (jobIds.isEmpty()) return emptyList()
+        return eligible.asSequence().filter { it.jobId in jobIds }.take(limit).toList()
+    }
+
     suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: java.time.Duration): Boolean
     
     /**

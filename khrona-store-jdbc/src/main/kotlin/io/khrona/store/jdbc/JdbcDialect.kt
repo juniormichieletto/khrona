@@ -4,7 +4,7 @@ interface JdbcDialect {
     fun upsertJobSql(): String
     fun upsertExecutionSql(): String
     fun claimExecutionSql(): String
-    fun listEligibleExecutionsSql(): String
+    fun listEligibleExecutionsSql(jobIdCount: Int = 0): String
 
     /**
      * Returns the SQL UPDATE statement used to atomically extend an active execution lease.
@@ -53,11 +53,11 @@ class PostgresDialect : JdbcDialect {
         )
     """.trimIndent()
 
-    override fun listEligibleExecutionsSql(): String = """
+    override fun listEligibleExecutionsSql(jobIdCount: Int): String = """
         SELECT * FROM khrona_executions 
         WHERE (status = 'PENDING' OR ((status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?))
         AND scheduled_at <= ? 
-        ORDER BY scheduled_at ASC
+        ${jobIdFilterClause(jobIdCount)}ORDER BY scheduled_at ASC
         LIMIT ?
     """.trimIndent()
 
@@ -121,11 +121,11 @@ class H2Dialect : JdbcDialect {
         WHERE id = ? AND (status = 'PENDING' OR ((status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?))
     """.trimIndent()
 
-    override fun listEligibleExecutionsSql(): String = """
+    override fun listEligibleExecutionsSql(jobIdCount: Int): String = """
         SELECT * FROM khrona_executions 
         WHERE (status = 'PENDING' OR ((status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?))
         AND scheduled_at <= ? 
-        ORDER BY scheduled_at ASC
+        ${jobIdFilterClause(jobIdCount)}ORDER BY scheduled_at ASC
         LIMIT ?
     """.trimIndent()
 
@@ -193,11 +193,11 @@ class MySqlDialect : JdbcDialect {
         )
     """.trimIndent()
 
-    override fun listEligibleExecutionsSql(): String = """
+    override fun listEligibleExecutionsSql(jobIdCount: Int): String = """
         SELECT * FROM khrona_executions 
         WHERE (status = 'PENDING' OR ((status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?))
         AND scheduled_at <= ? 
-        ORDER BY scheduled_at ASC
+        ${jobIdFilterClause(jobIdCount)}ORDER BY scheduled_at ASC
         LIMIT ?
     """.trimIndent()
 
@@ -262,11 +262,11 @@ class OracleDialect : JdbcDialect {
         WHERE id = ? AND (status = 'PENDING' OR ((status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?))
     """.trimIndent()
 
-    override fun listEligibleExecutionsSql(): String = """
+    override fun listEligibleExecutionsSql(jobIdCount: Int): String = """
         SELECT * FROM khrona_executions 
         WHERE (status = 'PENDING' OR ((status = 'CLAIMED' OR status = 'RUNNING') AND expires_at < ?))
         AND scheduled_at <= ? 
-        ORDER BY scheduled_at ASC
+        ${jobIdFilterClause(jobIdCount)}ORDER BY scheduled_at ASC
         FETCH FIRST ? ROWS ONLY
     """.trimIndent()
 
@@ -309,3 +309,11 @@ class OracleDialect : JdbcDialect {
         """.trimIndent()
     }
 }
+
+private fun jobIdFilterClause(jobIdCount: Int): String =
+    if (jobIdCount > 0) {
+        val placeholders = (1..jobIdCount).joinToString(",") { "?" }
+        "AND job_id IN ($placeholders)\n        "
+    } else {
+        ""
+    }

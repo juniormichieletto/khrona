@@ -85,4 +85,45 @@ class BoundedPollingTest {
             Scheduler(config, this)
         }
     }
+
+    @Test
+    fun `older pending executions without a local handler do not starve local jobs when pollBatchSize is reached`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
+        val now = Instant.now(clock)
+        val myRuns = AtomicInteger(0)
+
+        store.saveJob(JobDefinition(id = "foreign-job", trigger = OneTimeTrigger(now.minusSeconds(100)), handler = {}))
+        repeat(5) { idx ->
+            store.saveExecution(
+                JobExecution(
+                    jobId = "foreign-job",
+                    scheduledAt = now.minusSeconds(100L - idx)
+                )
+            )
+        }
+
+        val myJob = JobDefinition(
+            id = "mine",
+            trigger = OneTimeTrigger(now.minusSeconds(10)),
+            handler = { myRuns.incrementAndGet() }
+        )
+        store.saveJob(myJob)
+        val myExecution = JobExecution(jobId = "mine", scheduledAt = now.minusSeconds(10))
+        store.saveExecution(myExecution)
+
+        val config = KhronaConfig().apply {
+            this.store = store
+            this.pollBatchSize = 5
+            jobs.add(myJob)
+        }
+        val scheduler = Scheduler(config, backgroundScope, clock)
+
+        scheduler.pollAndExecute()
+        advanceUntilIdle()
+        scheduler.stop()
+
+        assertEquals(1, myRuns.get(), "Local job must execute even when pollBatchSize older foreign rows exist")
+        assertEquals(ExecutionStatus.SUCCESS, store.getExecution(myExecution.id)?.status)
+    }
 }

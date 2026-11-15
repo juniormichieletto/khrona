@@ -129,6 +129,8 @@ class JdbcCoverageTest : AbstractJdbcJobStoreTest() {
             assertTrue(dialect.upsertExecutionSql().contains("khrona_executions"))
             assertTrue(dialect.claimExecutionSql().contains("CLAIMED"))
             assertTrue(dialect.listEligibleExecutionsSql().contains("SELECT") && dialect.listEligibleExecutionsSql().contains("khrona_executions"))
+            assertFalse(dialect.listEligibleExecutionsSql(0).contains("job_id IN"))
+            assertTrue(dialect.listEligibleExecutionsSql(2).contains("AND job_id IN (?,?)"))
             assertTrue(dialect.heartbeatSql().contains("UPDATE khrona_executions"))
             assertTrue(dialect.resetExpiredExecutionsSql().contains("PENDING"))
         }

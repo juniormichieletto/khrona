@@ -170,7 +170,7 @@ class Scheduler(
 
     internal suspend fun pollAndExecute() {
         val now = Instant.now(clock)
-        val eligible = store.listEligibleExecutions(now, config.pollBatchSize)
+        val eligible = store.listEligibleExecutions(now, config.pollBatchSize, handlerRegistry.registeredJobIds())
         
         eligible.forEach { execution ->
             if (activeJobs.containsKey(execution.id)) {
@@ -428,8 +428,13 @@ class Scheduler(
         // Use plusMillis(1) to ensure we look for the NEXT execution after this one
         // (important for inclusive triggers like OneTimeTrigger), and clamp to 'now'
         // so an overdue FIRE_NOW execution does not replay every missed historical occurrence.
-        val now = Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
-        val baseline = maxOf(execution.scheduledAt.plusMillis(1), now)
+        val now = Instant.now(clock)
+        val isMisfired = Duration.between(execution.scheduledAt, now) > config.misfireThreshold
+        val baseline = if (isMisfired) {
+            now.truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+        } else {
+            execution.scheduledAt.plusMillis(1)
+        }
         val next = jobDef.trigger.nextExecutionTime(baseline)
             ?.truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
         if (next != null) {

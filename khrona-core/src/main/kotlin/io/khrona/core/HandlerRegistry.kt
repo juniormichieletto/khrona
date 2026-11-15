@@ -20,4 +20,8 @@ class HandlerRegistry {
     fun remove(jobId: String) {
         handlers.remove(jobId)
     }
+
+    fun registeredJobIds(): Set<String> {
+        return handlers.keys.toSet()
+    }
 }

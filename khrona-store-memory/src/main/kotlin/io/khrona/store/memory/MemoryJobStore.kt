@@ -83,12 +83,24 @@ class MemoryJobStore : JobStore {
     override suspend fun getExecution(id: UUID): JobExecution? = executions[id]
 
     override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> {
+        return listEligibleExecutions(now, limit, null)
+    }
+
+    override suspend fun listEligibleExecutions(
+        now: Instant,
+        limit: Int,
+        jobIds: Set<String>?
+    ): List<JobExecution> {
+        if (limit <= 0 || (jobIds != null && jobIds.isEmpty())) return emptyList()
         return executions.values.filter { it ->
             val expiresAt = it.expiresAt
-            (it.status == ExecutionStatus.PENDING || ((it.status == ExecutionStatus.CLAIMED || it.status == ExecutionStatus.RUNNING) && expiresAt != null && expiresAt <= now))
-            && it.scheduledAt <= now 
+            (jobIds == null || it.jobId in jobIds) &&
+                (it.status == ExecutionStatus.PENDING ||
+                    ((it.status == ExecutionStatus.CLAIMED || it.status == ExecutionStatus.RUNNING) &&
+                        expiresAt != null && expiresAt <= now)) &&
+                it.scheduledAt <= now
         }.sortedBy { it.scheduledAt }
-        .take(limit)
+            .take(limit)
     }
 
     override suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: Duration): Boolean {

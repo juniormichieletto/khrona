@@ -191,5 +191,15 @@ class DslCoverageTest {
         val exec = JobExecution(jobId = "default-seed", scheduledAt = Instant.now())
         assertTrue(store.seedInitialExecution(exec))
         org.junit.jupiter.api.Assertions.assertFalse(store.seedInitialExecution(exec))
+
+        val otherExec = JobExecution(jobId = "other-job", scheduledAt = Instant.EPOCH)
+        store.saveExecution(otherExec)
+        assertTrue(store.listEligibleExecutions(Instant.now(), limit = 0, jobIds = null).isEmpty())
+        assertTrue(store.listEligibleExecutions(Instant.now(), limit = 5, jobIds = emptySet()).isEmpty())
+        assertEquals(2, store.listEligibleExecutions(Instant.now(), limit = 5, jobIds = null).size)
+        assertEquals(
+            listOf(otherExec.id),
+            store.listEligibleExecutions(Instant.now(), limit = 1, jobIds = setOf("other-job")).map { it.id }
+        )
     }
 }

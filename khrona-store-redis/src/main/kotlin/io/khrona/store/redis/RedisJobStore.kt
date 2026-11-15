@@ -179,14 +179,25 @@ class RedisJobStore private constructor(
         getStoredExecution(id)?.toExecution()
     }
 
-    override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> = inRedisContext {
-        if (limit <= 0) return@inRedisContext emptyList()
+    override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> =
+        listEligibleExecutions(now, limit, null)
+
+    override suspend fun listEligibleExecutions(
+        now: Instant,
+        limit: Int,
+        jobIds: Set<String>?
+    ): List<JobExecution> = inRedisContext {
+        if (limit <= 0 || (jobIds != null && jobIds.isEmpty())) return@inRedisContext emptyList()
+        val args = buildList {
+            add(now.toScore())
+            add(limit.toString())
+            jobIds?.forEach { add(it) }
+        }.toTypedArray()
         val rawJsons = commands.eval<List<String>>(
             LIST_ELIGIBLE_SCRIPT,
             ScriptOutputType.MULTI,
             arrayOf(keys.executions, keys.pending, keys.claimed, keys.running),
-            now.toScore(),
-            limit.toString()
+            *args
         )
 
         rawJsons.mapNotNull { raw ->
@@ -485,10 +496,14 @@ class RedisJobStore private constructor(
             local jsons = {}
             local seen = {}
             local limit = tonumber(ARGV[2])
-            local scan_batch = math.max(limit * 2, 100)
+            local filter_jobs = #ARGV > 2
+            local allowed_jobs = {}
+            for i = 3, #ARGV do
+                allowed_jobs[ARGV[i]] = true
+            end
             local function appendFrom(key, expected_status)
                 if #jsons >= limit then return end
-                local values = redis.call('ZRANGEBYSCORE', key, '-inf', ARGV[1], 'LIMIT', 0, scan_batch)
+                local values = redis.call('ZRANGEBYSCORE', key, '-inf', ARGV[1])
                 for _, id in ipairs(values) do
                     if not seen[id] and #jsons < limit then
                         seen[id] = true
@@ -500,7 +515,7 @@ class RedisJobStore private constructor(
                             local status = execution['status'] or 'PENDING'
                             if status ~= expected_status then
                                 redis.call('ZREM', key, id)
-                            else
+                            elseif not filter_jobs or allowed_jobs[execution['jobId']] then
                                 table.insert(jsons, raw)
                             end
                         end

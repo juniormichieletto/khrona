@@ -191,6 +191,26 @@ class SchedulerCoverageTest {
     }
 
     @Test
+    fun `poll skips eligible execution when store returns execution without local handler`() = runBlocking {
+        val execution = JobExecution(jobId = "unregistered-job", scheduledAt = Instant.now())
+        val store = object : MockJobStore() {
+            override suspend fun listEligibleExecutions(
+                now: Instant,
+                limit: Int,
+                jobIds: Set<String>?
+            ): List<JobExecution> = listOf(execution)
+        }
+        store.saveExecution(execution)
+        val scheduler = Scheduler(config {
+            this.store = store
+        })
+
+        scheduler.pollAndExecute()
+
+        assertEquals(ExecutionStatus.PENDING, store.getExecution(execution.id)?.status)
+    }
+
+    @Test
     fun `poll leaves execution pending when claim fails`() = runBlocking {
         val store = ClaimFalseStore()
         val execution = JobExecution(jobId = "claim-fails", scheduledAt = Instant.now())

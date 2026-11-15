@@ -319,14 +319,27 @@ class JdbcJobStore(
         return@inJdbcContext null
     }
 
-    override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> = inJdbcContext {
+    override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> =
+        listEligibleExecutions(now, limit, null)
+
+    override suspend fun listEligibleExecutions(
+        now: Instant,
+        limit: Int,
+        jobIds: Set<String>?
+    ): List<JobExecution> = inJdbcContext {
+        if (limit <= 0 || (jobIds != null && jobIds.isEmpty())) return@inJdbcContext emptyList()
         val dialect = getDialect()
+        val orderedJobIds = jobIds?.toList().orEmpty()
         val executions = mutableListOf<JobExecution>()
         dataSource.connection.use { conn ->
-            conn.prepareStatementWithTimeout(dialect.listEligibleExecutionsSql()).use { stmt ->
-                stmt.setTimestamp(1, Timestamp.from(now))
-                stmt.setTimestamp(2, Timestamp.from(now))
-                stmt.setInt(3, limit)
+            conn.prepareStatementWithTimeout(dialect.listEligibleExecutionsSql(orderedJobIds.size)).use { stmt ->
+                var paramIndex = 1
+                stmt.setTimestamp(paramIndex++, Timestamp.from(now))
+                stmt.setTimestamp(paramIndex++, Timestamp.from(now))
+                orderedJobIds.forEach { jobId ->
+                    stmt.setString(paramIndex++, jobId)
+                }
+                stmt.setInt(paramIndex, limit)
                 val rs = stmt.executeQuery()
                 while (rs.next()) {
                     executions.add(mapExecution(rs))
