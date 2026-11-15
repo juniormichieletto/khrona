@@ -501,5 +501,60 @@ class JdbcCoverageTest : AbstractJdbcJobStoreTest() {
         assertEquals(ExecutionStatus.CLAIMED, store.getExecution(current.id)?.status)
         org.junit.jupiter.api.Assertions.assertNull(store.getExecution(invalidFollowUp.id))
     }
+
+    @Test
+    fun `store persists all write operations when connection pool has autoCommit disabled`() = runBlocking<Unit> {
+        val hikari = com.zaxxer.hikari.HikariDataSource(
+            com.zaxxer.hikari.HikariConfig().apply {
+                jdbcUrl = "jdbc:h2:mem:khrona_autocommit_false_${java.util.UUID.randomUUID()};MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1"
+                username = "sa"
+                password = ""
+                driverClassName = "org.h2.Driver"
+                isAutoCommit = false
+                maximumPoolSize = 2
+            }
+        )
+        try {
+            val nonAutoCommitStore = JdbcJobStore(hikari)
+            nonAutoCommitStore.migrate()
+
+            val job = io.khrona.core.JobDefinition(
+                id = "autocommit-false-job",
+                handler = {},
+                trigger = io.khrona.core.IntervalTrigger(Duration.ofMinutes(5))
+            )
+            nonAutoCommitStore.saveJob(job)
+            assertEquals(job.id, nonAutoCommitStore.getJob(job.id)?.id)
+
+            val exec = JobExecution(
+                jobId = job.id,
+                scheduledAt = Instant.now().minusSeconds(10)
+            )
+            nonAutoCommitStore.saveExecution(exec)
+            assertEquals(ExecutionStatus.PENDING, nonAutoCommitStore.getExecution(exec.id)?.status)
+
+            assertTrue(nonAutoCommitStore.claimExecution(exec.id, "worker-1", Duration.ofSeconds(10)))
+            assertEquals(ExecutionStatus.CLAIMED, nonAutoCommitStore.getExecution(exec.id)?.status)
+
+            assertTrue(nonAutoCommitStore.heartbeat(exec.id, "worker-1", Duration.ofMinutes(5)))
+            assertTrue(nonAutoCommitStore.updateExecutionStatus(exec.id, ExecutionStatus.SUCCESS, workerId = "worker-1"))
+            assertEquals(ExecutionStatus.SUCCESS, nonAutoCommitStore.getExecution(exec.id)?.status)
+
+            val expiredExec = JobExecution(
+                jobId = job.id,
+                scheduledAt = Instant.now().minusSeconds(20)
+            )
+            nonAutoCommitStore.saveExecution(expiredExec)
+            assertTrue(nonAutoCommitStore.claimExecution(expiredExec.id, "worker-1", Duration.ofSeconds(-5)))
+            assertEquals(1, nonAutoCommitStore.resetExpiredExecutions(Instant.now()))
+            assertEquals(ExecutionStatus.PENDING, nonAutoCommitStore.getExecution(expiredExec.id)?.status)
+
+            val deleted = nonAutoCommitStore.cleanupCompletedExecutions(Instant.now().plusSeconds(60))
+            assertEquals(1, deleted)
+            org.junit.jupiter.api.Assertions.assertNull(nonAutoCommitStore.getExecution(exec.id))
+        } finally {
+            hikari.close()
+        }
+    }
 }
 

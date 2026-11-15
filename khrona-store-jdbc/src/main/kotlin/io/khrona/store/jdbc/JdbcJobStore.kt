@@ -67,6 +67,20 @@ class JdbcJobStore(
         return stmt
     }
 
+    private fun <T> withWriteConnection(block: (java.sql.Connection) -> T): T {
+        return dataSource.connection.use { conn ->
+            val result = block(conn)
+            commitIfNeeded(conn)
+            result
+        }
+    }
+
+    private fun commitIfNeeded(conn: java.sql.Connection) {
+        if (!conn.autoCommit) {
+            conn.commit()
+        }
+    }
+
     suspend fun migrate() = inJdbcContext {
         var sql = this::class.java.getResource("/khrona_schema.sql")?.readText()
             ?: throw IllegalStateException("Schema file not found")
@@ -125,7 +139,7 @@ class JdbcJobStore(
 
     override suspend fun saveJob(job: JobDefinition): Unit = inJdbcContext {
         val dialect = getDialect()
-        dataSource.connection.use { conn ->
+        withWriteConnection { conn ->
             val existingSeededId = readSeededExecutionId(conn, job.id)
             conn.prepareStatementWithTimeout(dialect.upsertJobSql()).use { stmt ->
                 stmt.setString(1, job.id)
@@ -165,7 +179,7 @@ class JdbcJobStore(
 
     override suspend fun saveExecution(execution: JobExecution): Unit = inJdbcContext {
         val dialect = getDialect()
-        dataSource.connection.use { conn ->
+        withWriteConnection { conn ->
             upsertExecution(conn, dialect, execution)
         }
     }
@@ -275,8 +289,8 @@ class JdbcJobStore(
         error: String?,
         workerId: String?
     ): Boolean = inJdbcContext {
-        dataSource.connection.use { conn ->
-            return@inJdbcContext updateExecutionStatusInternal(conn, id, status, error, workerId)
+        withWriteConnection { conn ->
+            updateExecutionStatusInternal(conn, id, status, error, workerId)
         }
     }
 
@@ -392,13 +406,16 @@ class JdbcJobStore(
             corruptRows.forEach { (id, errorMessage) ->
                 updateExecutionStatusInternal(conn, id, ExecutionStatus.DEAD_LETTERED, errorMessage, null)
             }
+            if (corruptRows.isNotEmpty()) {
+                commitIfNeeded(conn)
+            }
         }
         return@inJdbcContext executions
     }
 
     override suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: Duration): Boolean = inJdbcContext {
         val dialect = getDialect()
-        dataSource.connection.use { conn ->
+        withWriteConnection { conn ->
             conn.prepareStatementWithTimeout(dialect.claimExecutionSql()).use { stmt ->
                 val now = Instant.now()
                 val expiresAt = now.plus(leaseDuration)
@@ -408,14 +425,14 @@ class JdbcJobStore(
                 stmt.setTimestamp(4, Timestamp.from(now))
                 stmt.setString(5, id.toString())
                 stmt.setTimestamp(6, Timestamp.from(now))
-                return@inJdbcContext stmt.executeUpdate() > 0
+                stmt.executeUpdate() > 0
             }
         }
     }
 
     override suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean = inJdbcContext {
         val dialect = getDialect()
-        dataSource.connection.use { conn ->
+        withWriteConnection { conn ->
             conn.prepareStatementWithTimeout(dialect.heartbeatSql()).use { stmt ->
                 val now = Instant.now()
                 val expiresAt = now.plus(leaseDuration)
@@ -423,7 +440,7 @@ class JdbcJobStore(
                 stmt.setString(2, id.toString())
                 stmt.setString(3, workerId)
                 stmt.setTimestamp(4, Timestamp.from(now))
-                return@inJdbcContext stmt.executeUpdate() > 0
+                stmt.executeUpdate() > 0
             }
         }
     }
@@ -446,10 +463,10 @@ class JdbcJobStore(
 
     override suspend fun resetExpiredExecutions(now: Instant): Int = inJdbcContext {
         val dialect = getDialect()
-        dataSource.connection.use { conn ->
+        withWriteConnection { conn ->
             conn.prepareStatementWithTimeout(dialect.resetExpiredExecutionsSql()).use { stmt ->
                 stmt.setTimestamp(1, Timestamp.from(now))
-                return@inJdbcContext stmt.executeUpdate()
+                stmt.executeUpdate()
             }
         }
     }
@@ -512,7 +529,7 @@ class JdbcJobStore(
             return@inJdbcContext cleanupOracleWithSkipLocked(dialect, before, statusList, limit)
         }
         val sql = dialect.cleanupCompletedExecutionsSql(statusList.size)
-        dataSource.connection.use { conn ->
+        withWriteConnection { conn ->
             conn.prepareStatementWithTimeout(sql).use { stmt ->
                 var paramIdx = 1
                 statusList.forEach { status ->
@@ -520,7 +537,7 @@ class JdbcJobStore(
                 }
                 stmt.setTimestamp(paramIdx++, Timestamp.from(before))
                 stmt.setInt(paramIdx, limit)
-                return@inJdbcContext stmt.executeUpdate()
+                stmt.executeUpdate()
             }
         }
     }
