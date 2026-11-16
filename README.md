@@ -100,6 +100,8 @@ suspend fun updateExecutionStatus(
 
 For `heartbeat`, the store must atomically check that the execution is `CLAIMED` or `RUNNING`, belongs to `workerId`, and has an unexpired lease before extending it. Return `false` without changing the execution if any check fails. For `updateExecutionStatus`, when `workerId` is non-null, the store must atomically verify that the execution is currently active (`CLAIMED` or `RUNNING`) and owned by `workerId`, clearing claim metadata (`workerId`, `startedAt`, `expiresAt`) when releasing back to `PENDING`, and return `true` only when the transition was applied. The scheduler supplies a unique per-claim token (`<workerId>:<claimId>`) on every claim, heartbeat, and status transition, and only schedules retries or next recurring runs when the status transition succeeds.
 
+Legacy custom dialects that only implement `listEligibleExecutionsSql()` remain supported. When filtering by registered job IDs, JDBC expands the legacy query as needed and applies the result limit to matching executions. For large shared backlogs, override `listEligibleExecutionsSql(jobIdCount)` to filter in SQL, binding the job IDs between the two time parameters and the final limit parameter.
+
 **Breaking `JdbcDialect.heartbeatSql()` parameter contract:** `JdbcJobStore.heartbeat` now binds four positional `?` parameters in order: `(1) new expires_at (Timestamp)`, `(2) execution id (String)`, `(3) claimed_by / workerId (String)`, and `(4) current timestamp now (Timestamp)`. Custom `JdbcDialect` implementations that still return a two-parameter SQL statement will compile but fail at runtime when binding parameters 3 and 4; update `heartbeatSql()` to match:
 
 ```sql
@@ -107,7 +109,7 @@ UPDATE khrona_executions SET expires_at = ?
 WHERE id = ? AND claimed_by = ? AND expires_at > ? AND (status = 'CLAIMED' OR status = 'RUNNING')
 ```
 
-**Expired leases cannot be revived by heartbeat**, even when nobody has reclaimed the execution yet. A rejected renewal makes the scheduler request cooperative cancellation of the handler. A GC pause, slow database, or Redis outage that exceeds the remaining lease can therefore cancel otherwise healthy work. The default heartbeat interval is half the lease duration, leaving roughly `executionLeaseDuration - heartbeatInterval` for delays after a heartbeat becomes due. Choose a lease that accommodates expected pauses and storage latency.
+**Expired leases cannot be revived by heartbeat**, even when nobody has reclaimed the execution yet. A rejected renewal makes the scheduler request cooperative cancellation of the handler. A GC pause, slow database, or Redis outage that exceeds the remaining lease can therefore cancel otherwise healthy work. The default heartbeat interval is half the lease duration, leaving roughly `executionLeaseDuration - heartbeatInterval` for delays after a heartbeat becomes due. Choose a lease that accommodates expected pauses and storage latency. The scheduler starts its local lease budget before sending each claim or renewal request, so a delayed response cannot extend ownership. Its watchdog also bounds that budget with monotonic elapsed time, so a stalled or backward-moving wall clock cannot delay local expiration. Cancellation remains cooperative; handlers must still protect external side effects with idempotency.
 
 Redis also requires an unexpired entry in the corresponding claimed/running sorted set; a missing entry causes renewal to fail.
 
@@ -336,13 +338,15 @@ Khrona includes an opt-in end-to-end test suite (`@Tag("e2e")`) that is excluded
 
 1. Publishes all Khrona modules (`khrona-core`, `khrona-ktor`, `khrona-store-memory`, `khrona-store-jdbc`, `khrona-store-redis`) to `mavenLocal()`.
 2. Starts a Docker container and scaffolds a brand-new Ktor application from scratch using the official Ktor CLI generator (`ktor new`).
-3. Configures `khrona-ktor` and the target `JobStore` inside the generated project, boots the Ktor server (`./gradlew run`), and verifies triggers (`once`, `every`, `cron`, manual `trigger`), structured payloads, MDC `correlationId` propagation, retries, timeouts (`DEAD_LETTERED`), concurrency policies (`FORBID`, `REPLACE`), misfire handling (`IGNORE`), retention cleanup, stale recovery, and lease/status-transition fencing over HTTP.
+3. Configures `khrona-ktor` and the target `JobStore` inside the generated project, boots the Ktor server (`./gradlew run`), and verifies one-time/interval/manual execution, cron registration, structured payloads, MDC `correlationId` propagation, retries, timeouts (`DEAD_LETTERED`), concurrency policies (`FORBID`, `REPLACE`), misfire handling (`IGNORE`), retention cleanup, stale recovery, and lease/status-transition fencing over HTTP.
 
 Run the E2E suite on demand (requires Docker):
 
 ```bash
 ./gradlew :khrona-ktor:e2eTest
 ```
+
+See the [1.0 readiness notes](docs/1.0-readiness.md) for the six remaining acceptance areas, the current E2E coverage and its limits, and planned generated-app upgrade, observability, and management scenarios.
 
 ## Performance Benchmark Suite
 
@@ -416,6 +420,8 @@ job("long-report") {
 ```
 
 Persistent stores such as `JdbcJobStore` keep execution state across application restarts. If the application crashes or restarts while a job is `CLAIMED` or `RUNNING`, heartbeats stop, the execution lease eventually expires, and the scheduler can pick the execution up again after restart. This starts the handler again from the beginning; Khrona does not resume from the last line of code that ran.
+
+If the configured store changes, subsequent polls and registrations use the new store. Executions already claimed keep using their original store for heartbeat, completion, retries, and shutdown release. Keep the original store open until that work finishes. Changing the store does not migrate existing job definitions or pending executions.
 
 Design long-running handlers to be idempotent, checkpoint progress externally, or split the work into smaller executions. This avoids duplicate side effects when a restarted or reclaimed execution runs again.
 

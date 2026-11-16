@@ -84,5 +84,146 @@ class BoundedPollingTest {
             }
             Scheduler(config, this)
         }
+
+        assertThrows(IllegalArgumentException::class.java) {
+            val config = KhronaConfig().apply {
+                this.store = store
+                maxConcurrentExecutions = 0
+            }
+            Scheduler(config, this)
+        }
+    }
+
+    @Test
+    fun `older pending executions without a local handler do not starve local jobs when pollBatchSize is reached`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
+        val now = Instant.now(clock)
+        val myRuns = AtomicInteger(0)
+
+        store.saveJob(JobDefinition(id = "foreign-job", trigger = OneTimeTrigger(now.minusSeconds(100)), handler = {}))
+        repeat(5) { idx ->
+            store.saveExecution(
+                JobExecution(
+                    jobId = "foreign-job",
+                    scheduledAt = now.minusSeconds(100L - idx)
+                )
+            )
+        }
+
+        val myJob = JobDefinition(
+            id = "mine",
+            trigger = OneTimeTrigger(now.minusSeconds(10)),
+            handler = { myRuns.incrementAndGet() }
+        )
+        store.saveJob(myJob)
+        val myExecution = JobExecution(jobId = "mine", scheduledAt = now.minusSeconds(10))
+        store.saveExecution(myExecution)
+
+        val config = KhronaConfig().apply {
+            this.store = store
+            this.pollBatchSize = 5
+            jobs.add(myJob)
+        }
+        val scheduler = Scheduler(config, backgroundScope, clock)
+
+        scheduler.pollAndExecute()
+        advanceUntilIdle()
+        scheduler.stop()
+
+        assertEquals(1, myRuns.get(), "Local job must execute even when pollBatchSize older foreign rows exist")
+        assertEquals(ExecutionStatus.SUCCESS, store.getExecution(myExecution.id)?.status)
+    }
+
+    @Test
+    fun `scheduler bounds concurrent active executions across polls`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
+        val active = AtomicInteger(0)
+        val maxActive = AtomicInteger(0)
+
+        val config = KhronaConfig().apply {
+            this.store = store
+            pollBatchSize = 100
+            maxConcurrentExecutions = 10
+            job("allow-burst") {
+                once()
+                concurrencyPolicy = ConcurrencyPolicy.ALLOW
+                execute {
+                    val current = active.incrementAndGet()
+                    maxActive.accumulateAndGet(current, ::maxOf)
+                    delay(5_000)
+                    active.decrementAndGet()
+                }
+            }
+        }
+
+        val scheduler = Scheduler(config, backgroundScope, clock)
+        val jobDef = config.jobs.first()
+        store.saveJob(jobDef)
+        repeat(1_000) {
+            store.saveExecution(JobExecution(jobId = jobDef.id, scheduledAt = Instant.now(clock).minusSeconds(1)))
+        }
+
+        repeat(10) {
+            scheduler.pollAndExecute()
+            advanceTimeBy(20)
+        }
+
+        assertEquals(
+            10,
+            maxActive.get(),
+            "Concurrent active handlers (${maxActive.get()}) must not exceed maxConcurrentExecutions (10)"
+        )
+        scheduler.stop()
+    }
+
+    @Test
+    fun `bad job definition does not abort healthy execution batch`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = object : MockJobStore(clock) {
+            override suspend fun getJob(jobId: String): JobDefinition? {
+                if (jobId == "bad") error("unsupported trigger in stored definition")
+                return super.getJob(jobId)
+            }
+        }
+        var healthyRuns = 0
+        val config = KhronaConfig().apply {
+            this.store = store
+            job("bad") { every(Duration.ofHours(1)); execute {} }
+            job("healthy") { every(Duration.ofHours(1)); execute { healthyRuns++ } }
+        }
+        config.jobs.forEach { store.saveJob(it) }
+        store.saveExecution(JobExecution(jobId = "bad", scheduledAt = Instant.EPOCH.minusSeconds(1)))
+        store.saveExecution(JobExecution(jobId = "healthy", scheduledAt = Instant.EPOCH))
+        val scheduler = Scheduler(config, backgroundScope, clock)
+        scheduler.pollAndExecute()
+        runCurrent()
+        assertEquals(1, healthyRuns, "Failure loading one job definition must not abort healthy jobs in the batch")
+    }
+
+    @Test
+    fun `locked oldest row does not starve unrelated local job when pollBatchSize is reached`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
+        var healthyRuns = 0
+        val config = KhronaConfig().apply {
+            this.store = store
+            pollBatchSize = 1
+            job("locked") { every(Duration.ofHours(1)); execute {} }
+            job("healthy") { every(Duration.ofHours(1)); execute { healthyRuns++ } }
+        }
+        config.jobs.forEach { store.saveJob(it) }
+        store.saveExecution(JobExecution(jobId = "locked", scheduledAt = Instant.EPOCH.minusSeconds(1), lockKey = "locked"))
+        val holder = JobExecution(jobId = "locked", scheduledAt = Instant.EPOCH, lockKey = "locked")
+        store.saveExecution(holder)
+        store.claimExecution(holder.id, "remote", Duration.ofHours(1))
+        store.saveExecution(JobExecution(jobId = "healthy", scheduledAt = Instant.EPOCH))
+        val scheduler = Scheduler(config, backgroundScope, clock)
+        repeat(3) {
+            scheduler.pollAndExecute()
+            runCurrent()
+        }
+        assertEquals(1, healthyRuns, "Lock-blocked FORBID job must not starve unrelated healthy jobs when pollBatchSize is reached")
     }
 }

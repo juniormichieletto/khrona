@@ -75,4 +75,31 @@ class PostgreSqlJobStoreTest : AbstractJdbcJobStoreTest() {
         assertNotNull(store.getExecution(exec1.id))
         assertNull(store.getExecution(exec2.id))
     }
+
+    @Test
+    fun `scheduledAt round-trips identically across nodes in different JVM default time zones on PostgreSQL`() = runBlocking {
+        val originalTz = java.util.TimeZone.getDefault()
+        val targetInstant = Instant.parse("2026-04-20T12:00:00Z")
+        val exec = JobExecution(
+            jobId = "pg-tz-job",
+            scheduledAt = targetInstant
+        )
+        try {
+            java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("America/Sao_Paulo"))
+            store.saveExecution(exec)
+
+            java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("Asia/Tokyo"))
+            val loaded = store.getExecution(exec.id)
+            assertEquals(
+                targetInstant,
+                loaded?.scheduledAt,
+                "TIMESTAMP column must preserve exact UTC Instant across nodes in different JVM time zones"
+            )
+            val eligible = store.listEligibleExecutions(targetInstant.plusSeconds(1), 10, setOf("pg-tz-job"))
+            assertEquals(1, eligible.size)
+            assertEquals(targetInstant, eligible.single().scheduledAt)
+        } finally {
+            java.util.TimeZone.setDefault(originalTz)
+        }
+    }
 }

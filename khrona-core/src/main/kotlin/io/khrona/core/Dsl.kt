@@ -146,6 +146,7 @@ class KhronaConfig {
     var executionLeaseDuration: java.time.Duration = java.time.Duration.ofMinutes(5)
     var heartbeatInterval: java.time.Duration? = null
     var pollBatchSize: Int = 100
+    var maxConcurrentExecutions: Int = 100
     val jobs = mutableListOf<JobDefinition>()
 
     fun pollingInterval(interval: kotlin.time.Duration) {
@@ -178,6 +179,39 @@ class KhronaConfig {
 
     fun retention(block: RetentionPolicy.() -> Unit) {
         retentionPolicy.block()
+    }
+
+    fun validate() {
+        val effectiveHeartbeat = heartbeatInterval ?: executionLeaseDuration.dividedBy(2)
+        if (executionLeaseDuration.isNegative || executionLeaseDuration.isZero) {
+            throw IllegalArgumentException("executionLeaseDuration must be positive")
+        }
+        if (effectiveHeartbeat.isNegative || effectiveHeartbeat.isZero) {
+            throw IllegalArgumentException("heartbeatInterval must be positive")
+        }
+        if (effectiveHeartbeat >= executionLeaseDuration) {
+            throw IllegalArgumentException("heartbeatInterval must be strictly less than executionLeaseDuration")
+        }
+        if (pollBatchSize <= 0) {
+            throw IllegalArgumentException("pollBatchSize must be positive")
+        }
+        if (maxConcurrentExecutions <= 0) {
+            throw IllegalArgumentException("maxConcurrentExecutions must be positive")
+        }
+        if (retentionPolicy.enabled) {
+            if (!retentionPolicy.maxAge.isPositive()) {
+                throw IllegalArgumentException("retentionPolicy.maxAge must be positive")
+            }
+            if (!retentionPolicy.cleanupInterval.isPositive()) {
+                throw IllegalArgumentException("retentionPolicy.cleanupInterval must be positive")
+            }
+            if (retentionPolicy.batchSize <= 0) {
+                throw IllegalArgumentException("retentionPolicy.batchSize must be positive")
+            }
+            if (retentionPolicy.cleanupJitter !in 0.0..1.0) {
+                throw IllegalArgumentException("retentionPolicy.cleanupJitter must be between 0.0 and 1.0")
+            }
+        }
     }
 }
 

@@ -9,6 +9,7 @@ import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.toJavaDuration
 
 class Scheduler(
@@ -17,12 +18,23 @@ class Scheduler(
     private val clock: Clock = Clock.systemUTC()
 ) {
     private val log = LoggerFactory.getLogger(Scheduler::class.java)
-    private val store = config.store ?: throw IllegalStateException("JobStore must be configured")
+    private val store: JobStore
+        get() = config.store ?: throw IllegalStateException("JobStore must be configured")
     private val handlerRegistry = HandlerRegistry()
+    private data class LeaseDeadline(val expiresAt: Instant, val startedAtNanos: Long, val duration: Duration) {
+        fun remaining(now: Instant): Duration = minOf(
+            Duration.between(now, expiresAt),
+            duration.minusNanos(System.nanoTime() - startedAtNanos)
+        )
+    }
+
     private val activeJobs = ConcurrentHashMap<UUID, Job>()
-    private val activeClaimOwners = ConcurrentHashMap<UUID, String>()
+    private data class ActiveClaim(val owner: String, val store: JobStore)
+
+    private val activeClaims = ConcurrentHashMap<UUID, ActiveClaim>()
     private val workerId = UUID.randomUUID().toString()
-    private val heartbeatInterval = config.heartbeatInterval ?: config.executionLeaseDuration.dividedBy(2)
+    private val heartbeatInterval: Duration
+        get() = config.heartbeatInterval ?: config.executionLeaseDuration.dividedBy(2)
     private var job: Job? = null
     @Volatile
     private var stopping = false
@@ -37,32 +49,8 @@ class Scheduler(
     }
 
     private fun validateConfig() {
-        if (config.executionLeaseDuration.isNegative || config.executionLeaseDuration.isZero) {
-            throw IllegalArgumentException("executionLeaseDuration must be positive")
-        }
-        if (heartbeatInterval.isNegative || heartbeatInterval.isZero) {
-            throw IllegalArgumentException("heartbeatInterval must be positive")
-        }
-        if (heartbeatInterval >= config.executionLeaseDuration) {
-            throw IllegalArgumentException("heartbeatInterval must be strictly less than executionLeaseDuration")
-        }
-        if (config.pollBatchSize <= 0) {
-            throw IllegalArgumentException("pollBatchSize must be positive")
-        }
-        if (config.retentionPolicy.enabled) {
-            if (!config.retentionPolicy.maxAge.isPositive()) {
-                throw IllegalArgumentException("retentionPolicy.maxAge must be positive")
-            }
-            if (!config.retentionPolicy.cleanupInterval.isPositive()) {
-                throw IllegalArgumentException("retentionPolicy.cleanupInterval must be positive")
-            }
-            if (config.retentionPolicy.batchSize <= 0) {
-                throw IllegalArgumentException("retentionPolicy.batchSize must be positive")
-            }
-            if (config.retentionPolicy.cleanupJitter !in 0.0..1.0) {
-                throw IllegalArgumentException("retentionPolicy.cleanupJitter must be between 0.0 and 1.0")
-            }
-        }
+        checkNotNull(config.store) { "JobStore must be configured" }
+        config.validate()
     }
 
     fun start() {
@@ -78,31 +66,7 @@ class Scheduler(
             
             // Basic initial scheduling: for each job, create its first execution if none exist
             config.jobs.forEach { jobDef ->
-                // Truncate to seconds to ensure deterministic UUID matching across nodes
-                val now = Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
-                // For OneTimeTrigger, use EPOCH to pick up past executions.
-                // For others, use 'now' to avoid catching up from 1970.
-                val next = if (jobDef.trigger is OneTimeTrigger) {
-                    jobDef.trigger.nextExecutionTime(Instant.EPOCH)
-                } else {
-                    jobDef.trigger.nextExecutionTime(now)
-                }
-                
-                if (next != null) {
-                    // Use a deterministic UUID for the first execution to avoid duplicates when multiple nodes start.
-                    val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
-                    if (store.getExecution(deterministicId) == null) {
-                        store.saveExecution(
-                            JobExecution(
-                                id = deterministicId,
-                                jobId = jobDef.id,
-                                scheduledAt = next,
-                                lockKey = jobDef.lockKey,
-                                correlationId = correlationId ?: deterministicId.toString()
-                            )
-                        )
-                    }
-                }
+                seedFirstExecution(jobDef, correlationId, store)
             }
 
             var lastRecovery = Instant.MIN
@@ -193,205 +157,276 @@ class Scheduler(
     }
 
     internal suspend fun pollAndExecute() {
+        if (activeJobs.size >= config.maxConcurrentExecutions) {
+            log.debug("Skipping poll because active executions (${activeJobs.size}) reached maxConcurrentExecutions (${config.maxConcurrentExecutions})")
+            return
+        }
+        // A poll and every claim it creates stay attached to this store even if config changes.
+        val store = this.store
         val now = Instant.now(clock)
-        val eligible = store.listEligibleExecutions(now, config.pollBatchSize)
-        
-        eligible.forEach { execution ->
-            if (activeJobs.containsKey(execution.id)) {
-                log.trace("[${execution.jobId}] Skipping execution ${execution.id} because it is already active locally")
-                return@forEach
-            }
+        var candidateJobIds = handlerRegistry.registeredJobIds()
+        var remainingBatchBudget = config.pollBatchSize
 
-            // Check if we have a handler for this job before claiming
-            if (!handlerRegistry.hasHandler(execution.jobId)) {
-                log.trace("[${execution.jobId}] Skipping execution ${execution.id} because no local handler is registered")
-                return@forEach
-            }
+        do {
+            val blockedJobIds = mutableSetOf<String>()
+            val eligible = store.listEligibleExecutions(now, remainingBatchBudget, candidateJobIds)
 
-            // Re-fetch job def in case it changed or for fresh state
-            val jobDef = store.getJob(execution.jobId) ?: return@forEach
-            
-            // Check for misfire
-            if (Duration.between(execution.scheduledAt, now) > config.misfireThreshold) {
-                if (jobDef.misfirePolicy == MisfirePolicy.IGNORE) {
-                    val claimOwner = "$workerId:${UUID.randomUUID()}"
-                    if (store.claimExecution(execution.id, claimOwner, config.executionLeaseDuration)) {
-                        handleMisfire(execution, jobDef, now, claimOwner)
+            eligible.forEach { execution ->
+                if (activeJobs.containsKey(execution.id)) {
+                    log.trace("[${execution.jobId}] Skipping execution ${execution.id} because it is already active locally")
+                    return@forEach
+                }
+
+                // Check if we have a handler for this job before claiming
+                if (!handlerRegistry.hasHandler(execution.jobId)) {
+                    log.trace("[${execution.jobId}] Skipping execution ${execution.id} because no local handler is registered")
+                    return@forEach
+                }
+
+                // Re-fetch job def in case it changed or for fresh state
+                val jobDef = loadJobDefinition(execution.jobId, store) ?: run {
+                    blockedJobIds.add(execution.jobId)
+                    return@forEach
+                }
+
+                // Check for misfire
+                if (Duration.between(execution.scheduledAt, now) > config.misfireThreshold) {
+                    if (jobDef.misfirePolicy == MisfirePolicy.IGNORE) {
+                        val claimOwner = "$workerId:${UUID.randomUUID()}"
+                        if (store.claimExecution(execution.id, claimOwner, config.executionLeaseDuration)) {
+                            handleMisfire(execution, jobDef, now, claimOwner, store)
+                            remainingBatchBudget--
+                        }
+                        return@forEach
+                    } else {
+                        log.info("[${execution.jobId}] Misfire detected (scheduled at ${execution.scheduledAt}), firing now due to FIRE_NOW policy")
                     }
-                    return@forEach
-                } else {
-                    log.info("[${execution.jobId}] Misfire detected (scheduled at ${execution.scheduledAt}), firing now due to FIRE_NOW policy")
                 }
-            }
 
-            // Check for distributed lock if policy is FORBID
-            if (jobDef.concurrencyPolicy == ConcurrencyPolicy.FORBID && jobDef.lockKey != null) {
-                if (store.isLockHeld(jobDef.lockKey)) {
-                    log.debug("[${execution.jobId}] Skipping execution ${execution.id} because lock ${jobDef.lockKey} is held")
-                    return@forEach
-                }
-            }
-
-            val claimOwner = "$workerId:${UUID.randomUUID()}"
-            if (store.claimExecution(execution.id, claimOwner, config.executionLeaseDuration)) {
-                val placeholderJob = Job()
-                val previousJob = activeJobs.putIfAbsent(execution.id, placeholderJob)
-                if (previousJob != null) {
-                    placeholderJob.complete()
-                    store.updateExecutionStatus(execution.id, ExecutionStatus.PENDING, workerId = claimOwner)
-                    return@forEach
-                }
-                activeClaimOwners[execution.id] = claimOwner
-
-                var launched = false
-                try {
-                    if (stopping || !currentCoroutineContext().isActive) {
+                // Check for distributed lock if policy is FORBID
+                if (jobDef.concurrencyPolicy == ConcurrencyPolicy.FORBID && jobDef.lockKey != null) {
+                    if (store.isLockHeld(jobDef.lockKey)) {
+                        log.debug("[${execution.jobId}] Skipping execution ${execution.id} because lock ${jobDef.lockKey} is held")
+                        blockedJobIds.add(execution.jobId)
                         return@forEach
                     }
+                }
 
-                    // Handle REPLACE only after the replacement has been claimed.
-                    if (jobDef.concurrencyPolicy == ConcurrencyPolicy.REPLACE && jobDef.lockKey != null) {
-                        val supersededIds = store.supersedeExecutionsByLockKey(
-                            lockKey = jobDef.lockKey,
-                            excludeExecutionId = execution.id
-                        )
-                        supersededIds.forEach { id ->
-                            activeJobs[id]?.cancel("Superseded by a new execution for lock ${jobDef.lockKey}")
-                        }
+                if (activeJobs.size >= config.maxConcurrentExecutions) {
+                    log.debug("Stopping claim loop because active executions (${activeJobs.size}) reached maxConcurrentExecutions (${config.maxConcurrentExecutions})")
+                    return
+                }
+
+                val claimOwner = "$workerId:${UUID.randomUUID()}"
+                val leaseDuration = config.executionLeaseDuration
+                val initialLeaseDeadline = newLeaseDeadline(leaseDuration)
+                if (store.claimExecution(execution.id, claimOwner, leaseDuration)) {
+                    val placeholderJob = Job()
+                    val previousJob = activeJobs.putIfAbsent(execution.id, placeholderJob)
+                    if (previousJob != null) {
+                        placeholderJob.complete()
+                        store.updateExecutionStatus(execution.id, ExecutionStatus.PENDING, workerId = claimOwner)
+                        return@forEach
                     }
+                    val claim = ActiveClaim(claimOwner, store)
+                    activeClaims[execution.id] = claim
 
-                    // Double-check lock AFTER claiming but before launching
-                    // This handles the race where two executions for the same lock were claimed 
-                    // by different nodes (if duplicate executions existed) or by the same node.
-                    if (jobDef.concurrencyPolicy == ConcurrencyPolicy.FORBID && jobDef.lockKey != null) {
-                        // We need to be careful here: isLockHeld will see OURSELVES if we just claimed it.
-                        // But isLockHeld currently checks if ANY execution for that key is CLAIMED/RUNNING.
-                        // To be safe, we should check if any OTHER execution is holding the lock.
-                        if (isAnyOtherExecutionHoldingLock(execution.id, jobDef.lockKey)) {
-                            log.warn("[${execution.jobId}] Release claim for ${execution.id} because another execution already holds the lock ${jobDef.lockKey}")
-                            store.updateExecutionStatus(execution.id, ExecutionStatus.PENDING, workerId = claimOwner)
+                    var launched = false
+                    try {
+                        if (stopping || !currentCoroutineContext().isActive) {
                             return@forEach
                         }
-                    }
 
-                    if (stopping || !currentCoroutineContext().isActive) {
-                        return@forEach
-                    }
-
-                    val executionJob = scope.launch(start = CoroutineStart.LAZY) {
-                        val selfJob = coroutineContext[Job]!!
-                        try {
-                            executeJobWithHeartbeat(execution, jobDef, config.executionLeaseDuration, claimOwner)
-                        } finally {
-                            activeJobs.remove(execution.id, selfJob)
-                            activeClaimOwners.remove(execution.id, claimOwner)
-                        }
-                    }
-                    activeJobs.replace(execution.id, placeholderJob, executionJob)
-                    placeholderJob.complete()
-                    if (stopping || !executionJob.start()) {
-                        executionJob.cancel("Scheduler stopping")
-                        activeJobs.remove(execution.id, executionJob)
-                        activeClaimOwners.remove(execution.id, claimOwner)
-                    } else {
-                        launched = true
-                    }
-                } finally {
-                    if (!launched) {
-                        placeholderJob.complete()
-                        activeJobs.remove(execution.id, placeholderJob)
-                        activeClaimOwners.remove(execution.id, claimOwner)
-                        try {
-                            withContext(NonCancellable) {
-                                store.updateExecutionStatus(
-                                    execution.id,
-                                    ExecutionStatus.PENDING,
-                                    "Released during scheduler shutdown",
-                                    workerId = claimOwner
-                                )
+                        // Handle REPLACE only after the replacement has been claimed.
+                        if (jobDef.concurrencyPolicy == ConcurrencyPolicy.REPLACE && jobDef.lockKey != null) {
+                            val supersededIds = store.supersedeExecutionsByLockKey(
+                                lockKey = jobDef.lockKey,
+                                excludeExecutionId = execution.id
+                            )
+                            supersededIds.forEach { id ->
+                                activeJobs[id]?.cancel("Superseded by a new execution for lock ${jobDef.lockKey}")
                             }
-                        } catch (ex: Exception) {
-                            log.error("Failed to release unclaimed execution ${execution.id}", ex)
+                        }
+
+                        // Double-check lock AFTER claiming but before launching
+                        // This handles the race where two executions for the same lock were claimed 
+                        // by different nodes (if duplicate executions existed) or by the same node.
+                        if (jobDef.concurrencyPolicy == ConcurrencyPolicy.FORBID && jobDef.lockKey != null) {
+                            // We need to be careful here: isLockHeld will see OURSELVES if we just claimed it.
+                            // But isLockHeld currently checks if ANY execution for that key is CLAIMED/RUNNING.
+                            // To be safe, we should check if any OTHER execution is holding the lock.
+                            if (isAnyOtherExecutionHoldingLock(execution.id, jobDef.lockKey, store)) {
+                                log.warn("[${execution.jobId}] Release claim for ${execution.id} because another execution already holds the lock ${jobDef.lockKey}")
+                                store.updateExecutionStatus(execution.id, ExecutionStatus.PENDING, workerId = claimOwner)
+                                blockedJobIds.add(execution.jobId)
+                                return@forEach
+                            }
+                        }
+
+                        if (stopping || !currentCoroutineContext().isActive) {
+                            return@forEach
+                        }
+
+                        val executionJob = scope.launch(start = CoroutineStart.LAZY) {
+                            val selfJob = coroutineContext[Job]!!
+                            try {
+                                executeJobWithHeartbeat(execution, jobDef, leaseDuration, claimOwner, initialLeaseDeadline, store)
+                            } finally {
+                                activeJobs.remove(execution.id, selfJob)
+                                activeClaims.remove(execution.id, claim)
+                            }
+                        }
+                        activeJobs.replace(execution.id, placeholderJob, executionJob)
+                        placeholderJob.complete()
+                        if (stopping || !executionJob.start()) {
+                            executionJob.cancel("Scheduler stopping")
+                            activeJobs.remove(execution.id, executionJob)
+                            activeClaims.remove(execution.id, claim)
+                        } else {
+                            launched = true
+                            remainingBatchBudget--
+                        }
+                    } finally {
+                        if (!launched) {
+                            placeholderJob.complete()
+                            activeJobs.remove(execution.id, placeholderJob)
+                            activeClaims.remove(execution.id, claim)
+                            try {
+                                withContext(NonCancellable) {
+                                    store.updateExecutionStatus(
+                                        execution.id,
+                                        ExecutionStatus.PENDING,
+                                        "Released during scheduler shutdown",
+                                        workerId = claim.owner
+                                    )
+                                }
+                            } catch (ex: Exception) {
+                                log.error("Failed to release unclaimed execution ${execution.id}", ex)
+                            }
                         }
                     }
                 }
             }
+
+            candidateJobIds = candidateJobIds - blockedJobIds
+        } while (blockedJobIds.isNotEmpty() && candidateJobIds.isNotEmpty() && remainingBatchBudget > 0)
+    }
+
+    private suspend fun loadJobDefinition(jobId: String, store: JobStore): JobDefinition? {
+        return try {
+            store.getJob(jobId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log.error("[$jobId] Failed to load job definition; skipping job for this poll cycle", e)
+            null
         }
     }
 
-    private suspend fun isAnyOtherExecutionHoldingLock(currentExecutionId: UUID, lockKey: String): Boolean {
+    private suspend fun isAnyOtherExecutionHoldingLock(currentExecutionId: UUID, lockKey: String, store: JobStore): Boolean {
         return store.isLockHeld(lockKey, excludeExecutionId = currentExecutionId)
     }
 
-    private suspend fun handleMisfire(execution: JobExecution, jobDef: JobDefinition, now: Instant, claimOwner: String) {
+    private suspend fun handleMisfire(execution: JobExecution, jobDef: JobDefinition, now: Instant, claimOwner: String, store: JobStore) {
         log.info("[${execution.jobId}] Misfire detected (scheduled at ${execution.scheduledAt}), ignoring due to IGNORE policy")
-        if (!store.updateExecutionStatus(execution.id, ExecutionStatus.MISFIRED, "Misfire threshold exceeded", workerId = claimOwner)) {
-            return
-        }
-        
-        // Schedule next run
         val next = jobDef.trigger.nextExecutionTime(now)
             ?.truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
-        if (next != null) {
-            val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
-            if (store.getExecution(deterministicId) == null) {
-                store.saveExecution(
-                    JobExecution(
-                        id = deterministicId,
-                        jobId = jobDef.id,
-                        scheduledAt = next,
-                        lockKey = jobDef.lockKey
-                        // Do NOT propagate correlationId to next recurring run
-                    )
-                )
-            }
+        val nextExecution = next?.let {
+            val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$it".toByteArray())
+            JobExecution(
+                id = deterministicId,
+                jobId = jobDef.id,
+                scheduledAt = it,
+                lockKey = jobDef.lockKey
+                // Do NOT propagate correlationId to next recurring run
+            )
         }
+        store.completeExecution(
+            id = execution.id,
+            status = ExecutionStatus.MISFIRED,
+            error = "Misfire threshold exceeded",
+            workerId = claimOwner,
+            nextExecution = nextExecution
+        )
+    }
+
+    private fun newLeaseDeadline(duration: Duration): LeaseDeadline {
+        val startedAtNanos = System.nanoTime()
+        return LeaseDeadline(Instant.now(clock).plus(duration), startedAtNanos, duration)
     }
 
     private suspend fun executeJobWithHeartbeat(
         execution: JobExecution,
         jobDef: JobDefinition,
         leaseDuration: Duration,
-        claimOwner: String
+        claimOwner: String,
+        initialLeaseDeadline: LeaseDeadline,
+        store: JobStore
     ) {
         coroutineScope {
+            if (initialLeaseDeadline.remaining(Instant.now(clock)) <= Duration.ZERO) return@coroutineScope
+            val leaseDeadline = AtomicReference(initialLeaseDeadline)
+            val watchdogJob = launch {
+                while (isActive) {
+                    val now = Instant.now(clock)
+                    val deadline = leaseDeadline.get()
+                    val remaining = deadline.remaining(now)
+                    if (remaining <= Duration.ZERO) {
+                        log.warn("[${execution.jobId}] Execution ${execution.id} lease expired at ${deadline.expiresAt} without renewal; cancelling handler")
+                        this@coroutineScope.cancel("Execution ${execution.id} lease expired")
+                        break
+                    }
+                    delay(minOf(heartbeatInterval.toMillis().coerceAtLeast(1L), remaining.toMillis().coerceAtLeast(1L)))
+                }
+            }
             val heartbeatJob = launch {
                 while (isActive) {
                     delay(heartbeatInterval.toMillis())
-                    try {
-                        // Check if we are still RUNNING/CLAIMED (not superseded) while heartbeating
-                        if (!store.heartbeat(execution.id, claimOwner, leaseDuration)) {
-                            log.warn("[${execution.jobId}] Failed to heartbeat for execution ${execution.id}, it might have been reclaimed or superseded")
-                            this@coroutineScope.cancel("Execution ${execution.id} is no longer valid (superseded or reclaimed)")
-                            break
+                    // A response can arrive long after the store persisted the renewal.
+                    // Budget from request start so network latency never extends ownership.
+                    val renewalDeadline = newLeaseDeadline(leaseDuration)
+                    val renewed = try {
+                        val ok = store.heartbeat(execution.id, claimOwner, leaseDuration)
+                        if (ok) {
+                            leaseDeadline.set(renewalDeadline)
                         }
+                        ok
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         log.error("[${execution.jobId}] Error during heartbeat for execution ${execution.id}", e)
+                        leaseDeadline.get().remaining(Instant.now(clock)) > Duration.ZERO
+                    }
+                    if (!renewed) {
+                        log.warn("[${execution.jobId}] Failed to heartbeat for execution ${execution.id}, it might have been reclaimed or superseded")
+                        this@coroutineScope.cancel("Execution ${execution.id} is no longer valid (superseded or reclaimed)")
+                        break
                     }
                 }
             }
 
             try {
-                executeJob(execution, jobDef, claimOwner)
+                executeJob(execution, jobDef, claimOwner, store)
             } finally {
                 heartbeatJob.cancel()
+                watchdogJob.cancel()
             }
         }
     }
 
-    private suspend fun executeJob(execution: JobExecution, jobDef: JobDefinition, claimOwner: String) {
+    private suspend fun executeJob(execution: JobExecution, jobDef: JobDefinition, claimOwner: String, store: JobStore) {
         val correlationId = execution.correlationId ?: execution.id.toString()
         withContext(MDCContext(mapOf("correlationId" to correlationId))) {
-            try {
-                log.info("[${execution.jobId}] [$correlationId] Executing job (execution: ${execution.id})")
-                if (!store.updateExecutionStatus(execution.id, ExecutionStatus.RUNNING, workerId = claimOwner)) {
-                    log.warn("[${execution.jobId}] [$correlationId] Execution ${execution.id} is no longer owned by $claimOwner before start; aborting")
-                    return@withContext
-                }
+            log.info("[${execution.jobId}] [$correlationId] Executing job (execution: ${execution.id})")
+            if (!store.updateExecutionStatus(execution.id, ExecutionStatus.RUNNING, workerId = claimOwner)) {
+                log.warn("[${execution.jobId}] [$correlationId] Execution ${execution.id} is no longer owned by $claimOwner before start; aborting")
+                return@withContext
+            }
 
-                val handler = handlerRegistry.get(jobDef.id) 
+            val handlerFailure: Throwable? = try {
+                val handler = handlerRegistry.get(jobDef.id)
                     ?: throw IllegalStateException("No handler registered for job ${jobDef.id}")
-                
+
                 if (jobDef.timeout != null) {
                     withTimeout(jobDef.timeout.toMillis()) {
                         handler(execution.payload)
@@ -399,47 +434,71 @@ class Scheduler(
                 } else {
                     handler(execution.payload)
                 }
-
-                if (store.updateExecutionStatus(execution.id, ExecutionStatus.SUCCESS, workerId = claimOwner)) {
-                    log.info("[${execution.jobId}] [$correlationId] Job finished successfully")
-                    scheduleNextRunIfRecurring(execution, jobDef)
-                } else {
-                    log.warn("[${execution.jobId}] [$correlationId] Execution ${execution.id} lost ownership before completion; skipping SUCCESS and next-run scheduling")
-                }
-            } catch (e: Exception) {
+                null
+            } catch (e: Throwable) {
                 if (e is CancellationException && e !is TimeoutCancellationException) {
                     log.info("[${execution.jobId}] [$correlationId] Job was cancelled (superseded or shutdown)")
                     // We don't update status to FAILED here if it was already updated to SUPERSEDED
                     // But to be safe, we can ensure it's not DEAD_LETTERED
                     return@withContext
                 }
-                
-                log.error("[${execution.jobId}] [$correlationId] Job failed", e)
+                e
+            }
+
+            if (handlerFailure == null) {
+                val nextExecution = buildNextRecurringExecution(execution, jobDef)
+                if (completeExecutionWithRetry(
+                        store = store,
+                        id = execution.id,
+                        status = ExecutionStatus.SUCCESS,
+                        workerId = claimOwner,
+                        nextExecution = nextExecution
+                    )
+                ) {
+                    log.info("[${execution.jobId}] [$correlationId] Job finished successfully")
+                } else {
+                    log.warn("[${execution.jobId}] [$correlationId] Execution ${execution.id} lost ownership before completion; skipping SUCCESS and next-run scheduling")
+                }
+            } else {
+                log.error("[${execution.jobId}] [$correlationId] Job failed", handlerFailure)
                 val nextAttempt = execution.attempt + 1
                 if (nextAttempt < jobDef.retryPolicy.maxAttempts) {
                     val nextDelay = jobDef.retryPolicy.calculateDelay(nextAttempt)
                     val nextRun = Instant.now(clock).plus(nextDelay)
+                    val retryExecution = JobExecution(
+                        jobId = execution.jobId,
+                        scheduledAt = nextRun,
+                        attempt = nextAttempt,
+                        payload = execution.payload,
+                        lockKey = jobDef.lockKey,
+                        correlationId = correlationId // Propagate correlationId to retries of the SAME execution
+                    )
 
-                    if (store.updateExecutionStatus(execution.id, ExecutionStatus.FAILED, e.message, workerId = claimOwner)) {
-                        // Create a new execution for the retry
-                        store.saveExecution(
-                            JobExecution(
-                                jobId = execution.jobId,
-                                scheduledAt = nextRun,
-                                attempt = nextAttempt,
-                                payload = execution.payload,
-                                lockKey = jobDef.lockKey,
-                                correlationId = correlationId // Propagate correlationId to retries of the SAME execution
-                            )
+                    if (completeExecutionWithRetry(
+                            store = store,
+                            id = execution.id,
+                            status = ExecutionStatus.FAILED,
+                            error = handlerFailure.message,
+                            workerId = claimOwner,
+                            nextExecution = retryExecution
                         )
+                    ) {
                         log.info("[${execution.jobId}] [$correlationId] Scheduled retry at $nextRun (attempt $nextAttempt)")
                     } else {
                         log.warn("[${execution.jobId}] [$correlationId] Execution ${execution.id} lost ownership before failure transition; skipping retry scheduling")
                     }
                 } else {
-                    if (store.updateExecutionStatus(execution.id, ExecutionStatus.DEAD_LETTERED, e.message, workerId = claimOwner)) {
+                    val nextExecution = buildNextRecurringExecution(execution, jobDef)
+                    if (completeExecutionWithRetry(
+                            store = store,
+                            id = execution.id,
+                            status = ExecutionStatus.DEAD_LETTERED,
+                            error = handlerFailure.message,
+                            workerId = claimOwner,
+                            nextExecution = nextExecution
+                        )
+                    ) {
                         log.warn("[${execution.jobId}] [$correlationId] Reached max attempts (${jobDef.retryPolicy.maxAttempts}) and is now DEAD_LETTERED")
-                        scheduleNextRunIfRecurring(execution, jobDef)
                     } else {
                         log.warn("[${execution.jobId}] [$correlationId] Execution ${execution.id} lost ownership before DEAD_LETTERED transition; skipping next-run scheduling")
                     }
@@ -448,98 +507,158 @@ class Scheduler(
         }
     }
 
-    private suspend fun scheduleNextRunIfRecurring(execution: JobExecution, jobDef: JobDefinition) {
-        // Use plusMillis(1) to ensure we look for the NEXT execution after this one,
-        // which is important for inclusive triggers like OneTimeTrigger.
-        val next = jobDef.trigger.nextExecutionTime(execution.scheduledAt.plusMillis(1))
-            ?.truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
-        if (next != null) {
-            val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
-            if (store.getExecution(deterministicId) == null) {
-                store.saveExecution(
-                    JobExecution(
-                        id = deterministicId,
-                        jobId = jobDef.id,
-                        scheduledAt = next,
-                        lockKey = jobDef.lockKey
-                        // Do NOT propagate correlationId to next recurring run
-                    )
+    private suspend fun completeExecutionWithRetry(
+        store: JobStore,
+        id: UUID,
+        status: ExecutionStatus,
+        error: String? = null,
+        workerId: String,
+        nextExecution: JobExecution? = null
+    ): Boolean {
+        repeat(2) { attempt ->
+            try {
+                return store.completeExecution(
+                    id = id,
+                    status = status,
+                    error = error,
+                    workerId = workerId,
+                    nextExecution = nextExecution
                 )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (attempt == 1) {
+                    log.error("Failed to complete execution $id with status $status after retry", e)
+                } else {
+                    log.warn("Transient failure completing execution $id with status $status; retrying once", e)
+                }
             }
         }
+        return false
+    }
+
+    private fun buildNextRecurringExecution(execution: JobExecution, jobDef: JobDefinition): JobExecution? {
+        // Use plusMillis(1) to ensure we look for the NEXT execution after this one
+        // (important for inclusive triggers like OneTimeTrigger), and clamp to 'now'
+        // when misfired so an overdue FIRE_NOW execution does not replay missed historical occurrences.
+        val now = Instant.now(clock)
+        val isMisfired = Duration.between(execution.scheduledAt, now) > config.misfireThreshold
+        val baseline = if (isMisfired) {
+            now.truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+        } else {
+            execution.scheduledAt.plusMillis(1)
+        }
+        val next = jobDef.trigger.nextExecutionTime(baseline)
+            ?.truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+            ?: return null
+        val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
+        return JobExecution(
+            id = deterministicId,
+            jobId = jobDef.id,
+            scheduledAt = next,
+            lockKey = jobDef.lockKey
+            // Do NOT propagate correlationId to next recurring run
+        )
     }
 
     suspend fun stop() {
         log.info("Stopping Khrona Scheduler")
         stopping = true
-        job?.cancel() // Stop polling for new jobs
+        val pollingJob = job
         job = null
-        
-        if (activeJobs.isNotEmpty()) {
-            val remainingOwners = activeJobs.keys.associateWith { activeClaimOwners[it] }
-            try {
-                withTimeout(config.shutdownTimeout.toMillis()) {
-                    log.info("Waiting up to ${config.shutdownTimeout} for ${activeJobs.size} active jobs to complete...")
+        pollingJob?.cancel() // Stop polling for new jobs
+
+        val totalTimeoutMs = config.shutdownTimeout.toMillis()
+        withTimeoutOrNull(totalTimeoutMs + 5L) {
+            withTimeoutOrNull(minOf(50L, totalTimeoutMs)) {
+                pollingJob?.join()
+            }
+
+            if (activeJobs.isNotEmpty()) {
+                // The last claim can disappear between a size check and reading an entry.
+                // Copy by traversal instead of using Kotlin's size-based singleton shortcut.
+                val remainingClaims = mutableMapOf<UUID, ActiveClaim>()
+                activeClaims.forEach { executionId, claim -> remainingClaims[executionId] = claim }
+                val graceTimeoutMs = (totalTimeoutMs * 0.7).toLong().coerceAtLeast(1L)
+                val completedCleanly = withTimeoutOrNull(graceTimeoutMs) {
+                    log.info("Waiting up to ${graceTimeoutMs}ms for ${activeJobs.size} active jobs to complete...")
                     activeJobs.values.joinAll()
+                    true
+                } ?: false
+
+                if (completedCleanly) {
                     log.info("All active jobs completed cleanly during shutdown.")
-                }
-            } catch (e: TimeoutCancellationException) {
-                log.warn("Shutdown timeout reached. Cancelling ${activeJobs.size} remaining jobs.")
-                activeJobs.values.forEach { it.cancel("Scheduler stopping (timeout)") }
-                
-                // Wait for cancellations to finish
-                activeJobs.values.joinAll()
-                
-                // Explicitly release any executions that didn't complete normally and are still owned by this claim
-                remainingOwners.forEach { (executionId, claimOwner) ->
-                    try {
-                        val currentExec = store.getExecution(executionId)
-                        if (currentExec?.status == ExecutionStatus.CLAIMED || currentExec?.status == ExecutionStatus.RUNNING) {
-                            log.info("Releasing execution $executionId back to PENDING due to shutdown")
-                            store.updateExecutionStatus(
-                                executionId,
-                                ExecutionStatus.PENDING,
-                                "Released during scheduler shutdown",
-                                workerId = claimOwner
-                            )
+                } else {
+                    log.warn("Shutdown timeout reached. Cancelling ${activeJobs.size} remaining jobs.")
+                    activeJobs.values.forEach { it.cancel("Scheduler stopping (timeout)") }
+
+                    val releaseJob = scope.launch(Dispatchers.IO + NonCancellable) {
+                        remainingClaims.forEach { (executionId, claim) ->
+                            try {
+                                val currentExec = claim.store.getExecution(executionId)
+                                if (currentExec?.status == ExecutionStatus.CLAIMED || currentExec?.status == ExecutionStatus.RUNNING) {
+                                    log.info("Releasing execution $executionId back to PENDING due to shutdown")
+                                    claim.store.updateExecutionStatus(
+                                        executionId,
+                                        ExecutionStatus.PENDING,
+                                        "Released during scheduler shutdown",
+                                        workerId = claim.owner
+                                    )
+                                }
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } catch (ex: Exception) {
+                                log.error("Failed to release execution $executionId during shutdown", ex)
+                            }
                         }
-                    } catch (ex: Exception) {
-                        log.error("Failed to release execution $executionId during shutdown", ex)
+                    }
+                    withTimeoutOrNull((totalTimeoutMs - graceTimeoutMs).coerceAtLeast(50L)) {
+                        releaseJob.join()
                     }
                 }
             }
         }
-        
+
         activeJobs.clear()
-        activeClaimOwners.clear()
+        activeClaims.clear()
         log.info("Khrona Scheduler stopped")
     }
 
     suspend fun registerJob(jobDef: JobDefinition) {
+        val store = this.store
         validateJob(jobDef)
         handlerRegistry.register(jobDef.id, jobDef.handler)
         val correlationId = MDC.get("correlationId")
         store.saveJob(jobDef)
-        // Schedule the first execution if it's a recurring/deferred job
+        seedFirstExecution(jobDef, correlationId, store)
+    }
+
+    private suspend fun seedFirstExecution(jobDef: JobDefinition, correlationId: String?, store: JobStore) {
+        // Truncate to seconds to ensure deterministic UUID matching across nodes
         val now = Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
-        val next = if (jobDef.trigger is OneTimeTrigger) {
-            jobDef.trigger.nextExecutionTime(Instant.EPOCH)
-        } else {
-            jobDef.trigger.nextExecutionTime(now)
+        val next = when (val trigger = jobDef.trigger) {
+            is OneTimeTrigger -> trigger.nextExecutionTime(Instant.EPOCH)
+            is IntervalTrigger -> {
+                if (!trigger.initialDelay.isZero) {
+                    now.plus(trigger.initialDelay).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+                } else {
+                    trigger.nextExecutionTime(now)
+                }
+            }
+            else -> trigger.nextExecutionTime(now)
         }
         if (next != null) {
+            // Use a deterministic UUID for the first execution to avoid duplicates when multiple nodes start.
             val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
-            if (store.getExecution(deterministicId) == null) {
-                store.saveExecution(
-                    JobExecution(
-                        id = deterministicId,
-                        jobId = jobDef.id,
-                        scheduledAt = next,
-                        lockKey = jobDef.lockKey,
-                        correlationId = correlationId ?: deterministicId.toString()
-                    )
+            store.seedInitialExecution(
+                JobExecution(
+                    id = deterministicId,
+                    jobId = jobDef.id,
+                    scheduledAt = next,
+                    lockKey = jobDef.lockKey,
+                    correlationId = correlationId ?: deterministicId.toString()
                 )
-            }
+            )
         }
     }
 
@@ -548,6 +667,7 @@ class Scheduler(
      * The job must have been previously registered.
      */
     suspend fun trigger(jobId: String, payload: Any? = null) {
+        val store = this.store
         val correlationId = MDC.get("correlationId")
         val jobDef = store.getJob(jobId) ?: throw IllegalArgumentException("Job $jobId not found")
         val now = Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)

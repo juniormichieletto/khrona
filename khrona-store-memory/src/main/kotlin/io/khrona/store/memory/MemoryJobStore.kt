@@ -12,6 +12,7 @@ import java.util.concurrent.ConcurrentHashMap
 class MemoryJobStore : JobStore {
     private val jobs = ConcurrentHashMap<String, JobDefinition>()
     private val executions = ConcurrentHashMap<UUID, JobExecution>()
+    private val seededExecutionsByJob = ConcurrentHashMap<String, UUID>()
 
     override suspend fun saveJob(job: JobDefinition) {
         jobs[job.id] = job
@@ -31,12 +32,39 @@ class MemoryJobStore : JobStore {
         }
     }
 
+    override suspend fun seedInitialExecution(execution: JobExecution): Boolean = synchronized(executions) {
+        if (seededExecutionsByJob[execution.jobId] == execution.id) return false
+        if (executions.containsKey(execution.id)) {
+            seededExecutionsByJob[execution.jobId] = execution.id
+            return false
+        }
+        val hasActiveOrPending = executions.values.any {
+            it.jobId == execution.jobId && (
+                it.status == ExecutionStatus.PENDING ||
+                    it.status == ExecutionStatus.CLAIMED ||
+                    it.status == ExecutionStatus.RUNNING
+                )
+        }
+        if (hasActiveOrPending) return false
+        seededExecutionsByJob[execution.jobId] = execution.id
+        executions[execution.id] = execution
+        return true
+    }
+
     override suspend fun updateExecutionStatus(
         id: UUID,
         status: ExecutionStatus,
         error: String?,
         workerId: String?
-    ): Boolean {
+    ): Boolean = completeExecution(id, status, error, workerId, null)
+
+    override suspend fun completeExecution(
+        id: UUID,
+        status: ExecutionStatus,
+        error: String?,
+        workerId: String?,
+        nextExecution: JobExecution?
+    ): Boolean = synchronized(executions) {
         var updated = false
         executions.computeIfPresent(id) { _, exec ->
             if (workerId != null) {
@@ -60,18 +88,33 @@ class MemoryJobStore : JobStore {
                 ) Instant.now() else exec.completedAt
             )
         }
+        if (updated && nextExecution != null) {
+            executions.putIfAbsent(nextExecution.id, nextExecution)
+        }
         return updated
     }
 
     override suspend fun getExecution(id: UUID): JobExecution? = executions[id]
 
     override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> {
+        return listEligibleExecutions(now, limit, null)
+    }
+
+    override suspend fun listEligibleExecutions(
+        now: Instant,
+        limit: Int,
+        jobIds: Set<String>?
+    ): List<JobExecution> {
+        if (limit <= 0 || (jobIds != null && jobIds.isEmpty())) return emptyList()
         return executions.values.filter { it ->
             val expiresAt = it.expiresAt
-            (it.status == ExecutionStatus.PENDING || ((it.status == ExecutionStatus.CLAIMED || it.status == ExecutionStatus.RUNNING) && expiresAt != null && expiresAt <= now))
-            && it.scheduledAt <= now 
+            (jobIds == null || it.jobId in jobIds) &&
+                (it.status == ExecutionStatus.PENDING ||
+                    ((it.status == ExecutionStatus.CLAIMED || it.status == ExecutionStatus.RUNNING) &&
+                        expiresAt != null && expiresAt <= now)) &&
+                it.scheduledAt <= now
         }.sortedBy { it.scheduledAt }
-        .take(limit)
+            .take(limit)
     }
 
     override suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: Duration): Boolean {

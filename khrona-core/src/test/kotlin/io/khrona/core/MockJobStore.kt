@@ -8,6 +8,7 @@ import java.util.concurrent.ConcurrentHashMap
 open class MockJobStore(private val clock: java.time.Clock = java.time.Clock.systemUTC()) : JobStore {
     val jobs = ConcurrentHashMap<String, JobDefinition>()
     val executions = ConcurrentHashMap<UUID, JobExecution>()
+    val seededExecutionsByJob = ConcurrentHashMap<String, UUID>()
     val updatedStatuses = mutableListOf<Pair<UUID, ExecutionStatus>>()
 
     override suspend fun saveJob(job: JobDefinition) {
@@ -20,6 +21,25 @@ open class MockJobStore(private val clock: java.time.Clock = java.time.Clock.sys
 
     override suspend fun saveExecution(execution: JobExecution) {
         executions[execution.id] = execution
+    }
+
+    override suspend fun seedInitialExecution(execution: JobExecution): Boolean {
+        if (seededExecutionsByJob[execution.jobId] == execution.id) return false
+        if (executions.containsKey(execution.id)) {
+            seededExecutionsByJob[execution.jobId] = execution.id
+            return false
+        }
+        val hasActiveOrPending = executions.values.any {
+            it.jobId == execution.jobId && (
+                it.status == ExecutionStatus.PENDING ||
+                    it.status == ExecutionStatus.CLAIMED ||
+                    it.status == ExecutionStatus.RUNNING
+                )
+        }
+        if (hasActiveOrPending) return false
+        seededExecutionsByJob[execution.jobId] = execution.id
+        saveExecution(execution)
+        return true
     }
 
     override suspend fun updateExecutionStatus(
@@ -55,6 +75,26 @@ open class MockJobStore(private val clock: java.time.Clock = java.time.Clock.sys
             updatedStatuses.add(id to status)
         }
         return updated
+    }
+
+    override suspend fun completeExecution(
+        id: UUID,
+        status: ExecutionStatus,
+        error: String?,
+        workerId: String?,
+        nextExecution: JobExecution?
+    ): Boolean {
+        val current = executions[id] ?: return false
+        if (workerId != null) {
+            val isActive = current.status == ExecutionStatus.CLAIMED || current.status == ExecutionStatus.RUNNING
+            if (!isActive || current.workerId != workerId) {
+                return false
+            }
+        }
+        if (nextExecution != null && !executions.containsKey(nextExecution.id)) {
+            saveExecution(nextExecution)
+        }
+        return updateExecutionStatus(id, status, error, workerId)
     }
 
     override suspend fun getExecution(id: UUID): JobExecution? = executions[id]

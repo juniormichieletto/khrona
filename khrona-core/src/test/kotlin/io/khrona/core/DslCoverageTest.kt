@@ -179,4 +179,80 @@ class DslCoverageTest {
         assertNotNull(job.hashCode())
         assertNull(copiedJob.timeout)
     }
+
+    @Test
+    fun `JobStore default seedInitialExecution delegates to getExecution and saveExecution`() = kotlinx.coroutines.runBlocking {
+        val delegate = MockJobStore()
+        val store = object : JobStore by delegate {
+            override suspend fun seedInitialExecution(execution: JobExecution): Boolean {
+                return super.seedInitialExecution(execution)
+            }
+        }
+        val exec = JobExecution(jobId = "default-seed", scheduledAt = Instant.now())
+        assertTrue(store.seedInitialExecution(exec))
+        org.junit.jupiter.api.Assertions.assertFalse(store.seedInitialExecution(exec))
+
+        val otherExec = JobExecution(jobId = "other-job", scheduledAt = Instant.EPOCH)
+        store.saveExecution(otherExec)
+        assertTrue(store.listEligibleExecutions(Instant.now(), limit = 0, jobIds = null).isEmpty())
+        assertTrue(store.listEligibleExecutions(Instant.now(), limit = 5, jobIds = emptySet()).isEmpty())
+        assertEquals(2, store.listEligibleExecutions(Instant.now(), limit = 5, jobIds = null).size)
+        assertEquals(
+            listOf(otherExec.id),
+            store.listEligibleExecutions(Instant.now(), limit = 1, jobIds = setOf("other-job")).map { it.id }
+        )
+
+        // Default completeExecution must update status before saving nextExecution so a stale worker never writes follow-ups
+        val losingOwnerDelegate = object : MockJobStore() {
+            override suspend fun updateExecutionStatus(
+                id: UUID,
+                status: ExecutionStatus,
+                error: String?,
+                workerId: String?
+            ): Boolean = false
+        }
+        val losingStore = object : JobStore by losingOwnerDelegate {
+            override suspend fun completeExecution(
+                id: UUID,
+                status: ExecutionStatus,
+                error: String?,
+                workerId: String?,
+                nextExecution: JobExecution?
+            ): Boolean = super.completeExecution(id, status, error, workerId, nextExecution)
+        }
+        val activeExec = JobExecution(
+            jobId = "default-complete",
+            scheduledAt = Instant.EPOCH,
+            status = ExecutionStatus.RUNNING,
+            workerId = "worker-1"
+        )
+        val followUpExec = JobExecution(jobId = "default-complete", scheduledAt = Instant.EPOCH.plusSeconds(60))
+        losingOwnerDelegate.saveExecution(activeExec)
+        org.junit.jupiter.api.Assertions.assertFalse(
+            losingStore.completeExecution(
+                id = activeExec.id,
+                status = ExecutionStatus.SUCCESS,
+                workerId = "worker-1",
+                nextExecution = followUpExec
+            )
+        )
+        assertNull(
+            losingOwnerDelegate.getExecution(followUpExec.id),
+            "Default completeExecution must not save nextExecution when updateExecutionStatus returns false"
+        )
+
+        val defaultCompleteStore = object : JobStore by delegate {
+            override suspend fun completeExecution(
+                id: UUID,
+                status: ExecutionStatus,
+                error: String?,
+                workerId: String?,
+                nextExecution: JobExecution?
+            ): Boolean = super.completeExecution(id, status, error, workerId, nextExecution)
+        }
+        assertTrue(defaultCompleteStore.completeExecution(exec.id, ExecutionStatus.SUCCESS, nextExecution = followUpExec))
+        assertEquals(ExecutionStatus.PENDING, delegate.getExecution(followUpExec.id)?.status)
+        assertTrue(defaultCompleteStore.completeExecution(otherExec.id, ExecutionStatus.SUCCESS, nextExecution = followUpExec))
+        assertTrue(defaultCompleteStore.completeExecution(otherExec.id, ExecutionStatus.FAILED, error = "err", nextExecution = null))
+    }
 }

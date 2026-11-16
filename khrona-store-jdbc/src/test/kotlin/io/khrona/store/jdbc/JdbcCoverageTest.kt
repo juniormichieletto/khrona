@@ -129,9 +129,23 @@ class JdbcCoverageTest : AbstractJdbcJobStoreTest() {
             assertTrue(dialect.upsertExecutionSql().contains("khrona_executions"))
             assertTrue(dialect.claimExecutionSql().contains("CLAIMED"))
             assertTrue(dialect.listEligibleExecutionsSql().contains("SELECT") && dialect.listEligibleExecutionsSql().contains("khrona_executions"))
+            assertFalse(dialect.listEligibleExecutionsSql(0).contains("job_id IN"))
+            assertTrue(dialect.listEligibleExecutionsSql(2).contains("AND job_id IN (?,?)"))
             assertTrue(dialect.heartbeatSql().contains("UPDATE khrona_executions"))
             assertTrue(dialect.resetExpiredExecutionsSql().contains("PENDING"))
         }
+        val legacyCustomDialect = object : JdbcDialect {
+            override fun upsertJobSql(): String = "INSERT INTO custom_jobs"
+            override fun upsertExecutionSql(): String = "INSERT INTO custom_executions"
+            override fun claimExecutionSql(): String = "UPDATE custom_executions"
+            override fun listEligibleExecutionsSql(): String = "SELECT * FROM custom_executions"
+            override fun heartbeatSql(): String = "UPDATE custom_executions"
+            override fun isLockHeldSql(excludeId: Boolean): String = "SELECT COUNT(*)"
+            override fun resetExpiredExecutionsSql(): String = "UPDATE custom_executions"
+            override fun cleanupCompletedExecutionsSql(statusCount: Int): String = "DELETE FROM custom_executions"
+        }
+        assertEquals("SELECT * FROM custom_executions", legacyCustomDialect.listEligibleExecutionsSql(3))
+        assertEquals("SELECT COUNT(*)", legacyCustomDialect.isLockHeldSql())
     }
 
     @Test
@@ -471,6 +485,228 @@ class JdbcCoverageTest : AbstractJdbcJobStoreTest() {
         }
         assertThrows(IllegalArgumentException::class.java) {
             JdbcJobStore(dataSource, queryTimeoutSeconds = -5)
+        }
+    }
+
+    @Test
+    fun `completeExecution rolls back status update when follow-up persistence fails`() = runBlocking<Unit> {
+        val current = JobExecution(jobId = "rollback-complete", scheduledAt = Instant.now())
+        store.saveExecution(current)
+        assertTrue(store.claimExecution(current.id, "worker-1", Duration.ofMinutes(5)))
+
+        val invalidFollowUp = JobExecution(
+            jobId = "rollback-complete",
+            scheduledAt = Instant.now().plusSeconds(60),
+            payload = Any()
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking {
+                store.completeExecution(
+                    id = current.id,
+                    status = ExecutionStatus.SUCCESS,
+                    workerId = "worker-1",
+                    nextExecution = invalidFollowUp
+                )
+            }
+        }
+
+        assertEquals(ExecutionStatus.CLAIMED, store.getExecution(current.id)?.status)
+        org.junit.jupiter.api.Assertions.assertNull(store.getExecution(invalidFollowUp.id))
+    }
+
+    @Test
+    fun `store persists all write operations when connection pool has autoCommit disabled`() = runBlocking<Unit> {
+        val hikari = com.zaxxer.hikari.HikariDataSource(
+            com.zaxxer.hikari.HikariConfig().apply {
+                jdbcUrl = "jdbc:h2:mem:khrona_autocommit_false_${java.util.UUID.randomUUID()};MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1"
+                username = "sa"
+                password = ""
+                driverClassName = "org.h2.Driver"
+                isAutoCommit = false
+                maximumPoolSize = 2
+            }
+        )
+        try {
+            val nonAutoCommitStore = JdbcJobStore(hikari)
+            nonAutoCommitStore.migrate()
+
+            val job = io.khrona.core.JobDefinition(
+                id = "autocommit-false-job",
+                handler = {},
+                trigger = io.khrona.core.IntervalTrigger(Duration.ofMinutes(5))
+            )
+            nonAutoCommitStore.saveJob(job)
+            assertEquals(job.id, nonAutoCommitStore.getJob(job.id)?.id)
+
+            val exec = JobExecution(
+                jobId = job.id,
+                scheduledAt = Instant.now().minusSeconds(10)
+            )
+            nonAutoCommitStore.saveExecution(exec)
+            assertEquals(ExecutionStatus.PENDING, nonAutoCommitStore.getExecution(exec.id)?.status)
+
+            assertTrue(nonAutoCommitStore.claimExecution(exec.id, "worker-1", Duration.ofSeconds(10)))
+            assertEquals(ExecutionStatus.CLAIMED, nonAutoCommitStore.getExecution(exec.id)?.status)
+
+            assertTrue(nonAutoCommitStore.heartbeat(exec.id, "worker-1", Duration.ofMinutes(5)))
+            assertTrue(nonAutoCommitStore.updateExecutionStatus(exec.id, ExecutionStatus.SUCCESS, workerId = "worker-1"))
+            assertEquals(ExecutionStatus.SUCCESS, nonAutoCommitStore.getExecution(exec.id)?.status)
+
+            val expiredExec = JobExecution(
+                jobId = job.id,
+                scheduledAt = Instant.now().minusSeconds(20)
+            )
+            nonAutoCommitStore.saveExecution(expiredExec)
+            assertTrue(nonAutoCommitStore.claimExecution(expiredExec.id, "worker-1", Duration.ofSeconds(-5)))
+            assertEquals(1, nonAutoCommitStore.resetExpiredExecutions(Instant.now()))
+            assertEquals(ExecutionStatus.PENDING, nonAutoCommitStore.getExecution(expiredExec.id)?.status)
+
+            val deleted = nonAutoCommitStore.cleanupCompletedExecutions(Instant.now().plusSeconds(60))
+            assertEquals(1, deleted)
+            org.junit.jupiter.api.Assertions.assertNull(nonAutoCommitStore.getExecution(exec.id))
+        } finally {
+            hikari.close()
+        }
+    }
+
+    @Test
+    fun `store binds and reads all JDBC timestamps using explicit UTC Calendar`() = runBlocking<Unit> {
+        val nonUtcBindings = java.util.concurrent.atomic.AtomicInteger(0)
+        val utcBindings = java.util.concurrent.atomic.AtomicInteger(0)
+        val utcReads = java.util.concurrent.atomic.AtomicInteger(0)
+
+        fun wrapResultSet(rs: java.sql.ResultSet): java.sql.ResultSet {
+            return java.lang.reflect.Proxy.newProxyInstance(
+                java.sql.ResultSet::class.java.classLoader,
+                arrayOf(java.sql.ResultSet::class.java)
+            ) { _, method, args ->
+                if (method.name == "getTimestamp") {
+                    if (args != null && args.size == 2 && args[1] is java.util.Calendar) {
+                        val cal = args[1] as java.util.Calendar
+                        if (cal.timeZone.rawOffset == 0) {
+                            utcReads.incrementAndGet()
+                        } else {
+                            nonUtcBindings.incrementAndGet()
+                        }
+                    } else {
+                        nonUtcBindings.incrementAndGet()
+                    }
+                }
+                try {
+                    method.invoke(rs, *(args ?: emptyArray()))
+                } catch (e: java.lang.reflect.InvocationTargetException) {
+                    throw e.targetException
+                }
+            } as java.sql.ResultSet
+        }
+
+        fun wrapStatement(stmt: java.sql.PreparedStatement): java.sql.PreparedStatement {
+            return java.lang.reflect.Proxy.newProxyInstance(
+                java.sql.PreparedStatement::class.java.classLoader,
+                arrayOf(java.sql.PreparedStatement::class.java)
+            ) { _, method, args ->
+                if (method.name == "setTimestamp") {
+                    if (args != null && args.size == 3 && args[2] is java.util.Calendar) {
+                        val cal = args[2] as java.util.Calendar
+                        if (cal.timeZone.rawOffset == 0) {
+                            utcBindings.incrementAndGet()
+                        } else {
+                            nonUtcBindings.incrementAndGet()
+                        }
+                    } else {
+                        nonUtcBindings.incrementAndGet()
+                    }
+                }
+                val result = try {
+                    method.invoke(stmt, *(args ?: emptyArray()))
+                } catch (e: java.lang.reflect.InvocationTargetException) {
+                    throw e.targetException
+                }
+                if (method.name == "executeQuery" && result is java.sql.ResultSet) {
+                    wrapResultSet(result)
+                } else {
+                    result
+                }
+            } as java.sql.PreparedStatement
+        }
+
+        fun wrapConnection(conn: Connection): Connection {
+            return java.lang.reflect.Proxy.newProxyInstance(
+                Connection::class.java.classLoader,
+                arrayOf(Connection::class.java)
+            ) { _, method, args ->
+                val result = try {
+                    method.invoke(conn, *(args ?: emptyArray()))
+                } catch (e: java.lang.reflect.InvocationTargetException) {
+                    throw e.targetException
+                }
+                if (method.name == "prepareStatement" && result is java.sql.PreparedStatement) {
+                    wrapStatement(result)
+                } else {
+                    result
+                }
+            } as Connection
+        }
+
+        val trackingDs = java.lang.reflect.Proxy.newProxyInstance(
+            DataSource::class.java.classLoader,
+            arrayOf(DataSource::class.java)
+        ) { _, method, args ->
+            val result = try {
+                method.invoke(dataSource, *(args ?: emptyArray()))
+            } catch (e: java.lang.reflect.InvocationTargetException) {
+                throw e.targetException
+            }
+            if (method.name == "getConnection" && result is Connection) {
+                wrapConnection(result)
+            } else {
+                result
+            }
+        } as DataSource
+
+        val utcStore = JdbcJobStore(trackingDs, H2Dialect())
+        val now = Instant.parse("2026-04-20T12:00:00Z")
+        val exec = JobExecution(jobId = "utc-cal-job", scheduledAt = now, lockKey = "utc-lock")
+        utcStore.saveExecution(exec)
+        assertEquals(now, utcStore.getExecution(exec.id)?.scheduledAt)
+        assertEquals(1, utcStore.listEligibleExecutions(now.plusSeconds(1), 10, setOf("utc-cal-job")).size)
+        assertTrue(utcStore.claimExecution(exec.id, "worker-1", Duration.ofSeconds(30)))
+        assertTrue(utcStore.heartbeat(exec.id, "worker-1", Duration.ofSeconds(60)))
+        assertTrue(utcStore.isLockHeld("utc-lock", null))
+        assertEquals(1, utcStore.supersedeExecutionsByLockKey("utc-lock", null).size)
+        assertEquals(0, utcStore.resetExpiredExecutions(now.plusSeconds(120)))
+        assertTrue(utcStore.updateExecutionStatus(exec.id, ExecutionStatus.SUCCESS))
+        assertEquals(1, utcStore.cleanupCompletedExecutions(Instant.now().plusSeconds(60)))
+
+        assertEquals(0, nonUtcBindings.get(), "All setTimestamp and getTimestamp calls must pass an explicit UTC Calendar")
+        assertTrue(utcBindings.get() > 0)
+        assertTrue(utcReads.get() > 0)
+    }
+
+    @Test
+    fun `legacy custom dialect must execute filtered polling`() = runBlocking {
+        HikariDataSource(HikariConfig().apply {
+            jdbcUrl = "jdbc:h2:mem:custom_${java.util.UUID.randomUUID()};MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1"
+            username = "sa"
+            password = ""
+        }).use { ds ->
+            val h2 = H2Dialect()
+            val legacy = object : JdbcDialect {
+                override fun upsertJobSql() = h2.upsertJobSql()
+                override fun upsertExecutionSql() = h2.upsertExecutionSql()
+                override fun claimExecutionSql() = h2.claimExecutionSql()
+                override fun listEligibleExecutionsSql() = h2.listEligibleExecutionsSql()
+                override fun heartbeatSql() = h2.heartbeatSql()
+                override fun isLockHeldSql(excludeId: Boolean) = h2.isLockHeldSql(excludeId)
+                override fun resetExpiredExecutionsSql() = h2.resetExpiredExecutionsSql()
+                override fun cleanupCompletedExecutionsSql(statusCount: Int) = h2.cleanupCompletedExecutionsSql(statusCount)
+            }
+            val store = JdbcJobStore(ds, legacy)
+            store.migrate()
+            val job = io.khrona.core.JobDefinition(id = "custom-job", trigger = io.khrona.core.OneTimeTrigger(Instant.EPOCH))
+            store.saveJob(job)
+            store.saveExecution(JobExecution(jobId = job.id, scheduledAt = Instant.EPOCH))
+            assertEquals(1, store.listEligibleExecutions(Instant.now(), 10, setOf(job.id)).size)
         }
     }
 }

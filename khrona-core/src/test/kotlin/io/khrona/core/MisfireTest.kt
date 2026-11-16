@@ -2,6 +2,7 @@ package io.khrona.core
 
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -261,5 +262,47 @@ class MisfireTest {
         val expectedNext = now.plus(Duration.ofMinutes(1))
         val expectedId = UUID.nameUUIDFromBytes("${execution.jobId}:$expectedNext".toByteArray())
         assertEquals(expectedId, pendingExecutions.single().id)
+    }
+
+    @Test
+    fun `FIRE_NOW misfire after outage fires once and schedules next future occurrence without catch-up storm`() = kotlinx.coroutines.runBlocking {
+        val fixedNow = Instant.parse("2026-01-01T10:00:00Z")
+        val clock = java.time.Clock.fixed(fixedNow, java.time.ZoneOffset.UTC)
+        val store = MockJobStore(clock)
+        val runs = AtomicInteger(0)
+        val config = KhronaConfig().apply {
+            this.store = store
+            job("every-minute") {
+                cron("* * * * *")
+                misfirePolicy = MisfirePolicy.FIRE_NOW
+                execute {
+                    runs.incrementAndGet()
+                }
+            }
+        }
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default + kotlinx.coroutines.SupervisorJob())
+        val scheduler = Scheduler(config, scope, clock)
+        store.saveJob(config.jobs.first())
+        // Node was down for 1 hour; the pending occurrence is 60 minutes old.
+        store.saveExecution(
+            JobExecution(
+                jobId = "every-minute",
+                scheduledAt = fixedNow.minus(Duration.ofMinutes(60)),
+                lockKey = "every-minute"
+            )
+        )
+
+        repeat(20) {
+            scheduler.pollAndExecute()
+            kotlinx.coroutines.delay(15)
+        }
+        scheduler.stop()
+        scope.cancel()
+
+        assertEquals(1, runs.get(), "FIRE_NOW should execute the misfired run once and not replay all 60 missed runs")
+        val nextPending = store.executions.values.single {
+            it.jobId == "every-minute" && it.status == ExecutionStatus.PENDING
+        }
+        assertEquals(Instant.parse("2026-01-01T10:01:00Z"), nextPending.scheduledAt)
     }
 }

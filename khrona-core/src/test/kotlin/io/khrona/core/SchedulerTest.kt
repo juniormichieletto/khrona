@@ -733,5 +733,360 @@ class SchedulerTest {
         )
         assertNull(afterStop?.workerId)
     }
+
+    @Test
+    fun `restarting node or starting second node later does not create duplicate interval execution chains`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
+        fun createConfig() = KhronaConfig().apply {
+            this.store = store
+            job("hourly-interval") {
+                every(Duration.ofHours(1))
+                execute {}
+            }
+        }
+
+        val firstNode = Scheduler(createConfig(), backgroundScope, clock)
+        firstNode.start()
+        advanceTimeBy(100)
+        firstNode.stop()
+
+        // Advance clock by 5 seconds to simulate node restart or second node starting later
+        advanceTimeBy(5_000)
+
+        val secondNode = Scheduler(createConfig(), backgroundScope, clock)
+        secondNode.start()
+        advanceTimeBy(100)
+        secondNode.registerJob(createConfig().jobs.first())
+        secondNode.stop()
+
+        val pending = store.executions.values.filter {
+            it.jobId == "hourly-interval" && it.status == ExecutionStatus.PENDING
+        }
+        assertEquals(1, pending.size, "Restart or second node must not create a second interval execution chain")
+        assertEquals(Instant.EPOCH.plus(Duration.ofHours(1)), pending.single().scheduledAt)
+    }
+
+    @Test
+    fun `interval trigger honors initialDelay when seeding initial execution`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
+        val jobDef = JobDefinition(
+            id = "delayed-interval",
+            trigger = IntervalTrigger(interval = Duration.ofMinutes(10), initialDelay = Duration.ofSeconds(15)),
+            handler = {}
+        )
+        val config = KhronaConfig().apply {
+            this.store = store
+            jobs.add(jobDef)
+        }
+
+        val scheduler = Scheduler(config, backgroundScope, clock)
+        scheduler.start()
+        advanceTimeBy(100)
+
+        val initialPending = store.executions.values.single {
+            it.jobId == "delayed-interval" && it.status == ExecutionStatus.PENDING
+        }
+        assertEquals(Instant.EPOCH.plusSeconds(15), initialPending.scheduledAt)
+
+        // Advance to 16s so the initial execution runs and schedules the next interval
+        advanceTimeBy(16_000)
+        scheduler.stop()
+
+        val nextPending = store.executions.values.single {
+            it.jobId == "delayed-interval" && it.status == ExecutionStatus.PENDING
+        }
+        assertEquals(Instant.EPOCH.plusSeconds(15).plus(Duration.ofMinutes(10)), nextPending.scheduledAt)
+    }
+
+    @Test
+    fun `once job does not re-run on restart after retention cleanup deletes completed execution`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
+        val runs = java.util.concurrent.atomic.AtomicInteger(0)
+        fun createConfig() = KhronaConfig().apply {
+            this.store = store
+            misfireThreshold = Duration.ofDays(365 * 100)
+            job("migrate-once") {
+                once()
+                execute {
+                    runs.incrementAndGet()
+                }
+            }
+        }
+
+        val firstScheduler = Scheduler(createConfig(), backgroundScope, clock)
+        firstScheduler.start()
+        advanceTimeBy(1_500)
+        firstScheduler.stop()
+        assertEquals(1, runs.get(), "once() job should run once on initial start")
+
+        val deleted = store.cleanupCompletedExecutions(Instant.parse("2100-01-01T00:00:00Z"))
+        assertEquals(1, deleted, "Completed execution should be purged by retention cleanup")
+
+        val restartedScheduler = Scheduler(createConfig(), backgroundScope, clock)
+        restartedScheduler.start()
+        advanceTimeBy(1_500)
+        restartedScheduler.stop()
+
+        assertEquals(1, runs.get(), "once() job must not run a second time after retention cleanup and restart")
+    }
+
+    @Test
+    fun `transient store failure after handler success does not break recurring chain`() = runTest {
+        val clock = TestClock(testScheduler)
+        val failNextSave = java.util.concurrent.atomic.AtomicBoolean(false)
+        val handlerRuns = java.util.concurrent.atomic.AtomicInteger(0)
+        val store = object : MockJobStore(clock) {
+            override suspend fun saveExecution(execution: JobExecution) {
+                if (failNextSave.getAndSet(false)) {
+                    throw java.sql.SQLTransientConnectionException("db blip")
+                }
+                super.saveExecution(execution)
+            }
+        }
+        val config = KhronaConfig().apply {
+            this.store = store
+            job("recurring-atomic") {
+                cron("*/5 * * * *")
+                execute {
+                    handlerRuns.incrementAndGet()
+                    failNextSave.set(true)
+                }
+            }
+        }
+        val scheduler = Scheduler(config, backgroundScope, clock)
+        val jobDef = config.jobs.first()
+        store.saveJob(jobDef)
+        val initialExec = JobExecution(
+            jobId = "recurring-atomic",
+            scheduledAt = Instant.now(clock),
+            lockKey = jobDef.lockKey
+        )
+        store.saveExecution(initialExec)
+
+        scheduler.pollAndExecute()
+        advanceUntilIdle()
+        scheduler.stop()
+
+        assertEquals(1, handlerRuns.get())
+        assertEquals(ExecutionStatus.SUCCESS, store.getExecution(initialExec.id)?.status)
+        val pendingNext = store.executions.values.filter {
+            it.jobId == "recurring-atomic" && it.status == ExecutionStatus.PENDING
+        }
+        assertEquals(1, pendingNext.size, "Next recurring execution must be scheduled despite transient store error")
+    }
+
+    @Test
+    fun `handler throwing Error transitions execution to FAILED and schedules retry instead of staying RUNNING`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
+        val config = KhronaConfig().apply {
+            this.store = store
+            job("todo-job") {
+                once()
+                execute {
+                    TODO("not implemented")
+                }
+            }
+        }
+        val scheduler = Scheduler(config, backgroundScope, clock)
+        val jobDef = config.jobs.first()
+        store.saveJob(jobDef)
+        val exec = JobExecution(jobId = "todo-job", scheduledAt = Instant.now(clock))
+        store.saveExecution(exec)
+
+        scheduler.pollAndExecute()
+        advanceTimeBy(200)
+        scheduler.stop()
+
+        assertEquals(
+            ExecutionStatus.FAILED,
+            store.getExecution(exec.id)?.status,
+            "Execution throwing NotImplementedError must transition out of RUNNING to FAILED"
+        )
+        val retryExec = store.executions.values.find { it.jobId == "todo-job" && it.attempt == 1 }
+        assertNotNull(retryExec, "Retry execution with attempt=1 should be scheduled")
+    }
+
+    @Test
+    fun `stop respects shutdownTimeout even when handler blocks thread non-cooperatively`() = runBlocking {
+        val store = MockJobStore()
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        val started = java.util.concurrent.CountDownLatch(1)
+        val unblockHandler = java.util.concurrent.CountDownLatch(1)
+        val config = KhronaConfig().apply {
+            this.store = store
+            this.shutdownTimeout = Duration.ofMillis(100)
+            job("blocking-job") {
+                once()
+                execute {
+                    started.countDown()
+                    unblockHandler.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                }
+            }
+        }
+        val scheduler = Scheduler(config, scope)
+        val jobDef = config.jobs.first()
+        store.saveJob(jobDef)
+        val exec = JobExecution(jobId = "blocking-job", scheduledAt = Instant.now().minusSeconds(1))
+        store.saveExecution(exec)
+
+        try {
+            scheduler.pollAndExecute()
+            assertTrue(started.await(2, java.util.concurrent.TimeUnit.SECONDS), "Handler should start")
+
+            val t0 = System.nanoTime()
+            scheduler.stop()
+            val elapsedMs = (System.nanoTime() - t0) / 1_000_000
+
+            assertTrue(
+                elapsedMs < 1_000,
+                "scheduler.stop() with 100ms shutdownTimeout took ${elapsedMs}ms when handler blocked"
+            )
+            assertEquals(
+                ExecutionStatus.PENDING,
+                store.getExecution(exec.id)?.status,
+                "Blocked execution should be released back to PENDING upon shutdown timeout"
+            )
+        } finally {
+            unblockHandler.countDown()
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `heartbeat outage cancels handler once lease expires`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = object : MockJobStore(clock) {
+            override suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean {
+                error("store unavailable")
+            }
+        }
+        var cancelled = false
+        val config = KhronaConfig().apply {
+            this.store = store
+            executionLeaseDuration = Duration.ofSeconds(2)
+            heartbeatInterval = Duration.ofMillis(500)
+            job("busy-heartbeat-outage") {
+                every(Duration.ofHours(1))
+                execute {
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        cancelled = true
+                    }
+                }
+            }
+        }
+        config.jobs.forEach { store.saveJob(it) }
+        store.saveExecution(JobExecution(jobId = "busy-heartbeat-outage", scheduledAt = Instant.EPOCH))
+        val scheduler = Scheduler(config, backgroundScope, clock)
+        scheduler.pollAndExecute()
+        runCurrent()
+        advanceTimeBy(5_000)
+        runCurrent()
+        assertTrue(cancelled, "Handler must be cancelled once heartbeat errors exceed executionLeaseDuration")
+    }
+
+    @Test
+    fun `stop deadline bounds store release calls when store is slow`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = object : MockJobStore(clock) {
+            override suspend fun getExecution(id: UUID): JobExecution? {
+                delay(10_000)
+                return super.getExecution(id)
+            }
+        }
+        val config = KhronaConfig().apply {
+            this.store = store
+            shutdownTimeout = Duration.ofMillis(100)
+            job("busy-slow-release") {
+                every(Duration.ofHours(1))
+                execute { awaitCancellation() }
+            }
+        }
+        config.jobs.forEach { store.saveJob(it) }
+        store.saveExecution(JobExecution(jobId = "busy-slow-release", scheduledAt = Instant.EPOCH))
+        val scheduler = Scheduler(config, backgroundScope, clock)
+        scheduler.pollAndExecute()
+        runCurrent()
+        val before = testScheduler.currentTime
+        scheduler.stop()
+        val elapsed = testScheduler.currentTime - before
+        assertTrue(elapsed <= 110, "stop took ${elapsed}ms for a 100ms shutdownTimeout")
+    }
+
+    @Test
+    fun `blocking store release must not overrun shutdown deadline`() = runBlocking {
+        val store = object : MockJobStore() {
+            override suspend fun getExecution(id: UUID): JobExecution? = withContext(Dispatchers.IO) {
+                Thread.sleep(600)
+                super.getExecution(id)
+            }
+        }
+        val entered = CompletableDeferred<Unit>()
+        val workerScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        val config = KhronaConfig().apply {
+            this.store = store
+            shutdownTimeout = Duration.ofMillis(100)
+            job("busy") {
+                every(Duration.ofHours(1))
+                execute {
+                    entered.complete(Unit)
+                    awaitCancellation()
+                }
+            }
+        }
+        config.jobs.forEach { store.saveJob(it) }
+        store.saveExecution(JobExecution(jobId = "busy", scheduledAt = Instant.EPOCH))
+        val scheduler = Scheduler(config, workerScope)
+        try {
+            scheduler.pollAndExecute()
+            withTimeout(3000) { entered.await() }
+            val before = System.nanoTime()
+            scheduler.stop()
+            val elapsed = (System.nanoTime() - before) / 1_000_000
+            assertTrue(elapsed < 400, "stop took ${elapsed}ms for a 100ms timeout")
+        } finally {
+            workerScope.cancel()
+        }
+    }
+
+    @Test
+    fun `hung heartbeat must cancel handler before lease expires`() = runTest {
+        val clock = TestClock(testScheduler)
+        val store = object : MockJobStore(clock) {
+            override suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean {
+                delay(10_000)
+                return false
+            }
+        }
+        var cancelled = false
+        val config = KhronaConfig().apply {
+            this.store = store
+            executionLeaseDuration = Duration.ofSeconds(2)
+            heartbeatInterval = Duration.ofMillis(500)
+            job("busy") {
+                every(Duration.ofHours(1))
+                execute {
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        cancelled = true
+                    }
+                }
+            }
+        }
+        config.jobs.forEach { store.saveJob(it) }
+        store.saveExecution(JobExecution(jobId = "busy", scheduledAt = Instant.EPOCH))
+        val scheduler = Scheduler(config, backgroundScope, clock)
+        scheduler.pollAndExecute()
+        runCurrent()
+        advanceTimeBy(5000)
+        runCurrent()
+        assertTrue(cancelled, "handler still running after lease expiry")
+    }
 }
 

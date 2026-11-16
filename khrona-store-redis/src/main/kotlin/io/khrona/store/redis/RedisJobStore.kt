@@ -138,14 +138,36 @@ class RedisJobStore private constructor(
         saveStoredExecution(execution.toStored())
     }
 
+    override suspend fun seedInitialExecution(execution: JobExecution): Boolean = inRedisContext {
+        val stored = execution.toStored()
+        commands.eval<Long>(
+            SEED_INITIAL_EXECUTION_SCRIPT,
+            ScriptOutputType.INTEGER,
+            arrayOf(keys.executions, keys.pending, keys.claimed, keys.running, keys.seededExecutions),
+            stored.id,
+            stored.jobId,
+            json.encodeToString(stored),
+            stored.scheduledAt.toScore().toString()
+        ) == 1L
+    }
+
     override suspend fun updateExecutionStatus(
         id: UUID,
         status: ExecutionStatus,
         error: String?,
         workerId: String?
+    ): Boolean = completeExecution(id, status, error, workerId, null)
+
+    override suspend fun completeExecution(
+        id: UUID,
+        status: ExecutionStatus,
+        error: String?,
+        workerId: String?,
+        nextExecution: JobExecution?
     ): Boolean = inRedisContext {
         val current = getStoredExecution(id) ?: return@inRedisContext false
         val completedAt = if (status.isTerminal()) Instant.now().toString() else current.completedAt ?: ""
+        val nextStored = nextExecution?.toStored()
         commands.eval<Long>(
             UPDATE_EXECUTION_STATUS_SCRIPT,
             ScriptOutputType.INTEGER,
@@ -158,7 +180,10 @@ class RedisJobStore private constructor(
             current.scheduledAt.toScore().toString(),
             keys.lockPrefix,
             keys.claimLockPrefix,
-            workerId ?: ""
+            workerId ?: "",
+            nextStored?.id ?: "",
+            nextStored?.let { json.encodeToString(it) } ?: "",
+            nextStored?.scheduledAt?.toScore()?.toString() ?: ""
         ) == 1L
     }
 
@@ -166,14 +191,25 @@ class RedisJobStore private constructor(
         getStoredExecution(id)?.toExecution()
     }
 
-    override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> = inRedisContext {
-        if (limit <= 0) return@inRedisContext emptyList()
+    override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> =
+        listEligibleExecutions(now, limit, null)
+
+    override suspend fun listEligibleExecutions(
+        now: Instant,
+        limit: Int,
+        jobIds: Set<String>?
+    ): List<JobExecution> = inRedisContext {
+        if (limit <= 0 || (jobIds != null && jobIds.isEmpty())) return@inRedisContext emptyList()
+        val args = buildList {
+            add(now.toScore())
+            add(limit.toString())
+            jobIds?.forEach { add(it) }
+        }.toTypedArray()
         val rawJsons = commands.eval<List<String>>(
             LIST_ELIGIBLE_SCRIPT,
             ScriptOutputType.MULTI,
             arrayOf(keys.executions, keys.pending, keys.claimed, keys.running),
-            now.toScore(),
-            limit.toString()
+            *args
         )
 
         rawJsons.mapNotNull { raw ->
@@ -472,10 +508,14 @@ class RedisJobStore private constructor(
             local jsons = {}
             local seen = {}
             local limit = tonumber(ARGV[2])
-            local scan_batch = math.max(limit * 2, 100)
+            local filter_jobs = #ARGV > 2
+            local allowed_jobs = {}
+            for i = 3, #ARGV do
+                allowed_jobs[ARGV[i]] = true
+            end
             local function appendFrom(key, expected_status)
                 if #jsons >= limit then return end
-                local values = redis.call('ZRANGEBYSCORE', key, '-inf', ARGV[1], 'LIMIT', 0, scan_batch)
+                local values = redis.call('ZRANGEBYSCORE', key, '-inf', ARGV[1])
                 for _, id in ipairs(values) do
                     if not seen[id] and #jsons < limit then
                         seen[id] = true
@@ -487,7 +527,7 @@ class RedisJobStore private constructor(
                             local status = execution['status'] or 'PENDING'
                             if status ~= expected_status then
                                 redis.call('ZREM', key, id)
-                            else
+                            elseif not filter_jobs or allowed_jobs[execution['jobId']] then
                                 table.insert(jsons, raw)
                             end
                         end
@@ -498,6 +538,39 @@ class RedisJobStore private constructor(
             appendFrom(KEYS[3], 'CLAIMED')
             appendFrom(KEYS[4], 'RUNNING')
             return jsons
+        """
+
+        private const val SEED_INITIAL_EXECUTION_SCRIPT = """
+            local id = ARGV[1]
+            local job_id = ARGV[2]
+            if redis.call('HGET', KEYS[5], job_id) == id then
+                return 0
+            end
+            if redis.call('HEXISTS', KEYS[1], id) == 1 then
+                redis.call('HSET', KEYS[5], job_id, id)
+                return 0
+            end
+            local function hasJobInIndex(zkey)
+                local ids = redis.call('ZRANGE', zkey, 0, -1)
+                for _, existing_id in ipairs(ids) do
+                    local raw = redis.call('HGET', KEYS[1], existing_id)
+                    if raw then
+                        local exec = cjson.decode(raw)
+                        local status = exec['status'] or 'PENDING'
+                        if exec['jobId'] == job_id and (status == 'PENDING' or status == 'CLAIMED' or status == 'RUNNING') then
+                            return true
+                        end
+                    end
+                end
+                return false
+            end
+            if hasJobInIndex(KEYS[2]) or hasJobInIndex(KEYS[3]) or hasJobInIndex(KEYS[4]) then
+                return 0
+            end
+            redis.call('HSET', KEYS[5], job_id, id)
+            redis.call('HSET', KEYS[1], id, ARGV[3])
+            redis.call('ZADD', KEYS[2], tonumber(ARGV[4]), id)
+            return 1
         """
 
         private const val SAVE_EXECUTION_SCRIPT = """
@@ -850,6 +923,13 @@ class RedisJobStore private constructor(
                 redis.call('SADD', KEYS[5], lock_index)
             end
 
+            if ARGV[10] and ARGV[10] ~= '' then
+                if redis.call('HEXISTS', KEYS[1], ARGV[10]) == 0 then
+                    redis.call('HSET', KEYS[1], ARGV[10], ARGV[11])
+                    redis.call('ZADD', KEYS[2], tonumber(ARGV[12]), ARGV[10])
+                end
+            end
+
             return 1
         """
     }
@@ -911,6 +991,7 @@ private fun StoredExecution.toExecution(): JobExecution {
 private data class RedisKeys(private val namespace: String) {
     val jobs = "$namespace:jobs"
     val executions = "$namespace:executions"
+    val seededExecutions = "$namespace:seeded-executions"
     val pending = "$namespace:pending"
     val claimed = "$namespace:claimed"
     val running = "$namespace:running"

@@ -53,3 +53,21 @@
 - Optional database-native wake-up mechanisms after the portable adaptive loop exists.
 - Android OS wake-up integration beyond storage, such as exact alarms or first-class WorkManager orchestration.
 - Redis Cluster-specific sharding and Pub/Sub wake-up optimizations after the baseline Redis store exists.
+
+## PR #11 Follow-up Fixes (2026-11-15)
+
+- Completed conservative request-start lease budgeting with a monotonic watchdog bound, original-store claim lifecycle binding, and starvation-free filtering for legacy JDBC dialects.
+- Added ten behavioral regression/boundary tests. Verified 403 unit/integration tests, 13 performance tests, 3 Ktor E2E tests, all coverage gates, and 91.61% aggregate mutation coverage.
+- Details and remaining operational limits: `.specs/quick/001-pr11-followup/SUMMARY.md`.
+
+## Shutdown Snapshot Follow-up (2026-11-15)
+
+- Fixed the last-claim removal race in `Scheduler.stop()` by copying the concurrent claim map through traversal instead of Kotlin's size-based singleton conversion. Original-store binding and owner-fenced release remain intact.
+- Added a deterministic regression that reproduced `NoSuchElementException` before the fix and passes afterward. The Oracle test's timeout and parallelism assertions remain unchanged.
+- Verified a clean 404-test suite, 13 performance tests, 3 Ktor E2E scenarios, all coverage gates, and all mutation gates (91.42% aggregate; core 90.08%). All tests passed with zero failures/errors/skips.
+
+## 1.0 Readiness Notes
+
+- The six remaining readiness areas and their acceptance evidence are tracked in `docs/1.0-readiness.md`, linked from the roadmap and README.
+- The existing Dockerized Ktor generator suite is the consumer integration baseline for Memory, PostgreSQL, and Redis. New API, observability, operator-control, upgrade, and failure scenarios should extend it alongside focused contract/container tests.
+- Release numbering remains a separate decision; reconcile the proposed reliability release with the existing Android SQLite v0.7 allocation before tagging.

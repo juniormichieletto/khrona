@@ -299,4 +299,140 @@ interface JobStoreContract {
         store.saveExecution(claimedExec.copy(status = ExecutionStatus.PENDING, workerId = null, expiresAt = null))
         assertEquals(ExecutionStatus.SUCCESS, store.getExecution(claimedExec.id)?.status)
     }
+
+    @Test
+    fun `seedInitialExecution skips seeding when another non-terminal execution exists for the job`() = runTest {
+        val store = createStore()
+        val jobId = "contract-seed-job-${UUID.randomUUID()}"
+        val job = JobDefinition(
+            id = jobId,
+            handler = {},
+            trigger = IntervalTrigger(Duration.ofHours(1))
+        )
+        store.saveJob(job)
+
+        val firstTime = Instant.parse("2030-01-01T10:00:00Z")
+        val secondTime = Instant.parse("2030-01-01T10:00:05Z")
+        val firstExec = JobExecution(jobId = jobId, scheduledAt = firstTime)
+        val secondExec = JobExecution(jobId = jobId, scheduledAt = secondTime)
+
+        assertTrue(store.seedInitialExecution(firstExec))
+        assertFalse(store.seedInitialExecution(firstExec), "Same execution ID must not be seeded twice")
+        assertFalse(store.seedInitialExecution(secondExec), "Second chain must not be seeded while first is PENDING")
+        assertNull(store.getExecution(secondExec.id))
+
+        assertTrue(store.claimExecution(firstExec.id, "worker-1", Duration.ofMinutes(5)))
+        assertFalse(store.seedInitialExecution(secondExec), "Second chain must not be seeded while first is CLAIMED")
+
+        assertTrue(store.updateExecutionStatus(firstExec.id, ExecutionStatus.RUNNING, workerId = "worker-1"))
+        assertFalse(store.seedInitialExecution(secondExec), "Second chain must not be seeded while first is RUNNING")
+
+        // Complete and purge the execution via retention cleanup; re-saving the job and re-seeding the same deterministic ID must still be skipped
+        assertTrue(store.updateExecutionStatus(firstExec.id, ExecutionStatus.SUCCESS, workerId = "worker-1"))
+        val purged = store.cleanupCompletedExecutions(
+            before = Instant.now().plusSeconds(3600),
+            statuses = setOf(ExecutionStatus.SUCCESS),
+            limit = 10_000
+        )
+        assertTrue(purged >= 1)
+        assertNull(store.getExecution(firstExec.id))
+        store.saveJob(job)
+        assertFalse(
+            store.seedInitialExecution(firstExec),
+            "Previously seeded deterministic execution must not be re-seeded after retention cleanup and restart"
+        )
+    }
+
+    @Test
+    fun `listEligibleExecutions filters by jobIds before applying limit`() = runTest {
+        val store = createStore()
+        val now = Instant.now()
+        val foreignJobId = "contract-foreign-${UUID.randomUUID()}"
+        val localJobId = "contract-local-${UUID.randomUUID()}"
+
+        repeat(3) { idx ->
+            store.saveExecution(
+                JobExecution(
+                    jobId = foreignJobId,
+                    scheduledAt = now.minusSeconds(100L - idx)
+                )
+            )
+        }
+        val localExec = JobExecution(
+            jobId = localJobId,
+            scheduledAt = now.minusSeconds(10)
+        )
+        store.saveExecution(localExec)
+
+        assertTrue(store.listEligibleExecutions(now, limit = 0, jobIds = setOf(localJobId)).isEmpty())
+        assertTrue(store.listEligibleExecutions(now, limit = 2, jobIds = emptySet()).isEmpty())
+
+        val filtered = store.listEligibleExecutions(now, limit = 1, jobIds = setOf(localJobId))
+        assertEquals(listOf(localExec.id), filtered.map { it.id })
+    }
+
+    @Test
+    fun `completeExecution atomically updates status and schedules follow-up when ownership matches`() = runTest {
+        val store = createStore()
+        val now = Instant.now()
+        val jobId = "contract-complete-${UUID.randomUUID()}"
+        val current = JobExecution(jobId = jobId, scheduledAt = now.minusSeconds(10))
+        val followUp = JobExecution(jobId = jobId, scheduledAt = now.plusSeconds(60))
+        store.saveExecution(current)
+
+        assertFalse(
+            store.completeExecution(
+                id = UUID.randomUUID(),
+                status = ExecutionStatus.SUCCESS,
+                workerId = "worker-1",
+                nextExecution = followUp
+            )
+        )
+        assertNull(store.getExecution(followUp.id))
+
+        assertTrue(store.claimExecution(current.id, "worker-1", Duration.ofMinutes(5)))
+        assertFalse(
+            store.completeExecution(
+                id = current.id,
+                status = ExecutionStatus.SUCCESS,
+                workerId = "wrong-worker",
+                nextExecution = followUp
+            ),
+            "Mismatched workerId must not complete execution or schedule follow-up"
+        )
+        assertNull(store.getExecution(followUp.id))
+
+        assertTrue(
+            store.completeExecution(
+                id = current.id,
+                status = ExecutionStatus.SUCCESS,
+                workerId = "worker-1",
+                nextExecution = followUp
+            )
+        )
+        assertEquals(ExecutionStatus.SUCCESS, store.getExecution(current.id)?.status)
+        assertEquals(ExecutionStatus.PENDING, store.getExecution(followUp.id)?.status)
+    }
+
+    @Test
+    fun `seedInitialExecution backfills completion marker for legacy completed execution before retention cleanup`() = runTest {
+        val store = createStore()
+        val jobId = "once-upgrade-${UUID.randomUUID()}"
+        val job = JobDefinition(id = jobId, trigger = io.khrona.core.OneTimeTrigger(Instant.EPOCH))
+        val execution = JobExecution(jobId = jobId, scheduledAt = Instant.EPOCH)
+
+        // Simulate a job and completed execution persisted prior to upgrade (via saveJob + saveExecution)
+        store.saveJob(job)
+        store.saveExecution(execution)
+        store.updateExecutionStatus(execution.id, ExecutionStatus.SUCCESS)
+
+        assertFalse(store.seedInitialExecution(execution), "First seed after upgrade should skip existing completed row")
+        assertTrue(store.cleanupCompletedExecutions(Instant.now().plusSeconds(3600)) >= 1)
+        assertNull(store.getExecution(execution.id))
+
+        assertFalse(
+            store.seedInitialExecution(execution),
+            "Legacy completed one-time job must remain marked as seeded even after retention cleanup"
+        )
+    }
 }

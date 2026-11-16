@@ -11,6 +11,23 @@ interface JobStore {
     suspend fun saveExecution(execution: JobExecution)
 
     /**
+     * Seeds the initial scheduled execution for a job only if no execution with
+     * [execution.id] already exists and no non-terminal (`PENDING`, `CLAIMED`, or `RUNNING`)
+     * execution currently exists for [execution.jobId].
+     *
+     * Built-in stores (`MemoryJobStore`, `JdbcJobStore`, `RedisJobStore`) execute this check
+     * and persist a durable seed marker atomically. The default implementation is a non-atomic
+     * fallback for minimal custom/test stores; production custom stores must override this method.
+     *
+     * Returns `true` if [execution] was persisted, or `false` if seeding was skipped.
+     */
+    suspend fun seedInitialExecution(execution: JobExecution): Boolean {
+        if (getExecution(execution.id) != null) return false
+        saveExecution(execution)
+        return true
+    }
+
+    /**
      * Updates the status of execution [id] to [status].
      *
      * When [workerId] is non-null, the store must atomically verify that the execution is currently
@@ -25,9 +42,50 @@ interface JobStore {
         workerId: String? = null
     ): Boolean
 
+    /**
+     * Updates the status of execution [id] to [status] and persists [nextExecution]
+     * (such as a recurring follow-up or retry execution) when non-null and not already present.
+     *
+     * When [workerId] is non-null, the store verifies that [id] is currently in an active
+     * (`CLAIMED` or `RUNNING`) state and owned by [workerId] before applying the transition or
+     * persisting [nextExecution].
+     *
+     * Built-in stores (`MemoryJobStore`, `JdbcJobStore`, `RedisJobStore`) execute both steps
+     * atomically. The default implementation is a sequential fallback for custom/test stores
+     * that updates the status of [id] first (enforcing [workerId] ownership) and only saves
+     * [nextExecution] if the status transition succeeded; production custom stores must override
+     * this method inside a single store transaction.
+     */
+    suspend fun completeExecution(
+        id: UUID,
+        status: ExecutionStatus,
+        error: String? = null,
+        workerId: String? = null,
+        nextExecution: JobExecution? = null
+    ): Boolean {
+        if (!updateExecutionStatus(id, status, error, workerId)) return false
+        if (nextExecution != null && getExecution(nextExecution.id) == null) {
+            saveExecution(nextExecution)
+        }
+        return true
+    }
+
     suspend fun getExecution(id: UUID): JobExecution?
     
     suspend fun listEligibleExecutions(now: Instant, limit: Int = Int.MAX_VALUE): List<JobExecution>
+
+    suspend fun listEligibleExecutions(
+        now: Instant,
+        limit: Int = Int.MAX_VALUE,
+        jobIds: Set<String>?
+    ): List<JobExecution> {
+        if (limit <= 0) return emptyList()
+        val eligible = listEligibleExecutions(now, if (jobIds == null) limit else Int.MAX_VALUE)
+        if (jobIds == null) return eligible.take(limit)
+        if (jobIds.isEmpty()) return emptyList()
+        return eligible.asSequence().filter { it.jobId in jobIds }.take(limit).toList()
+    }
+
     suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: java.time.Duration): Boolean
     
     /**
