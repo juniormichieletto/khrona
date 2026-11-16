@@ -89,6 +89,7 @@ The current generated-app E2E baseline covers Memory, PostgreSQL, and Redis via 
 - [x] Atomic Redis heartbeat renewal, lease-preserving status transitions, and atomic stale-execution reset (v0.6.0)
 - [x] Fence status transitions (`RUNNING`, `SUCCESS`, `FAILED`, `DEAD_LETTERED`, `MISFIRED`, `PENDING`) and next-run scheduling against stale claims (v0.6.0)
 - [x] Introduce a per-claim token (`<workerId>:<claimId>`) to distinguish successive claims and harden claimed-before-active shutdown release (v0.6.0)
+- [x] Production readiness defect fixes across lifecycle, concurrency, and persistence (v0.7.0)
 - [ ] Testkit (Virtual Time)
 - [ ] Focused shutdown and cancellation contract tests
 - [ ] Documentation & Samples
@@ -101,7 +102,17 @@ The current generated-app E2E baseline covers Memory, PostgreSQL, and Redis via 
 - [ ] Cross-Database Adaptive Delay Scheduler
 - [ ] Adaptive scheduler configuration docs
 
-## v0.7: Android SQLite Store
+## v0.7: Production Readiness Hardening
+- [x] Atomic execution completion and follow-up scheduling (`completeExecution`)
+- [x] Idempotent initial execution seeding (`seedInitialExecution`)
+- [x] Dual-clock pre-request lease budgeting and hung heartbeat cancellation
+- [x] Execution-level dynamic store binding across lifecycle transitions
+- [x] Bounded execution concurrency per node (`maxConcurrentExecutions`)
+- [x] Query-side candidate filtering to prevent head-of-line blocking
+- [x] MySQL `DATETIME(6)` timestamp migration and UTC Calendar JDBC bindings
+- [x] Poison row isolation and dead-lettering
+
+## v0.8: Android SQLite Store
 - Implementation plan: `.specs/features/v0.7-android-sqlite/`
 - [ ] Add `khrona-store-android-sqlite` module
 - [ ] Implement Android-compatible SQLite `JobStore`

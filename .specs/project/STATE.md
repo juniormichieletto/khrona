@@ -10,6 +10,7 @@
 - **v0.3.1 Hardening:** Implemented handler registry, resilient recurring schedules, enforced timeouts, suspendable APIs, structured JDBC payloads, fail-fast migrations, and safer REPLACE ordering.
 - **v0.5.1 Release:** Implemented automatic execution retention and cleanup across all stores (JDBC, Redis, Memory), supported Kotlin Duration throughout the DSL with full backward compatibility, and updated documentation with runnable, self-contained examples.
 - **v0.6.0 Heartbeat Fencing:** Added `workerId` ownership validation and unexpired-lease enforcement to `JobStore.heartbeat` across Memory, JDBC, and Redis, with atomic Lua heartbeat renewal and lease-preserving status transitions in Redis.
+- **v0.7.0 Production Readiness Hardening:** Resolved all P0 and P1 lifecycle, concurrency, and persistence defects (atomic completion, initial seeding, query-side candidate filtering, lease budgeting, bounded concurrency, poison row isolation, and UTC/MySQL timestamp fixes).
 
 ## Blockers
 - None. v0.3.2 hardening addresses previously identified production-readiness blockers, including validation and lifecycle isolation gaps found in review.

@@ -66,15 +66,15 @@ repositories {
 
 dependencies {
     // For Ktor integration:
-    implementation("io.github.juniormichieletto:khrona-ktor:0.6.0")
+    implementation("io.github.juniormichieletto:khrona-ktor:0.7.0")
     
     // OR for Standalone Kotlin apps (without Ktor):
-    // implementation("io.github.juniormichieletto:khrona-core:0.6.0")
+    // implementation("io.github.juniormichieletto:khrona-core:0.7.0")
 
     // Choose your storage backend:
-    implementation("io.github.juniormichieletto:khrona-store-memory:0.6.0") // Dev / testing
-    implementation("io.github.juniormichieletto:khrona-store-jdbc:0.6.0")   // Production JDBC
-    // implementation("io.github.juniormichieletto:khrona-store-redis:0.6.0") // Production Redis store
+    implementation("io.github.juniormichieletto:khrona-store-memory:0.7.0") // Dev / testing
+    implementation("io.github.juniormichieletto:khrona-store-jdbc:0.7.0")   // Production JDBC
+    // implementation("io.github.juniormichieletto:khrona-store-redis:0.7.0") // Production Redis store
 
     // When using JDBC, add the driver for your database:
     runtimeOnly("org.postgresql:postgresql:42.7.5")           // PostgreSQL
@@ -802,8 +802,9 @@ For JDBC, the main database access points are:
 - [x] **v0.5.0:** JReleaser release flow, Flyway setup docs, misfire policy hardening.
 - [x] **v0.5.1:** Execution retention & cleanup, Kotlin Duration DSL, streamlined quick-start docs.
 - [x] **v0.6.0:** Breaking heartbeat ownership validation and expired-lease handling, atomic Lua scripts, and production-ready `RedisJobStore` graduation.
+- [x] **v0.7.0:** Production readiness hardening (atomic follow-ups, initial seeding, query-side candidate filtering, dual-clock lease watchdog, dynamic store binding, bounded concurrency, MySQL DATETIME(6), UTC calendars).
 - [ ] **Future:** Core job management API, metrics (Micrometer/OpenTelemetry), lock inspection, further production hardening, testkit improvements, adaptive delay, and operator ergonomics.
-- [ ] **v0.7:** Android SQLite storage support.
+- [ ] **v0.8:** Android SQLite storage support.
 
 ## License
 

@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-11-16
+
+### Added
+- **Atomic Execution Completion & Follow-up:** Added `JobStore.completeExecution(id, status, error, workerId, nextExecution)` SPI method to atomically apply terminal transitions and persist follow-up runs or retries in a single transaction across Memory, JDBC, and Redis.
+- **Initial Execution Seeding:** Added `JobStore.seedInitialExecution(execution)` to guarantee idempotent, race-free initial scheduling across cluster restarts and concurrent node startups.
+- **Pre-Request Lease Budgeting & Watchdog:** Added monotonic elapsed-time and wall-clock dual deadline budgeting (`newLeaseDeadline`), cancelling execution handlers promptly if a heartbeat hangs or storage latency exceeds the lease duration.
+- **Dynamic Store Binding:** Bound active executions to their claiming `JobStore` instance throughout lifecycle transitions (heartbeat, completion, retries, and shutdown release), allowing runtime changes to `KhronaConfig.store` without corrupting in-flight claims.
+- **Bounded Concurrency:** Added `KhronaConfig.maxConcurrentExecutions` (default `100`) to bound local active coroutines and avoid thread/memory exhaustion under burst conditions.
+- **Query-Side Polling Filtering:** Added `JobStore.listEligibleExecutions(now, limit, jobIds)` and `JdbcDialect.listEligibleExecutionsSql(jobIdCount)` to filter candidates by locally registered handlers directly in SQL, preventing head-of-line blocking from foreign jobs or held `FORBID` locks. Legacy custom dialects without parameter placeholders automatically use progressive query expansion.
+- **MySQL `DATETIME(6)` Migration:** Upgraded `khrona_jobs` and `khrona_executions` timestamp columns in MySQL to `DATETIME(6)` to eliminate the Year-2038 limitation and support sub-second precision.
+- **Explicit UTC JDBC Timezone Handling:** Explicitly bound and parsed all JDBC timestamps using a UTC `Calendar`, ensuring identical instant interpretation across nodes regardless of JVM default timezones.
+
+### Fixed
+- Fixed duplicate interval execution chains being created upon scheduler restarts by anchoring triggers to persisted execution history.
+- Fixed `once()` and `at()` one-time triggers unexpectedly re-running after retention cleanup by persisting a durable `_seededExecutionId` marker on the job definition.
+- Fixed `FIRE_NOW` cron misfire catch-up storms where an extended outage replayed every missed occurrence back-to-back; executions now clamp the next scheduled run to `now`.
+- Fixed handlers throwing fatal `Error` types (e.g. `TODO()`, `AssertionError`) getting permanently stuck in `RUNNING` status; failures are now caught at `Throwable`, increment the attempt counter, and dead-letter properly.
+- Fixed silent write loss when `JdbcJobStore` runs on connection pools configured with `autoCommit = false` by explicitly committing write statements.
+- Fixed unparseable execution rows with corrupt `payload_json` crashing the entire scheduler polling loop; corrupt records are now isolated and quarantined to `DEAD_LETTERED`.
+- Fixed `Scheduler.stop()` exceeding `shutdownTimeout` when handlers block indefinitely by enforcing strict cooperative and hard cancellation deadlines.
+- Fixed `Application.scheduler { ... }` in `khrona-ktor` silently ignoring configuration parameters and failing to run validation checks.
+
 ## [0.6.0] - 2026-11-13
 
 ### Added

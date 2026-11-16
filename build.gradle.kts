@@ -7,7 +7,7 @@ plugins {
     id("maven-publish")
 }
 
-val releaseVersion = providers.gradleProperty("releaseVersion").orElse("0.6.0")
+val releaseVersion = providers.gradleProperty("releaseVersion").orElse("0.7.0")
 
 allprojects {
     group = "io.github.juniormichieletto"
