@@ -104,7 +104,8 @@ class JdbcCoverageTest : AbstractJdbcJobStoreTest() {
                     ExecutionStatus.FAILED,
                     ExecutionStatus.DEAD_LETTERED,
                     ExecutionStatus.MISFIRED,
-                    ExecutionStatus.SUPERSEDED
+                    ExecutionStatus.SUPERSEDED,
+                    ExecutionStatus.CANCELLED
                 )
             ) {
                 assertTrue(updated?.completedAt != null)
@@ -115,7 +116,40 @@ class JdbcCoverageTest : AbstractJdbcJobStoreTest() {
     }
 
     @Test
-    fun `dialects cover lock exclusion sql branches`() {
+    fun `dialects cover lock exclusion and listExecutions sql branches`() {
+        val legacy = object : JdbcDialect {
+            override fun upsertJobSql(): String = ""
+            override fun upsertExecutionSql(): String = ""
+            override fun claimExecutionSql(): String = ""
+            override fun listEligibleExecutionsSql(): String = ""
+            override fun heartbeatSql(): String = ""
+            override fun isLockHeldSql(excludeId: Boolean): String = ""
+            override fun resetExpiredExecutionsSql(): String = ""
+            override fun cleanupCompletedExecutionsSql(statusCount: Int): String = ""
+        }
+        listOf(PostgresDialect(), H2Dialect(), MySqlDialect(), OracleDialect(), legacy).forEach { dialect ->
+            val unfiltered = dialect.listExecutionsSql(
+                hasJobId = false,
+                statusCount = 0,
+                hasScheduledFrom = false,
+                hasScheduledUntil = false
+            )
+            assertFalse(unfiltered.contains("WHERE"))
+            assertTrue(unfiltered.contains("ORDER BY scheduled_at DESC, id DESC"))
+
+            val filtered = dialect.listExecutionsSql(
+                hasJobId = true,
+                statusCount = 2,
+                hasScheduledFrom = true,
+                hasScheduledUntil = true
+            )
+            assertTrue(filtered.contains("WHERE job_id = ? AND status IN (?,?) AND scheduled_at >= ? AND scheduled_at <= ?"))
+            if (dialect is OracleDialect) {
+                assertTrue(filtered.contains("FETCH FIRST ? ROWS ONLY"))
+            } else {
+                assertTrue(filtered.contains("LIMIT ?"))
+            }
+        }
         listOf(PostgresDialect(), H2Dialect(), MySqlDialect(), OracleDialect()).forEach { dialect ->
             assertFalse(dialect.isLockHeldSql(false).contains("id !="))
             assertTrue(dialect.isLockHeldSql(true).contains("id !="))

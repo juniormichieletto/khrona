@@ -71,7 +71,9 @@ interface JobStore {
     }
 
     suspend fun getExecution(id: UUID): JobExecution?
-    
+
+    suspend fun listExecutions(query: JobExecutionQuery = JobExecutionQuery()): List<JobExecution>
+
     suspend fun listEligibleExecutions(now: Instant, limit: Int = Int.MAX_VALUE): List<JobExecution>
 
     suspend fun listEligibleExecutions(
@@ -114,7 +116,8 @@ interface JobStore {
             ExecutionStatus.SUCCESS,
             ExecutionStatus.FAILED,
             ExecutionStatus.MISFIRED,
-            ExecutionStatus.SUPERSEDED
+            ExecutionStatus.SUPERSEDED,
+            ExecutionStatus.CANCELLED
         ),
         limit: Int = 1000
     ): Int

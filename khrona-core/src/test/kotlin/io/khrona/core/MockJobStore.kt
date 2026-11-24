@@ -48,11 +48,7 @@ open class MockJobStore(private val clock: java.time.Clock = java.time.Clock.sys
         error: String?,
         workerId: String?
     ): Boolean {
-        val isTerminal = status == ExecutionStatus.SUCCESS ||
-            status == ExecutionStatus.FAILED ||
-            status == ExecutionStatus.DEAD_LETTERED ||
-            status == ExecutionStatus.MISFIRED ||
-            status == ExecutionStatus.SUPERSEDED
+        val isTerminal = status.isTerminal
         var updated = false
         executions.computeIfPresent(id) { _, exec ->
             if (workerId != null) {
@@ -98,6 +94,9 @@ open class MockJobStore(private val clock: java.time.Clock = java.time.Clock.sys
     }
 
     override suspend fun getExecution(id: UUID): JobExecution? = executions[id]
+
+    override suspend fun listExecutions(query: JobExecutionQuery): List<JobExecution> =
+        query.selectFrom(executions.values)
 
     override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> {
         return executions.values.filter {

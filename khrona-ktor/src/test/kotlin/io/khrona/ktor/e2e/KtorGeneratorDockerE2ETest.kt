@@ -89,7 +89,7 @@ class KtorGeneratorDockerE2ETest {
             )
             assertEquals(202, triggerResponse.statusCode())
 
-            // Poll /status until interval, once, cron registration, manual trigger, and retry-to-success all complete
+            // Poll /status until interval, once, cron registration, manual trigger, retry-to-success, and management checks all complete
             val status = awaitStatus(baseUrl) { json ->
                 json["onceRuns"]?.jsonPrimitive?.int ?: 0 >= 1 &&
                     json["intervalRuns"]?.jsonPrimitive?.int ?: 0 >= 2 &&
@@ -97,12 +97,16 @@ class KtorGeneratorDockerE2ETest {
                     json["retrySuccesses"]?.jsonPrimitive?.int ?: 0 >= 1 &&
                     json["deadLetterAttempts"]?.jsonPrimitive?.int ?: 0 >= 2 &&
                     json["fencingPassed"]?.jsonPrimitive?.boolean == true &&
-                    json["cronRegistered"]?.jsonPrimitive?.boolean == true
+                    json["cronRegistered"]?.jsonPrimitive?.boolean == true &&
+                    json["managementVerified"]?.jsonPrimitive?.boolean == true &&
+                    json["checkpointShutdownVerified"]?.jsonPrimitive?.boolean == true
             }
 
             assertEquals("e2e-corr-memory-1", status["lastManualCorrelationId"]?.jsonPrimitive?.content)
             assertEquals("hello-from-e2e:42:true", status["lastManualPayload"]?.jsonPrimitive?.content)
             assertEquals(true, status["fencingPassed"]?.jsonPrimitive?.boolean)
+            assertEquals(true, status["managementVerified"]?.jsonPrimitive?.boolean)
+            assertEquals(true, status["checkpointShutdownVerified"]?.jsonPrimitive?.boolean)
         }
     }
 
@@ -144,7 +148,8 @@ class KtorGeneratorDockerE2ETest {
                                     json["forbidVerified"]?.jsonPrimitive?.boolean == true &&
                                     json["misfireIgnored"]?.jsonPrimitive?.boolean == true &&
                                     json["retentionCleaned"]?.jsonPrimitive?.boolean == true &&
-                                    json["fencingVerified"]?.jsonPrimitive?.boolean == true
+                                    json["fencingVerified"]?.jsonPrimitive?.boolean == true &&
+                                    json["managementVerified"]?.jsonPrimitive?.boolean == true
                             }
 
                             assertTrue(status["replaceCancelledFirst"]?.jsonPrimitive?.boolean == true)
@@ -153,6 +158,7 @@ class KtorGeneratorDockerE2ETest {
                             assertTrue(status["misfireIgnored"]?.jsonPrimitive?.boolean == true)
                             assertTrue(status["retentionCleaned"]?.jsonPrimitive?.boolean == true)
                             assertTrue(status["fencingVerified"]?.jsonPrimitive?.boolean == true)
+                            assertTrue(status["managementVerified"]?.jsonPrimitive?.boolean == true)
                         }
                 }
         }
@@ -298,11 +304,18 @@ class KtorGeneratorDockerE2ETest {
         import io.ktor.server.request.*
         import io.ktor.server.response.*
         import io.ktor.server.routing.*
+        import kotlinx.coroutines.CompletableDeferred
+        import kotlinx.coroutines.async
+        import kotlinx.coroutines.awaitCancellation
+        import kotlinx.coroutines.delay
+        import kotlinx.coroutines.launch
         import kotlinx.coroutines.runBlocking
+        import kotlinx.coroutines.withTimeout
         import org.slf4j.MDC
         import java.time.Duration
         import java.time.Instant
         import java.time.ZoneId
+        import java.util.UUID
         import java.util.concurrent.atomic.AtomicBoolean
         import java.util.concurrent.atomic.AtomicInteger
         import java.util.concurrent.atomic.AtomicReference
@@ -320,6 +333,11 @@ class KtorGeneratorDockerE2ETest {
             val lastManualCorrelationId = AtomicReference("none")
             val lastManualPayload = AtomicReference("none")
             val fencingPassed = AtomicBoolean(false)
+            val contextVerified = AtomicBoolean(false)
+            val managementVerified = AtomicBoolean(false)
+            val checkpointShutdownVerified = AtomicBoolean(false)
+            val stopTargetStarted = CompletableDeferred<UUID>()
+            val pausedJobRuns = AtomicInteger(0)
 
             installKhrona {
                 this.store = store
@@ -358,16 +376,37 @@ class KtorGeneratorDockerE2ETest {
                         execute {}
                     }
 
-                    // UC-4: On-demand manual trigger with structured payload & MDC correlationId
+                    // UC-4: On-demand manual trigger with structured payload, ExecutionContext, & MDC correlationId
                     job("manual-webhook") {
                         at(Instant.now().plus(Duration.ofDays(365)))
                         concurrencyPolicy = ConcurrencyPolicy.ALLOW
                         execute { payload ->
+                            checkpoint()
                             @Suppress("UNCHECKED_CAST")
                             val map = payload as? Map<String, Any?>
                             lastManualPayload.set("${'$'}{map?.get("msg")}:${'$'}{map?.get("count")}:${'$'}{map?.get("ok")}")
                             lastManualCorrelationId.set(MDC.get("correlationId") ?: "missing")
+                            if (executionId != UUID(0L, 0L) && attempt == 0 && scheduledAt <= Instant.now().plusSeconds(5)) {
+                                contextVerified.set(true)
+                            }
                             manualRuns.incrementAndGet()
+                        }
+                    }
+
+                    // Management pause/resume & local stop E2E jobs
+                    job("managed-pause-job") {
+                        at(Instant.now().plus(Duration.ofDays(365)))
+                        paused = true
+                        execute {
+                            pausedJobRuns.incrementAndGet()
+                        }
+                    }
+
+                    job("managed-stop-job") {
+                        at(Instant.now().plus(Duration.ofDays(365)))
+                        execute {
+                            stopTargetStarted.complete(executionId)
+                            awaitCancellation()
                         }
                     }
 
@@ -421,6 +460,69 @@ class KtorGeneratorDockerE2ETest {
                     claimed1 && expiredHbRejected && claimed2 && latePendingIgnoredWhileClaimed &&
                         staleHbRejected && staleStatusRejected && ownerStatusAccepted && latePendingIgnoredWhileTerminal
                 )
+
+                // Verify shutdown checkpoint releases back to PENDING on stop()
+                val cpStore = MemoryJobStore()
+                val cpEntered = CompletableDeferred<Unit>()
+                val cpProceed = CompletableDeferred<Unit>()
+                val cpAfter = AtomicBoolean(false)
+                val cpScheduler = Scheduler(
+                    KhronaConfig().apply {
+                        this.store = cpStore
+                        pollingInterval = Duration.ofMillis(50)
+                        shutdownTimeout = Duration.ofSeconds(5)
+                        job("cp-shutdown-job") {
+                            once()
+                            execute {
+                                cpEntered.complete(Unit)
+                                cpProceed.await()
+                                checkpoint()
+                                cpAfter.set(true)
+                            }
+                        }
+                    }
+                )
+                cpScheduler.start()
+                withTimeout(5_000) { cpEntered.await() }
+                val cpStop = async { cpScheduler.stop() }
+                delay(50)
+                cpProceed.complete(Unit)
+                withTimeout(5_000) { cpStop.await() }
+                val cpExec = cpStore.listExecutions(JobExecutionQuery(jobId = "cp-shutdown-job")).singleOrNull()
+                checkpointShutdownVerified.set(!cpAfter.get() && cpExec?.status == ExecutionStatus.PENDING && cpExec.workerId == null)
+
+                val khronaScheduler = this@configureRouting.plugin(KhronaPlugin).scheduler
+                this@configureRouting.monitor.subscribe(ApplicationStarted) { app ->
+                    app.launch {
+                        // Start paused job while paused, confirm overview & PENDING status, then resume
+                        val queuedPaused = khronaScheduler.startJob("managed-pause-job")
+                        val pausedOverview = khronaScheduler.getJobOverview("managed-pause-job")
+                        delay(250)
+                        val stayedPaused = pausedJobRuns.get() == 0 && pausedOverview?.paused == true
+                        khronaScheduler.resumeJob("managed-pause-job")
+                        withTimeout(5_000) {
+                            while (pausedJobRuns.get() < 1) {
+                                delay(25)
+                            }
+                        }
+
+                        // Start stoppable job, stop locally, and verify CANCELLED + history + overviews
+                        val startedStop = khronaScheduler.startJob("managed-stop-job")
+                        val startedStopId = withTimeout(5_000) { stopTargetStarted.await() }
+                        val stopRes = khronaScheduler.stopJob("managed-stop-job")
+                        val stoppedExec = store.getExecution(startedStopId)
+                        val history = khronaScheduler.listJobHistory("managed-stop-job", limit = 10)
+                        val overviews = khronaScheduler.listJobOverviews()
+                        managementVerified.set(
+                            queuedPaused.success && stayedPaused && pausedJobRuns.get() == 1 &&
+                                startedStop.success && stopRes.success &&
+                                stopRes.affectedExecutionIds == listOf(startedStopId) &&
+                                stoppedExec?.status == ExecutionStatus.CANCELLED &&
+                                history.any { it.id == startedStopId && it.status == ExecutionStatus.CANCELLED } &&
+                                overviews.any { it.job.id == "managed-stop-job" && it.hasLocalHandler }
+                        )
+                    }
+                }
             }
 
             routing {
@@ -453,7 +555,9 @@ class KtorGeneratorDockerE2ETest {
                         "lastManualCorrelationId": "${'$'}{lastManualCorrelationId.get()}",
                         "lastManualPayload": "${'$'}{lastManualPayload.get()}",
                         "fencingPassed": ${'$'}{fencingPassed.get()},
-                        "cronRegistered": ${'$'}cronRegistered
+                        "cronRegistered": ${'$'}cronRegistered,
+                        "managementVerified": ${'$'}{managementVerified.get() && contextVerified.get()},
+                        "checkpointShutdownVerified": ${'$'}{checkpointShutdownVerified.get()}
                     }""${'"'}.trimIndent()
                     call.respondText(body, ContentType.Application.Json)
                 }
@@ -474,11 +578,15 @@ class KtorGeneratorDockerE2ETest {
         import io.ktor.server.response.*
         import io.ktor.server.routing.*
         import kotlinx.coroutines.CancellationException
+        import kotlinx.coroutines.CompletableDeferred
+        import kotlinx.coroutines.awaitCancellation
         import kotlinx.coroutines.delay
         import kotlinx.coroutines.launch
         import kotlinx.coroutines.runBlocking
+        import kotlinx.coroutines.withTimeout
         import java.time.Duration
         import java.time.Instant
+        import java.util.UUID
         import java.util.concurrent.atomic.AtomicBoolean
         import java.util.concurrent.atomic.AtomicInteger
         import kotlin.time.Duration.Companion.milliseconds
@@ -503,6 +611,9 @@ class KtorGeneratorDockerE2ETest {
             val forbidVerified = AtomicBoolean(false)
             val retentionCleaned = AtomicBoolean(false)
             val fencingVerified = AtomicBoolean(false)
+            val managementVerified = AtomicBoolean(false)
+            val pgPausedRuns = AtomicInteger(0)
+            val pgStopStarted = CompletableDeferred<UUID>()
             val staleMisfire = JobExecution(
                 jobId = "jdbc-misfire-ignore",
                 scheduledAt = Instant.now().minusSeconds(30)
@@ -563,6 +674,22 @@ class KtorGeneratorDockerE2ETest {
                         misfirePolicy = MisfirePolicy.IGNORE
                         execute {}
                     }
+
+                    job("jdbc-managed-pause") {
+                        at(Instant.now().plus(Duration.ofDays(365)))
+                        paused = true
+                        execute {
+                            pgPausedRuns.incrementAndGet()
+                        }
+                    }
+
+                    job("jdbc-managed-stop") {
+                        at(Instant.now().plus(Duration.ofDays(365)))
+                        execute {
+                            pgStopStarted.complete(executionId)
+                            awaitCancellation()
+                        }
+                    }
                 }
 
                 // Enqueue a stale execution for misfire IGNORE verification
@@ -618,6 +745,34 @@ class KtorGeneratorDockerE2ETest {
                         khronaScheduler.trigger("jdbc-replace")
                         delay(400)
                         khronaScheduler.trigger("jdbc-replace")
+
+                        // Verify PostgreSQL pause/resume, listExecutions, getJobOverview, and CANCELLED local stop
+                        val queuedPaused = khronaScheduler.startJob("jdbc-managed-pause")
+                        val overviewWhilePaused = khronaScheduler.getJobOverview("jdbc-managed-pause")
+                        delay(250)
+                        val stayedPaused = pgPausedRuns.get() == 0 && overviewWhilePaused?.paused == true
+                        khronaScheduler.resumeJob("jdbc-managed-pause")
+                        withTimeout(5_000) {
+                            while (pgPausedRuns.get() < 1) {
+                                delay(25)
+                            }
+                        }
+
+                        val stopExecId = khronaScheduler.startJob("jdbc-managed-stop").affectedExecutionIds.single()
+                        withTimeout(5_000) { pgStopStarted.await() }
+                        val stopRes = khronaScheduler.stopExecution(stopExecId)
+                        val cancelledRows = khronaScheduler.listExecutions(
+                            JobExecutionQuery(
+                                jobId = "jdbc-managed-stop",
+                                statuses = setOf(ExecutionStatus.CANCELLED)
+                            )
+                        )
+                        val overviewAfterStop = khronaScheduler.getJobOverview("jdbc-managed-stop")
+                        managementVerified.set(
+                            queuedPaused.success && stayedPaused && pgPausedRuns.get() == 1 &&
+                                stopRes.success && cancelledRows.any { it.id == stopExecId && it.completedAt != null } &&
+                                overviewAfterStop?.progress?.countsByStatus?.get(ExecutionStatus.CANCELLED) == 1
+                        )
                     }
                 }
             }
@@ -636,7 +791,8 @@ class KtorGeneratorDockerE2ETest {
                         "forbidVerified": ${'$'}{forbidVerified.get()},
                         "misfireIgnored": ${'$'}isMisfireIgnored,
                         "retentionCleaned": ${'$'}{retentionCleaned.get()},
-                        "fencingVerified": ${'$'}{fencingVerified.get()}
+                        "fencingVerified": ${'$'}{fencingVerified.get()},
+                        "managementVerified": ${'$'}{managementVerified.get()}
                     }""${'"'}.trimIndent()
                     call.respondText(body, ContentType.Application.Json)
                 }
@@ -656,11 +812,15 @@ class KtorGeneratorDockerE2ETest {
         import io.ktor.server.response.*
         import io.ktor.server.routing.*
         import kotlinx.coroutines.CancellationException
+        import kotlinx.coroutines.CompletableDeferred
+        import kotlinx.coroutines.awaitCancellation
         import kotlinx.coroutines.delay
         import kotlinx.coroutines.launch
         import kotlinx.coroutines.runBlocking
+        import kotlinx.coroutines.withTimeout
         import java.time.Duration
         import java.time.Instant
+        import java.util.UUID
         import java.util.concurrent.atomic.AtomicBoolean
         import java.util.concurrent.atomic.AtomicInteger
         import kotlin.time.Duration.Companion.milliseconds
@@ -685,6 +845,9 @@ class KtorGeneratorDockerE2ETest {
             val replaceSuperseded = AtomicBoolean(false)
             val retentionCleaned = AtomicBoolean(false)
             val fencingVerified = AtomicBoolean(false)
+            val managementVerified = AtomicBoolean(false)
+            val pgPausedRuns = AtomicInteger(0)
+            val pgStopStarted = CompletableDeferred<UUID>()
 
             installKhrona {
                 this.store = store
@@ -804,7 +967,8 @@ class KtorGeneratorDockerE2ETest {
                         "staleRecovered": ${'$'}{staleRecovered.get()},
                         "replaceSuperseded": ${'$'}{replaceSuperseded.get()},
                         "retentionCleaned": ${'$'}{retentionCleaned.get()},
-                        "fencingVerified": ${'$'}{fencingVerified.get()}
+                        "fencingVerified": ${'$'}{fencingVerified.get()},
+                        "managementVerified": ${'$'}{managementVerified.get()}
                     }""${'"'}.trimIndent()
                     call.respondText(body, ContentType.Application.Json)
                 }

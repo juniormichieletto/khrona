@@ -3,6 +3,7 @@ package io.khrona.store.memory
 import io.khrona.core.ExecutionStatus
 import io.khrona.core.JobDefinition
 import io.khrona.core.JobExecution
+import io.khrona.core.JobExecutionQuery
 import io.khrona.core.JobStore
 import java.time.Duration
 import java.time.Instant
@@ -80,12 +81,7 @@ class MemoryJobStore : JobStore {
                 workerId = if (status == ExecutionStatus.PENDING) null else exec.workerId,
                 startedAt = if (status == ExecutionStatus.PENDING) null else exec.startedAt,
                 expiresAt = if (status == ExecutionStatus.PENDING) null else exec.expiresAt,
-                completedAt = if (status == ExecutionStatus.SUCCESS ||
-                    status == ExecutionStatus.FAILED ||
-                    status == ExecutionStatus.DEAD_LETTERED ||
-                    status == ExecutionStatus.MISFIRED ||
-                    status == ExecutionStatus.SUPERSEDED
-                ) Instant.now() else exec.completedAt
+                completedAt = if (status.isTerminal) Instant.now() else exec.completedAt
             )
         }
         if (updated && nextExecution != null) {
@@ -95,6 +91,9 @@ class MemoryJobStore : JobStore {
     }
 
     override suspend fun getExecution(id: UUID): JobExecution? = executions[id]
+
+    override suspend fun listExecutions(query: JobExecutionQuery): List<JobExecution> =
+        query.selectFrom(executions.values)
 
     override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> {
         return listEligibleExecutions(now, limit, null)

@@ -16,6 +16,7 @@ class JobBuilder(val id: String) {
     var misfirePolicy: MisfirePolicy = MisfirePolicy.FIRE_NOW
     var lockKey: String? = null
     var timeout: Duration? = null
+    var paused: Boolean = false
 
     fun timeout(duration: kotlin.time.Duration) {
         this.timeout = duration.toJavaDuration()
@@ -99,7 +100,8 @@ class JobBuilder(val id: String) {
             concurrencyPolicy = concurrencyPolicy,
             misfirePolicy = misfirePolicy,
             lockKey = finalLockKey,
-            timeout = timeout
+            timeout = timeout,
+            paused = paused
         )
     }
 }
@@ -225,7 +227,8 @@ class RetentionPolicy {
         ExecutionStatus.SUCCESS,
         ExecutionStatus.FAILED,
         ExecutionStatus.MISFIRED,
-        ExecutionStatus.SUPERSEDED
+        ExecutionStatus.SUPERSEDED,
+        ExecutionStatus.CANCELLED
     )
 
     fun maxAge(duration: kotlin.time.Duration) {

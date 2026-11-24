@@ -29,7 +29,7 @@ class Scheduler(
     }
 
     private val activeJobs = ConcurrentHashMap<UUID, Job>()
-    private data class ActiveClaim(val owner: String, val store: JobStore)
+    private data class ActiveClaim(val jobId: String, val owner: String, val store: JobStore)
 
     private val activeClaims = ConcurrentHashMap<UUID, ActiveClaim>()
     private val workerId = UUID.randomUUID().toString()
@@ -62,7 +62,7 @@ class Scheduler(
 
         job = scope.launch {
             // Register jobs from config into store
-            config.jobs.forEach { store.saveJob(it) }
+            config.jobs.forEach { persistJobDefinition(it, store) }
             
             // Basic initial scheduling: for each job, create its first execution if none exist
             config.jobs.forEach { jobDef ->
@@ -189,6 +189,12 @@ class Scheduler(
                     return@forEach
                 }
 
+                if (jobDef.paused) {
+                    log.debug("[${execution.jobId}] Skipping execution ${execution.id} because job is paused")
+                    blockedJobIds.add(execution.jobId)
+                    return@forEach
+                }
+
                 // Check for misfire
                 if (Duration.between(execution.scheduledAt, now) > config.misfireThreshold) {
                     if (jobDef.misfirePolicy == MisfirePolicy.IGNORE) {
@@ -228,7 +234,7 @@ class Scheduler(
                         store.updateExecutionStatus(execution.id, ExecutionStatus.PENDING, workerId = claimOwner)
                         return@forEach
                     }
-                    val claim = ActiveClaim(claimOwner, store)
+                    val claim = ActiveClaim(execution.jobId, claimOwner, store)
                     activeClaims[execution.id] = claim
 
                     var launched = false
@@ -426,15 +432,39 @@ class Scheduler(
             val handlerFailure: Throwable? = try {
                 val handler = handlerRegistry.get(jobDef.id)
                     ?: throw IllegalStateException("No handler registered for job ${jobDef.id}")
+                val executionContext = ExecutionContext(
+                    executionId = execution.id,
+                    jobId = execution.jobId,
+                    attempt = execution.attempt,
+                    scheduledAt = execution.scheduledAt,
+                    payload = execution.payload,
+                    correlationId = correlationId,
+                    isStopping = { stopping }
+                )
 
                 if (jobDef.timeout != null) {
                     withTimeout(jobDef.timeout.toMillis()) {
-                        handler(execution.payload)
+                        executionContext.handler(execution.payload)
                     }
                 } else {
-                    handler(execution.payload)
+                    executionContext.handler(execution.payload)
                 }
                 null
+            } catch (e: ShutdownCheckpointException) {
+                log.info("[${execution.jobId}] [$correlationId] Execution ${execution.id} stopped at shutdown checkpoint; releasing back to PENDING")
+                withContext(NonCancellable) {
+                    try {
+                        store.updateExecutionStatus(
+                            id = execution.id,
+                            status = ExecutionStatus.PENDING,
+                            error = "Interrupted at shutdown checkpoint",
+                            workerId = claimOwner
+                        )
+                    } catch (releaseEx: Exception) {
+                        log.error("[${execution.jobId}] [$correlationId] Failed to release execution ${execution.id} after shutdown checkpoint", releaseEx)
+                    }
+                }
+                return@withContext
             } catch (e: Throwable) {
                 if (e is CancellationException && e !is TimeoutCancellationException) {
                     log.info("[${execution.jobId}] [$correlationId] Job was cancelled (superseded or shutdown)")
@@ -629,8 +659,18 @@ class Scheduler(
         validateJob(jobDef)
         handlerRegistry.register(jobDef.id, jobDef.handler)
         val correlationId = MDC.get("correlationId")
-        store.saveJob(jobDef)
+        persistJobDefinition(jobDef, store)
         seedFirstExecution(jobDef, correlationId, store)
+    }
+
+    private suspend fun persistJobDefinition(jobDef: JobDefinition, store: JobStore) {
+        val existing = store.getJob(jobDef.id)
+        val effectiveJob = if (existing != null && existing.paused && !jobDef.paused) {
+            jobDef.copy(paused = true)
+        } else {
+            jobDef
+        }
+        store.saveJob(effectiveJob)
     }
 
     private suspend fun seedFirstExecution(jobDef: JobDefinition, correlationId: String?, store: JobStore) {
@@ -668,19 +708,199 @@ class Scheduler(
      */
     suspend fun trigger(jobId: String, payload: Any? = null) {
         val store = this.store
-        val correlationId = MDC.get("correlationId")
         val jobDef = store.getJob(jobId) ?: throw IllegalArgumentException("Job $jobId not found")
+        enqueueManualExecution(jobDef, payload, store)
+    }
+
+    suspend fun startJob(jobId: String, payload: Any? = null): JobControlResult {
+        val store = this.store
+        val jobDef = store.getJob(jobId)
+            ?: return JobControlResult(success = false, reason = "Job '$jobId' not found")
+        val executionId = enqueueManualExecution(jobDef, payload, store)
+        val reason = if (jobDef.paused) {
+            "Job '$jobId' is paused; execution '$executionId' queued as PENDING until resumed"
+        } else {
+            null
+        }
+        return JobControlResult(
+            success = true,
+            affectedExecutionIds = listOf(executionId),
+            reason = reason
+        )
+    }
+
+    private suspend fun enqueueManualExecution(jobDef: JobDefinition, payload: Any?, store: JobStore): UUID {
+        val correlationId = MDC.get("correlationId")
         val now = Instant.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
         val executionId = UUID.randomUUID()
         store.saveExecution(
             JobExecution(
                 id = executionId,
-                jobId = jobId,
+                jobId = jobDef.id,
                 scheduledAt = now,
                 payload = payload,
                 lockKey = jobDef.lockKey,
                 correlationId = correlationId ?: executionId.toString()
             )
         )
+        return executionId
+    }
+
+    suspend fun pauseJob(jobId: String): JobControlResult = setJobPaused(jobId, paused = true)
+
+    suspend fun resumeJob(jobId: String): JobControlResult = setJobPaused(jobId, paused = false)
+
+    suspend fun listJobOverviews(): List<JobOverview> {
+        val store = this.store
+        val mergedJobs = LinkedHashMap<String, JobDefinition>()
+        config.jobs.forEach { mergedJobs[it.id] = it }
+        store.listJobs().forEach { mergedJobs[it.id] = it }
+        return mergedJobs.values
+            .sortedBy { it.id }
+            .map { buildJobOverview(it, store) }
+    }
+
+    suspend fun getJobOverview(jobId: String): JobOverview? {
+        val store = this.store
+        val jobDef = store.getJob(jobId) ?: config.jobs.find { it.id == jobId } ?: return null
+        return buildJobOverview(jobDef, store)
+    }
+
+    suspend fun listJobHistory(
+        jobId: String,
+        limit: Int = JobExecutionQuery.DEFAULT_LIMIT
+    ): List<JobExecution> {
+        return listExecutions(JobExecutionQuery(jobId = jobId, limit = limit))
+    }
+
+    suspend fun listExecutions(
+        query: JobExecutionQuery = JobExecutionQuery()
+    ): List<JobExecution> = store.listExecutions(query)
+
+    suspend fun stopExecution(executionId: UUID): JobControlResult {
+        val activeJob = activeJobs[executionId]
+        val activeClaim = activeClaims[executionId]
+        if (activeJob == null || activeClaim == null) {
+            val existing = store.getExecution(executionId)
+                ?: return JobControlResult(success = false, reason = "Execution '$executionId' not found")
+            if (existing.status.isTerminal) {
+                return JobControlResult(
+                    success = false,
+                    reason = "Execution '$executionId' is already terminal (${existing.status})"
+                )
+            }
+            return JobControlResult(
+                success = false,
+                reason = "Execution '$executionId' is not active on this scheduler instance (status=${existing.status})"
+            )
+        }
+
+        val cancelled = activeClaim.store.updateExecutionStatus(
+            id = executionId,
+            status = ExecutionStatus.CANCELLED,
+            error = "Stopped locally",
+            workerId = activeClaim.owner
+        )
+        if (!cancelled) {
+            return JobControlResult(
+                success = false,
+                reason = "Execution '$executionId' is no longer active on this scheduler instance"
+            )
+        }
+
+        activeJob.cancel("Execution $executionId stopped locally")
+        return JobControlResult(
+            success = true,
+            affectedExecutionIds = listOf(executionId)
+        )
+    }
+
+    suspend fun stopJob(jobId: String): JobControlResult {
+        val matchingIds = mutableListOf<UUID>()
+        activeClaims.forEach { executionId, claim ->
+            if (claim.jobId == jobId) {
+                matchingIds.add(executionId)
+            }
+        }
+        if (matchingIds.isEmpty()) {
+            val exists = store.getJob(jobId) != null || config.jobs.any { it.id == jobId }
+            val reason = if (!exists) {
+                "Job '$jobId' not found"
+            } else {
+                "Job '$jobId' has no active executions on this scheduler instance"
+            }
+            return JobControlResult(success = false, reason = reason)
+        }
+
+        val stoppedIds = mutableListOf<UUID>()
+        var failedCount = 0
+        matchingIds.forEach { executionId ->
+            val result = stopExecution(executionId)
+            if (result.success) {
+                stoppedIds.addAll(result.affectedExecutionIds)
+            } else {
+                failedCount++
+            }
+        }
+
+        if (stoppedIds.isEmpty()) {
+            return JobControlResult(
+                success = false,
+                reason = "No active executions could be stopped for job '$jobId'"
+            )
+        }
+
+        val partialReason = if (failedCount > 0) {
+            "Stopped ${stoppedIds.size} of ${matchingIds.size} active executions"
+        } else {
+            null
+        }
+        return JobControlResult(
+            success = true,
+            affectedExecutionIds = stoppedIds,
+            reason = partialReason
+        )
+    }
+
+    private suspend fun buildJobOverview(jobDef: JobDefinition, store: JobStore): JobOverview {
+        return JobOverview(
+            job = jobDef,
+            paused = jobDef.paused,
+            hasLocalHandler = handlerRegistry.hasHandler(jobDef.id),
+            progress = buildJobProgress(jobDef.id, store)
+        )
+    }
+
+    private suspend fun buildJobProgress(jobId: String, store: JobStore): JobProgress {
+        val executions = store.listExecutions(
+            JobExecutionQuery(jobId = jobId, limit = JobExecutionQuery.DEFAULT_LIMIT)
+        )
+        val latestExecution = executions.firstOrNull { it.status != ExecutionStatus.PENDING }
+            ?: executions.firstOrNull()
+        val nextPendingExecution = executions.asSequence()
+            .filter { it.status == ExecutionStatus.PENDING }
+            .minWithOrNull(compareBy<JobExecution> { it.scheduledAt }.thenBy { it.id.toString() })
+        val activeExecutions = executions.filter {
+            it.status == ExecutionStatus.CLAIMED || it.status == ExecutionStatus.RUNNING
+        }
+        val countsByStatus = executions.groupingBy { it.status }.eachCount()
+        return JobProgress(
+            latestExecution = latestExecution,
+            nextPendingExecution = nextPendingExecution,
+            activeExecutions = activeExecutions,
+            countsByStatus = countsByStatus
+        )
+    }
+
+    private suspend fun setJobPaused(jobId: String, paused: Boolean): JobControlResult {
+        val store = this.store
+        val existing = store.getJob(jobId)
+            ?: return JobControlResult(success = false, reason = "Job '$jobId' not found")
+        if (existing.paused == paused) {
+            val stateLabel = if (paused) "paused" else "active"
+            return JobControlResult(success = true, reason = "Job '$jobId' is already $stateLabel")
+        }
+        store.saveJob(existing.copy(paused = paused))
+        return JobControlResult(success = true)
     }
 }

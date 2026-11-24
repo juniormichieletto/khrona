@@ -11,5 +11,19 @@ enum class ExecutionStatus {
     FAILED,
     DEAD_LETTERED,
     MISFIRED,
-    SUPERSEDED
+    SUPERSEDED,
+    CANCELLED;
+
+    val isTerminal: Boolean
+        get() = when (this) {
+            SUCCESS,
+            FAILED,
+            DEAD_LETTERED,
+            MISFIRED,
+            SUPERSEDED,
+            CANCELLED -> true
+            PENDING,
+            CLAIMED,
+            RUNNING -> false
+        }
 }

@@ -54,7 +54,8 @@ class MemoryJobStoreCoverageTest {
             ExecutionStatus.FAILED,
             ExecutionStatus.DEAD_LETTERED,
             ExecutionStatus.MISFIRED,
-            ExecutionStatus.SUPERSEDED
+            ExecutionStatus.SUPERSEDED,
+            ExecutionStatus.CANCELLED
         ).forEach { status ->
             val next = JobExecution(jobId = "status-$status", scheduledAt = Instant.now())
             store.saveExecution(next)

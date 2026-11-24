@@ -26,19 +26,20 @@
 - [x] Add Android SQLite Store implementation plan (v0.7)
 - [x] Add Redis Store implementation plan (v0.4)
 - [x] Implement Redis Store (v0.4)
-- [ ] Implement Core Job Management API & Visibility (v0.5)
+- [x] Implement Core Job Management API & ExecutionContext
+- [ ] Implement Metrics & Lock Inspection (v0.5)
 - [ ] Implement Android SQLite Store (v0.7)
 
 ## Current Implementation Status
 - **Redis Store (v0.4 -> v0.6.0):** Production-ready (graduated in v0.6.0). Uses Lettuce, `RedisJobStoreConfig`, `RedisJobStoreConfig.clusterNamespace(namespace)`, `KhronaRedisOomException`, single-round-trip atomic Lua scripts across `saveExecution`, `claimExecution`, `heartbeat`, `updateExecutionStatus`, `resetExpiredExecutions`, `listEligibleExecutions`, `isLockHeld`, `supersedeExecutionsByLockKey`, and chunked `cleanupCompletedExecutions` (with `$namespace:cleanup:lock` and automatic orphan/stale index self-healing), verified by `RedisJobStoreTest`, shared `JobStoreContract`, Dockerized Ktor E2E tests, and 1/2/15-node cluster drain benchmarks. `./gradlew clean test` passes.
 - **Redis remaining work:** Optional command-latency observability hook (Micrometer/OpenTelemetry) planned alongside core metrics.
 ## Next Tasks
-- [ ] Implement Core Job Management API (v0.5)
+- [x] Implement Core Job Management API (v0.5)
 - [ ] Implement Metrics (Micrometer) (v0.5)
 - [ ] Add lock inspection capabilities (v0.5)
 - [ ] Implement Android SQLite Store (v0.7)
 - [ ] Add shutdown/cancellation contract hardening to a future reliability release
-- [ ] Add timezone support, DLQ tooling enhancements, and job pause/disable to future production features
+- [ ] Add timezone support, DLQ tooling enhancements, and persisted job reconciliation to future production features
 
 
 ## Deferred Ideas
@@ -72,3 +73,9 @@
 - The six remaining readiness areas and their acceptance evidence are tracked in `docs/1.0-readiness.md`, linked from the roadmap and README.
 - The existing Dockerized Ktor generator suite is the consumer integration baseline for Memory, PostgreSQL, and Redis. New API, observability, operator-control, upgrade, and failure scenarios should extend it alongside focused contract/container tests.
 - Release numbering remains a separate decision; reconcile the proposed reliability release with the existing Android SQLite v0.7 allocation before tagging.
+
+## Core Job Management API & ExecutionContext (2026-11-24)
+
+- Implemented `JobStore.listExecutions(query)` across Memory, JDBC (PostgreSQL, MySQL, Oracle, H2), Redis, and `MockJobStore`, plus terminal `ExecutionStatus.CANCELLED` and `JobDefinition.paused` persistence.
+- Added `Scheduler` management APIs (`listJobOverviews`, `getJobOverview`, `listJobHistory`, `listExecutions`, `startJob`, `pauseJob`, `resumeJob`, `stopExecution`, `stopJob`) and `ExecutionContext` (`executionId`, `jobId`, `attempt`, `scheduledAt`, `payload`, `correlationId`, `checkpoint()`).
+- Updated `JobHandler` to `suspend ExecutionContext.(payload: Any?) -> Unit`; standard DSL lambdas remain source-compatible, while callers holding pre-typed `suspend (Any?) -> Unit` references should update them to `JobHandler`.

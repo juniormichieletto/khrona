@@ -3,6 +3,7 @@ package io.khrona.core.testing
 import io.khrona.core.ExecutionStatus
 import io.khrona.core.JobDefinition
 import io.khrona.core.JobExecution
+import io.khrona.core.JobExecutionQuery
 import io.khrona.core.JobStore
 import io.khrona.core.IntervalTrigger
 import kotlinx.coroutines.test.runTest
@@ -434,5 +435,177 @@ interface JobStoreContract {
             store.seedInitialExecution(execution),
             "Legacy completed one-time job must remain marked as seeded even after retention cleanup"
         )
+    }
+
+    @Test
+    fun `listExecutions filters by jobId, statuses, scheduled range boundaries, limit, and orders newest first`() = runTest {
+        val store = createStore()
+        val runId = UUID.randomUUID()
+        val jobA = "query-job-a-$runId"
+        val jobB = "query-job-b-$runId"
+        val base = Instant.parse("2030-06-01T12:00:00Z")
+
+        val (tieSmallerId, tieLargerId) = listOf(UUID.randomUUID(), UUID.randomUUID()).sortedBy { it.toString() }
+
+        val execBeforeFrom = JobExecution(
+            jobId = jobA,
+            scheduledAt = base.minusMillis(1),
+            status = ExecutionStatus.SUCCESS
+        )
+        val execAtFrom = JobExecution(
+            jobId = jobA,
+            scheduledAt = base,
+            status = ExecutionStatus.FAILED
+        )
+        val execTieSmall = JobExecution(
+            id = tieSmallerId,
+            jobId = jobA,
+            scheduledAt = base.plusSeconds(10),
+            status = ExecutionStatus.PENDING
+        )
+        val execTieLarge = JobExecution(
+            id = tieLargerId,
+            jobId = jobA,
+            scheduledAt = base.plusSeconds(10),
+            status = ExecutionStatus.RUNNING
+        )
+        val execAtUntil = JobExecution(
+            jobId = jobA,
+            scheduledAt = base.plusSeconds(20),
+            status = ExecutionStatus.CANCELLED
+        )
+        val execAfterUntil = JobExecution(
+            jobId = jobA,
+            scheduledAt = base.plusSeconds(20).plusMillis(1),
+            status = ExecutionStatus.PENDING
+        )
+        val execOtherJob = JobExecution(
+            jobId = jobB,
+            scheduledAt = base.plusSeconds(15),
+            status = ExecutionStatus.SUCCESS
+        )
+
+        listOf(
+            execBeforeFrom,
+            execAtFrom,
+            execTieSmall,
+            execTieLarge,
+            execAtUntil,
+            execAfterUntil,
+            execOtherJob
+        ).forEach { store.saveExecution(it) }
+
+        // Full jobA listing ordered newest first, tie-broken by id DESC
+        val allJobA = store.listExecutions(JobExecutionQuery(jobId = jobA))
+        assertEquals(
+            listOf(
+                execAfterUntil.id,
+                execAtUntil.id,
+                execTieLarge.id,
+                execTieSmall.id,
+                execAtFrom.id,
+                execBeforeFrom.id
+            ),
+            allJobA.map { it.id }
+        )
+
+        // Single status & multiple statuses filtering
+        val onlyFailed = store.listExecutions(
+            JobExecutionQuery(jobId = jobA, statuses = setOf(ExecutionStatus.FAILED))
+        )
+        assertEquals(listOf(execAtFrom.id), onlyFailed.map { it.id })
+
+        val failedOrCancelled = store.listExecutions(
+            JobExecutionQuery(jobId = jobA, statuses = setOf(ExecutionStatus.FAILED, ExecutionStatus.CANCELLED))
+        )
+        assertEquals(listOf(execAtUntil.id, execAtFrom.id), failedOrCancelled.map { it.id })
+
+        // Empty status set returns empty list
+        assertTrue(store.listExecutions(JobExecutionQuery(jobId = jobA, statuses = emptySet())).isEmpty())
+
+        // Cross-job query (jobId = null)
+        val allSuccess = store.listExecutions(JobExecutionQuery(statuses = setOf(ExecutionStatus.SUCCESS)))
+        assertEquals(listOf(execOtherJob.id, execBeforeFrom.id), allSuccess.map { it.id })
+
+        // Inclusive scheduledFrom and scheduledUntil boundaries
+        val boundedRange = store.listExecutions(
+            JobExecutionQuery(
+                jobId = jobA,
+                scheduledFrom = base,
+                scheduledUntil = base.plusSeconds(20)
+            )
+        )
+        assertEquals(
+            listOf(execAtUntil.id, execTieLarge.id, execTieSmall.id, execAtFrom.id),
+            boundedRange.map { it.id }
+        )
+
+        val fromOnly = store.listExecutions(JobExecutionQuery(jobId = jobA, scheduledFrom = base.plusSeconds(20)))
+        assertEquals(listOf(execAfterUntil.id, execAtUntil.id), fromOnly.map { it.id })
+
+        val untilOnly = store.listExecutions(JobExecutionQuery(jobId = jobA, scheduledUntil = base))
+        assertEquals(listOf(execAtFrom.id, execBeforeFrom.id), untilOnly.map { it.id })
+
+        // Bounded limit
+        val topTwo = store.listExecutions(JobExecutionQuery(jobId = jobA, limit = 2))
+        assertEquals(listOf(execAfterUntil.id, execAtUntil.id), topTwo.map { it.id })
+
+        val topOne = store.listExecutions(JobExecutionQuery(jobId = jobA, limit = 1))
+        assertEquals(listOf(execAfterUntil.id), topOne.map { it.id })
+    }
+
+    @Test
+    fun `CANCELLED status is terminal sets completedAt releases locks and is eligible for retention cleanup`() = runTest {
+        val store = createStore()
+        val lockKey = "cancelled-lock-${UUID.randomUUID()}"
+        val execution = JobExecution(
+            jobId = "cancelled-job-${UUID.randomUUID()}",
+            scheduledAt = Instant.now().minusSeconds(10),
+            lockKey = lockKey
+        )
+        store.saveExecution(execution)
+
+        assertTrue(store.claimExecution(execution.id, "worker-1", Duration.ofMinutes(5)))
+        assertTrue(store.isLockHeld(lockKey))
+
+        assertTrue(
+            store.updateExecutionStatus(
+                id = execution.id,
+                status = ExecutionStatus.CANCELLED,
+                error = "Stopped locally",
+                workerId = "worker-1"
+            )
+        )
+
+        val updated = store.getExecution(execution.id)
+        assertEquals(ExecutionStatus.CANCELLED, updated?.status)
+        assertNotNull(updated?.completedAt)
+        assertFalse(store.isLockHeld(lockKey))
+        assertFalse(store.listEligibleExecutions(Instant.now()).any { it.id == execution.id })
+
+        val cleaned = store.cleanupCompletedExecutions(
+            before = Instant.now().plusSeconds(60),
+            statuses = setOf(ExecutionStatus.CANCELLED),
+            limit = 100
+        )
+        assertEquals(1, cleaned)
+        assertNull(store.getExecution(execution.id))
+    }
+
+    @Test
+    fun `stores and retrieves JobDefinition paused flag`() = runTest {
+        val store = createStore()
+        val jobId = "paused-contract-${UUID.randomUUID()}"
+        val activeJob = JobDefinition(
+            id = jobId,
+            handler = {},
+            trigger = IntervalTrigger(Duration.ofMinutes(1)),
+            paused = false
+        )
+        store.saveJob(activeJob)
+        assertFalse(store.getJob(jobId)!!.paused)
+
+        store.saveJob(activeJob.copy(paused = true))
+        assertTrue(store.getJob(jobId)!!.paused)
     }
 }

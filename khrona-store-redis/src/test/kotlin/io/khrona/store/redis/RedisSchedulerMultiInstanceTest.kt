@@ -5,6 +5,7 @@ import io.khrona.core.ConcurrencyPolicy
 import io.khrona.core.ExecutionStatus
 import io.khrona.core.JobDefinition
 import io.khrona.core.JobExecution
+import io.khrona.core.JobHandler
 import io.khrona.core.KhronaConfig
 import io.khrona.core.MisfirePolicy
 import io.khrona.core.Scheduler
@@ -409,7 +410,7 @@ class RedisSchedulerMultiInstanceTest {
         }.build()
     }
 
-    private fun replaceJob(id: String, lockKey: String, handler: suspend (Any?) -> Unit): JobDefinition {
+    private fun replaceJob(id: String, lockKey: String, handler: JobHandler): JobDefinition {
         return JobBuilder(id).apply {
             at(Instant.now().plus(Duration.ofDays(365)))
             concurrencyPolicy = ConcurrencyPolicy.REPLACE

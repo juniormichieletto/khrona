@@ -372,12 +372,7 @@ class JdbcJobStore(
         conn.prepareStatementWithTimeout(sql).use { stmt ->
             stmt.setString(1, status.name)
             stmt.setString(2, error)
-            val isTerminal = status == ExecutionStatus.SUCCESS ||
-                status == ExecutionStatus.FAILED ||
-                status == ExecutionStatus.DEAD_LETTERED ||
-                status == ExecutionStatus.MISFIRED ||
-                status == ExecutionStatus.SUPERSEDED
-            stmt.setTimestamp(3, if (isTerminal) Timestamp.from(Instant.now()) else null, utcCalendar())
+            stmt.setTimestamp(3, if (status.isTerminal) Timestamp.from(Instant.now()) else null, utcCalendar())
             stmt.setString(4, id.toString())
             if (workerId != null) {
                 stmt.setString(5, workerId)
@@ -398,6 +393,46 @@ class JdbcJobStore(
             }
         }
         return@inJdbcContext null
+    }
+
+    override suspend fun listExecutions(query: JobExecutionQuery): List<JobExecution> = inJdbcContext {
+        val statuses = query.statuses
+        if (statuses != null && statuses.isEmpty()) return@inJdbcContext emptyList()
+        val dialect = getDialect()
+        val statusList = statuses?.toList().orEmpty()
+        val scheduledFrom = query.scheduledFrom
+        val scheduledUntil = query.scheduledUntil
+        val sql = dialect.listExecutionsSql(
+            hasJobId = query.jobId != null,
+            statusCount = statusList.size,
+            hasScheduledFrom = scheduledFrom != null,
+            hasScheduledUntil = scheduledUntil != null
+        )
+        val executions = mutableListOf<JobExecution>()
+        dataSource.connection.use { conn ->
+            conn.prepareStatementWithTimeout(sql).use { stmt ->
+                var paramIndex = 1
+                if (query.jobId != null) {
+                    stmt.setString(paramIndex++, query.jobId)
+                }
+                statusList.forEach { status ->
+                    stmt.setString(paramIndex++, status.name)
+                }
+                if (scheduledFrom != null) {
+                    stmt.setTimestamp(paramIndex++, Timestamp.from(scheduledFrom), utcCalendar())
+                }
+                if (scheduledUntil != null) {
+                    stmt.setTimestamp(paramIndex++, Timestamp.from(scheduledUntil), utcCalendar())
+                }
+                stmt.setInt(paramIndex, query.limit)
+                stmt.executeQuery().use { rs ->
+                    while (rs.next()) {
+                        executions.add(mapExecution(rs))
+                    }
+                }
+            }
+        }
+        return@inJdbcContext executions
     }
 
     override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> =

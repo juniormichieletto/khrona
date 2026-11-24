@@ -29,7 +29,7 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
   - [Misfire Policies](#misfire-policies)
   - [Correlation ID & Observability](#correlation-id--observability)
 - [Manual Control (Standalone)](#manual-control-standalone)
-  - [Planned Job Management API](#planned-job-management-api)
+  - [Job Management API](#job-management-api)
 - [Trigger Formats](#trigger-formats)
   - [Cron Trigger (Unix Format)](#cron-trigger-unix-format)
   - [Interval Trigger](#interval-trigger)
@@ -461,7 +461,23 @@ job("sync-report") {
 }
 ```
 
-Blocking or non-cooperative code is not forcibly interrupted by coroutine cancellation. For long-running handlers, prefer cancellable suspending APIs. For CPU-bound or loop-based handlers, call `kotlinx.coroutines.ensureActive()` or `yield()` at safe points so cancellation can be observed promptly. Keep side effects idempotent so a released or timed-out execution can be retried safely.
+Blocking or non-cooperative code is not forcibly interrupted by coroutine cancellation. For long-running handlers, prefer cancellable suspending APIs. For CPU-bound or loop-based handlers, call `kotlinx.coroutines.ensureActive()` or `yield()` at safe points so cancellation from timeouts, `ConcurrencyPolicy.REPLACE`, `stopExecution`, or forced shutdown after `shutdownTimeout` can be observed promptly.
+
+Handlers also run with an `ExecutionContext` receiver exposing `executionId`, `jobId`, `attempt`, `scheduledAt`, `payload`, `correlationId`, and `checkpoint()`:
+
+```kotlin
+job("sync-orders") {
+    every(1.minutes)
+    execute {
+        val batch = fetchBatch(executionId, attempt)
+        checkpoint() // Stops cleanly if scheduler.stop() / ApplicationStopping has started
+        writeBatch(batch)
+    }
+}
+```
+
+- **`checkpoint()` vs `ensureActive()`:** `checkpoint()` is a cooperative graceful-shutdown safe point. During normal execution it returns immediately; once `scheduler.stop()` or Ktor `ApplicationStopping` begins graceful shutdown, `checkpoint()` throws `ShutdownCheckpointException` and releases the execution back to `PENDING` (without marking it `SUCCESS` or terminal `CANCELLED`) so durable stores can resume it on another node or after restart without waiting for lease expiry. Coroutine cancellation checks (`ensureActive()`, `yield()`) still govern timeouts, `REPLACE`, local `stopExecution`, and forced cancellation after `shutdownTimeout`.
+- **Identifier stability & application progress:** Initial runs start at `attempt = 0`. A retry allocates a new `executionId` with an incremented `attempt` while preserving `correlationId`; a lease reclaim after worker crash or checkpoint release reuses the same `executionId` and `attempt`. Keep side effects idempotent, and persist any application-specific progress/cursor state in application-owned storage keyed by `executionId` or a business key.
 
 ### Structured Payloads
 Khrona preserves JSON-compatible payload structure when using persistent storage (JDBC). Maps, Lists, strings, numbers, booleans, and nested combinations round-trip through `payload_json`.
@@ -600,32 +616,38 @@ runBlocking {
 }
 ```
 
-### Planned Job Management API
+### Job Management API
 
-Khrona's planned core job management API will expose reusable functions that host applications can wrap in their own REST routes, admin tools, CLIs, or internal tooling. Khrona itself does not plan to ship built-in admin routes, dashboards, or UI.
-
-The planned API shape is:
+`Scheduler` exposes reusable core functions in `khrona-core` that host applications can wrap in their own REST routes, admin tools, CLIs, or internal tooling. Khrona intentionally does not ship built-in admin routes, dashboards, admin UI, or authorization policies; host applications own those surfaces.
 
 ```kotlin
-val jobs = scheduler.listJobOverviews()
-val report = scheduler.getJobOverview("daily-report")
-val history = scheduler.listJobHistory("daily-report", limit = 50)
+val jobs: List<JobOverview> = scheduler.listJobOverviews()
+val report: JobOverview? = scheduler.getJobOverview("daily-report")
+val history: List<JobExecution> = scheduler.listJobHistory("daily-report", limit = 50)
+val deadLetters: List<JobExecution> = scheduler.listExecutions(
+    JobExecutionQuery(
+        statuses = setOf(ExecutionStatus.DEAD_LETTERED),
+        limit = 100
+    )
+)
 
-scheduler.startJob("daily-report", payload = mapOf("source" to "admin"))
+val started: JobControlResult = scheduler.startJob("daily-report", payload = mapOf("source" to "admin"))
 
 scheduler.pauseJob("daily-report")
-// Pending work is retained but not executed while paused.
+// Pending work is retained but not claimed or executed while paused.
 scheduler.resumeJob("daily-report")
 
-val stopped = scheduler.stopJob("daily-report")
-// Stop is local to this scheduler instance.
+val stoppedJob: JobControlResult = scheduler.stopJob("daily-report")
+val stoppedExec: JobControlResult = scheduler.stopExecution(executionId)
+// Stop is local to this scheduler instance and persists ExecutionStatus.CANCELLED.
 ```
 
-Progress will be derived from persisted execution state: latest execution, active executions, next pending execution, status counts, timestamps, attempts, worker ownership, and errors. Handler-reported percentage or checkpoint progress is deferred to application-owned state.
+- **Status-derived progress:** `JobOverview.progress` (`JobProgress`) is derived solely from persisted `JobExecution` state (`latestExecution`, `nextPendingExecution`, `activeExecutions`, and `countsByStatus`), plus `paused` and `hasLocalHandler` (whether this scheduler process has a registered handler for the job).
+- **Persistent pause/resume:** Jobs can also start paused via `paused = true` in the DSL. `pauseJob` and `resumeJob` persist `JobDefinition.paused` in the configured `JobStore`, so all scheduler instances sharing the store observe pause state and skip claiming or misfire-marking paused jobs while retaining pending executions.
+- **Local stop scope:** `stopExecution` and `stopJob` only cancel executions currently active on the calling scheduler instance and persist terminal `ExecutionStatus.CANCELLED` (releasing any held lock). Unknown, terminal, `PENDING`, or remotely owned executions return `JobControlResult(success = false, reason = ...)` without altering remote state; cross-node stop requires a later command-channel design.
+- **Handler type note:** `JobHandler` is `suspend ExecutionContext.(payload: Any?) -> Unit`. Standard DSL lambdas (`execute { ... }` / `execute { payload -> ... }`) remain source-compatible; callers storing or passing pre-typed `suspend (Any?) -> Unit` function variables should update their parameter/variable type to `JobHandler`.
 
-Pause will be persisted in the job definition, so all scheduler instances sharing the same store can observe it. Stop will only affect executions active in the current process because Khrona does not currently have a cross-node command channel.
-
-The implementation plan is tracked in `.specs/features/job-management-core-api/`.
+See `.specs/features/job-management-core-api/` for the specification and design notes.
 
 ## Trigger Formats
 
@@ -803,7 +825,8 @@ For JDBC, the main database access points are:
 - [x] **v0.5.1:** Execution retention & cleanup, Kotlin Duration DSL, streamlined quick-start docs.
 - [x] **v0.6.0:** Breaking heartbeat ownership validation and expired-lease handling, atomic Lua scripts, and production-ready `RedisJobStore` graduation.
 - [x] **v0.7.0:** Production readiness hardening (atomic follow-ups, initial seeding, query-side candidate filtering, dual-clock lease watchdog, dynamic store binding, bounded concurrency, MySQL DATETIME(6), UTC calendars).
-- [ ] **Future:** Core job management API, metrics (Micrometer/OpenTelemetry), lock inspection, further production hardening, testkit improvements, adaptive delay, and operator ergonomics.
+- [x] **Core Job Management API & ExecutionContext:** `listJobOverviews`, `getJobOverview`, `listJobHistory`, `listExecutions`, `startJob`, persistent `pauseJob`/`resumeJob`, local `stopExecution`/`stopJob` (`ExecutionStatus.CANCELLED`), and `ExecutionContext` with cooperative shutdown `checkpoint()`.
+- [ ] **Future:** Metrics (Micrometer/OpenTelemetry), lock inspection, further production hardening, testkit improvements, adaptive delay, and operator ergonomics (DLQ replay, job reconciliation, cross-node stop).
 - [ ] **v0.8:** Android SQLite storage support.
 
 ## License

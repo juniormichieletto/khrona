@@ -75,30 +75,32 @@ class GeneratedBranchCoverageTest {
         construct<JobDefinition>(
             String::class.java,
             String::class.java,
-            Function2::class.java,
+            Function3::class.java,
             Trigger::class.java,
             RetryPolicy::class.java,
             ConcurrencyPolicy::class.java,
             MisfirePolicy::class.java,
             String::class.java,
             Duration::class.java,
+            Boolean::class.javaPrimitiveType!!,
             Int::class.javaPrimitiveType!!,
             Class.forName("kotlin.jvm.internal.DefaultConstructorMarker"),
-            args = arrayOf("job", "desc", handler, trigger, RetryPolicy.DEFAULT, ConcurrencyPolicy.ALLOW, MisfirePolicy.IGNORE, "lock", duration, 0, marker)
+            args = arrayOf("job", "desc", handler, trigger, RetryPolicy.DEFAULT, ConcurrencyPolicy.ALLOW, MisfirePolicy.IGNORE, "lock", duration, true, 0, marker)
         )
         construct<JobDefinition>(
             String::class.java,
             String::class.java,
-            Function2::class.java,
+            Function3::class.java,
             Trigger::class.java,
             RetryPolicy::class.java,
             ConcurrencyPolicy::class.java,
             MisfirePolicy::class.java,
             String::class.java,
             Duration::class.java,
+            Boolean::class.javaPrimitiveType!!,
             Int::class.javaPrimitiveType!!,
             Class.forName("kotlin.jvm.internal.DefaultConstructorMarker"),
-            args = arrayOf("job", "desc", handler, trigger, RetryPolicy.DEFAULT, ConcurrencyPolicy.ALLOW, MisfirePolicy.IGNORE, "lock", duration, 502, marker)
+            args = arrayOf("job", "desc", handler, trigger, RetryPolicy.DEFAULT, ConcurrencyPolicy.ALLOW, MisfirePolicy.IGNORE, "lock", duration, false, 1014, marker)
         )
 
         construct<RetryPolicy>(
@@ -315,17 +317,18 @@ class GeneratedBranchCoverageTest {
                 JobDefinition::class.java,
                 String::class.java,
                 String::class.java,
-                Function2::class.java,
+                Function3::class.java,
                 Trigger::class.java,
                 RetryPolicy::class.java,
                 ConcurrencyPolicy::class.java,
                 MisfirePolicy::class.java,
                 String::class.java,
                 Duration::class.java,
+                Boolean::class.javaPrimitiveType!!,
                 Int::class.javaPrimitiveType!!,
                 Any::class.java
             ),
-            arrayOf(job, "job-2", "desc", job.handler, job.trigger, retry, ConcurrencyPolicy.ALLOW, MisfirePolicy.IGNORE, "lock", Duration.ofSeconds(1), 0, null)
+            arrayOf(job, "job-2", "desc", job.handler, job.trigger, retry, ConcurrencyPolicy.ALLOW, MisfirePolicy.IGNORE, "lock", Duration.ofSeconds(1), true, 0, null)
         )
         invokeStatic(
             JobDefinition::class.java,
@@ -334,17 +337,18 @@ class GeneratedBranchCoverageTest {
                 JobDefinition::class.java,
                 String::class.java,
                 String::class.java,
-                Function2::class.java,
+                Function3::class.java,
                 Trigger::class.java,
                 RetryPolicy::class.java,
                 ConcurrencyPolicy::class.java,
                 MisfirePolicy::class.java,
                 String::class.java,
                 Duration::class.java,
+                Boolean::class.javaPrimitiveType!!,
                 Int::class.javaPrimitiveType!!,
                 Any::class.java
             ),
-            arrayOf(job, null, null, null, null, null, null, null, null, null, 511, null)
+            arrayOf(job, null, null, null, null, null, null, null, null, null, false, 1023, null)
         )
     }
 
@@ -383,8 +387,9 @@ class GeneratedBranchCoverageTest {
             MisfirePolicy::class.java,
             String::class.java,
             Duration::class.java,
+            Boolean::class.javaPrimitiveType!!,
             serializationMarker,
-            args = arrayOf(511, "job", "desc", IntervalTrigger(duration), RetryPolicy.DEFAULT, ConcurrencyPolicy.ALLOW, MisfirePolicy.IGNORE, "lock", duration, marker)
+            args = arrayOf(511, "job", "desc", IntervalTrigger(duration), RetryPolicy.DEFAULT, ConcurrencyPolicy.ALLOW, MisfirePolicy.IGNORE, "lock", duration, true, marker)
         )
         construct<RetryPolicy>(
             Int::class.javaPrimitiveType!!,
@@ -418,6 +423,161 @@ class GeneratedBranchCoverageTest {
         assertThrows(IllegalArgumentException::class.java) {
             CronTrigger("0 0 * * *", "job-context", "Invalid/Zone")
         }
+    }
+
+    @Test
+    fun `management DTOs and execution context cover generated branches and getters`() {
+        val marker = null
+        val instant = Instant.parse("2030-01-01T00:00:00Z")
+        val id = UUID.randomUUID()
+
+        construct<JobExecutionQuery>(
+            String::class.java,
+            Set::class.java,
+            Int::class.javaPrimitiveType!!,
+            Instant::class.java,
+            Instant::class.java,
+            Int::class.javaPrimitiveType!!,
+            Class.forName("kotlin.jvm.internal.DefaultConstructorMarker"),
+            args = arrayOf("job", setOf(ExecutionStatus.PENDING), 50, instant, instant, 0, marker)
+        )
+        construct<JobExecutionQuery>(
+            String::class.java,
+            Set::class.java,
+            Int::class.javaPrimitiveType!!,
+            Instant::class.java,
+            Instant::class.java,
+            Int::class.javaPrimitiveType!!,
+            Class.forName("kotlin.jvm.internal.DefaultConstructorMarker"),
+            args = arrayOf("job", setOf(ExecutionStatus.PENDING), 50, instant, instant, 31, marker)
+        )
+
+        val query = JobExecutionQuery(
+            jobId = "job",
+            statuses = setOf(ExecutionStatus.SUCCESS),
+            limit = 10,
+            scheduledFrom = instant,
+            scheduledUntil = instant.plusSeconds(60)
+        )
+        assertEquals("job", query.jobId)
+        assertEquals(setOf(ExecutionStatus.SUCCESS), query.statuses)
+        invokeStatic(
+            JobExecutionQuery::class.java,
+            "copy\$default",
+            arrayOf(
+                JobExecutionQuery::class.java,
+                String::class.java,
+                Set::class.java,
+                Int::class.javaPrimitiveType!!,
+                Instant::class.java,
+                Instant::class.java,
+                Int::class.javaPrimitiveType!!,
+                Any::class.java
+            ),
+            arrayOf(query, "other", setOf(ExecutionStatus.FAILED), 5, instant, instant.plusSeconds(10), 0, null)
+        )
+        invokeStatic(
+            JobExecutionQuery::class.java,
+            "copy\$default",
+            arrayOf(
+                JobExecutionQuery::class.java,
+                String::class.java,
+                Set::class.java,
+                Int::class.javaPrimitiveType!!,
+                Instant::class.java,
+                Instant::class.java,
+                Int::class.javaPrimitiveType!!,
+                Any::class.java
+            ),
+            arrayOf(query, null, null, 0, null, null, 31, null)
+        )
+
+        construct<JobControlResult>(
+            Boolean::class.javaPrimitiveType!!,
+            List::class.java,
+            String::class.java,
+            Int::class.javaPrimitiveType!!,
+            Class.forName("kotlin.jvm.internal.DefaultConstructorMarker"),
+            args = arrayOf(true, listOf(id), "ok", 0, marker)
+        )
+        construct<JobControlResult>(
+            Boolean::class.javaPrimitiveType!!,
+            List::class.java,
+            String::class.java,
+            Int::class.javaPrimitiveType!!,
+            Class.forName("kotlin.jvm.internal.DefaultConstructorMarker"),
+            args = arrayOf(false, listOf(id), "err", 6, marker)
+        )
+
+        val control = JobControlResult(success = true, affectedExecutionIds = listOf(id), reason = "done")
+        invokeStatic(
+            JobControlResult::class.java,
+            "copy\$default",
+            arrayOf(
+                JobControlResult::class.java,
+                Boolean::class.javaPrimitiveType!!,
+                List::class.java,
+                String::class.java,
+                Int::class.javaPrimitiveType!!,
+                Any::class.java
+            ),
+            arrayOf(control, false, emptyList<UUID>(), "no", 0, null)
+        )
+        invokeStatic(
+            JobControlResult::class.java,
+            "copy\$default",
+            arrayOf(
+                JobControlResult::class.java,
+                Boolean::class.javaPrimitiveType!!,
+                List::class.java,
+                String::class.java,
+                Int::class.javaPrimitiveType!!,
+                Any::class.java
+            ),
+            arrayOf(control, false, null, null, 7, null)
+        )
+
+        val exec = JobExecution(id = id, jobId = "job", scheduledAt = instant)
+        val progress = JobProgress(
+            latestExecution = exec,
+            nextPendingExecution = exec,
+            activeExecutions = listOf(exec),
+            countsByStatus = mapOf(ExecutionStatus.PENDING to 1)
+        )
+        val jobDef = JobDefinition(id = "job", trigger = IntervalTrigger(Duration.ofMinutes(1)), paused = true)
+        val overview = JobOverview(job = jobDef, paused = true, hasLocalHandler = false, progress = progress)
+
+        assertEquals(exec, progress.latestExecution)
+        assertEquals(exec, progress.nextPendingExecution)
+        assertEquals(listOf(exec), progress.activeExecutions)
+        assertEquals(mapOf(ExecutionStatus.PENDING to 1), progress.countsByStatus)
+        assertEquals(jobDef, overview.job)
+        assertEquals(true, overview.paused)
+        assertEquals(false, overview.hasLocalHandler)
+        assertEquals(progress, overview.progress)
+        assertEquals(true, control.success)
+        assertEquals(listOf(id), control.affectedExecutionIds)
+        assertEquals("done", control.reason)
+
+        val checkpointEx = ShutdownCheckpointException(id, "job")
+        assertEquals(id, checkpointEx.executionId)
+        assertEquals("job", checkpointEx.jobId)
+
+        val ctx = ExecutionContext(
+            executionId = id,
+            jobId = "job",
+            attempt = 2,
+            scheduledAt = instant,
+            payload = "data",
+            correlationId = "corr",
+            isStopping = { false }
+        )
+        assertEquals(id, ctx.executionId)
+        assertEquals("job", ctx.jobId)
+        assertEquals(2, ctx.attempt)
+        assertEquals(instant, ctx.scheduledAt)
+        assertEquals("data", ctx.payload)
+        assertEquals("corr", ctx.correlationId)
     }
 
     @Test
