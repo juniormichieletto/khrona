@@ -154,6 +154,11 @@ class JdbcCoverageTest : AbstractJdbcJobStoreTest() {
             assertFalse(dialect.isLockHeldSql(false).contains("id !="))
             assertTrue(dialect.isLockHeldSql(true).contains("id !="))
         }
+        assertEquals("SELECT definition_json FROM khrona_jobs WHERE id = ? FOR SHARE", PostgresDialect().selectJobForClaimSql())
+        assertEquals("SELECT definition_json FROM khrona_jobs WHERE id = ? FOR SHARE", MySqlDialect().selectJobForClaimSql())
+        assertEquals("SELECT definition_json FROM khrona_jobs WHERE id = ? FOR UPDATE", H2Dialect().selectJobForClaimSql())
+        assertEquals("SELECT definition_json FROM khrona_jobs WHERE id = ? FOR UPDATE", OracleDialect().selectJobForClaimSql())
+        assertEquals("SELECT definition_json FROM khrona_jobs WHERE id = ? FOR UPDATE", legacy.selectJobForClaimSql())
     }
 
     @Test
@@ -742,6 +747,30 @@ class JdbcCoverageTest : AbstractJdbcJobStoreTest() {
             store.saveExecution(JobExecution(jobId = job.id, scheduledAt = Instant.EPOCH))
             assertEquals(1, store.listEligibleExecutions(Instant.now(), 10, setOf(job.id)).size)
         }
+    }
+
+    @Test
+    fun `claimExecution handles null and corrupt job definition json safely`() = runBlocking {
+        val nullDefExec = JobExecution(jobId = "null-def-job", scheduledAt = Instant.EPOCH)
+        val corruptDefExec = JobExecution(jobId = "corrupt-def-job", scheduledAt = Instant.EPOCH)
+        dataSource.connection.use { conn ->
+            conn.prepareStatement("INSERT INTO khrona_jobs (id, definition_json) VALUES (?, ?)").use { stmt ->
+                stmt.setString(1, "null-def-job")
+                stmt.setNull(2, java.sql.Types.VARCHAR)
+                stmt.executeUpdate()
+                stmt.setString(1, "corrupt-def-job")
+                stmt.setString(2, "{corrupt-json")
+                stmt.executeUpdate()
+            }
+        }
+        store.saveExecution(nullDefExec)
+        store.saveExecution(corruptDefExec)
+
+        assertTrue(store.claimExecution(nullDefExec.id, "worker-1", Duration.ofMinutes(1)))
+        assertEquals(ExecutionStatus.CLAIMED, store.getExecution(nullDefExec.id)?.status)
+
+        assertFalse(store.claimExecution(corruptDefExec.id, "worker-1", Duration.ofMinutes(1)))
+        assertEquals(ExecutionStatus.PENDING, store.getExecution(corruptDefExec.id)?.status)
     }
 }
 

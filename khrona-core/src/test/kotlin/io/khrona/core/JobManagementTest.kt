@@ -1009,4 +1009,122 @@ class JobManagementTest {
         proceed.complete(Unit)
         stopDeferred.await()
     }
+
+    @Test
+    fun `poll racing with pauseJob does not claim execute or supersede after pause is persisted`() = runTest {
+        val clock = TestClock(testScheduler)
+        val backingStore = MockJobStore(clock)
+        val runs = AtomicInteger(0)
+        val pauseTriggered = AtomicBoolean(false)
+        lateinit var schedulerB: Scheduler
+        var pauseResult: JobControlResult? = null
+
+        val interceptingStore = object : JobStore by backingStore {
+            override suspend fun getJob(jobId: String): JobDefinition? {
+                val jobDef = backingStore.getJob(jobId)
+                if (jobId == "race-replace-job" && pauseTriggered.compareAndSet(false, true)) {
+                    pauseResult = schedulerB.pauseJob(jobId)
+                }
+                return jobDef
+            }
+        }
+
+        val configA = KhronaConfig().apply {
+            this.store = interceptingStore
+            job("race-replace-job") {
+                every(Duration.ofMinutes(1))
+                concurrencyPolicy = ConcurrencyPolicy.REPLACE
+                lockKey = "pause-race-lock"
+                execute { runs.incrementAndGet() }
+            }
+        }
+        val configB = KhronaConfig().apply {
+            this.store = backingStore
+        }
+
+        backingStore.saveJob(configA.jobs.single())
+        val existingRunning = JobExecution(
+            jobId = "race-replace-job",
+            scheduledAt = Instant.now(clock).minusSeconds(30),
+            status = ExecutionStatus.RUNNING,
+            workerId = "existing-worker",
+            expiresAt = Instant.now(clock).plusSeconds(300),
+            lockKey = "pause-race-lock"
+        )
+        val duePending = JobExecution(
+            jobId = "race-replace-job",
+            scheduledAt = Instant.now(clock).minusSeconds(1),
+            status = ExecutionStatus.PENDING,
+            lockKey = "pause-race-lock"
+        )
+        backingStore.saveExecution(existingRunning)
+        backingStore.saveExecution(duePending)
+
+        val schedulerA = Scheduler(configA, backgroundScope, clock)
+        schedulerB = Scheduler(configB, backgroundScope, clock)
+
+        schedulerA.pollAndExecute()
+        runCurrent()
+
+        assertTrue(pauseTriggered.get())
+        assertTrue(pauseResult?.success == true)
+        assertEquals(0, runs.get())
+        val pendingAfter = backingStore.getExecution(duePending.id)
+        assertEquals(ExecutionStatus.PENDING, pendingAfter?.status)
+        assertNull(pendingAfter?.workerId)
+        assertEquals(ExecutionStatus.RUNNING, backingStore.getExecution(existingRunning.id)?.status)
+    }
+
+    @Test
+    fun `misfire IGNORE poll racing with pauseJob does not claim or mark MISFIRED`() = runTest {
+        val clock = TestClock(testScheduler)
+        clock.let { advanceTimeBy(120_000) }
+        val backingStore = MockJobStore(clock)
+        val runs = AtomicInteger(0)
+        val pauseTriggered = AtomicBoolean(false)
+        lateinit var schedulerB: Scheduler
+        var pauseResult: JobControlResult? = null
+
+        val interceptingStore = object : JobStore by backingStore {
+            override suspend fun getJob(jobId: String): JobDefinition? {
+                val jobDef = backingStore.getJob(jobId)
+                if (jobId == "race-misfire-ignore" && pauseTriggered.compareAndSet(false, true)) {
+                    pauseResult = schedulerB.pauseJob(jobId)
+                }
+                return jobDef
+            }
+        }
+
+        val configA = KhronaConfig().apply {
+            this.store = interceptingStore
+            misfireThreshold = Duration.ofSeconds(5)
+            job("race-misfire-ignore") {
+                every(Duration.ofMinutes(1))
+                misfirePolicy = MisfirePolicy.IGNORE
+                execute { runs.incrementAndGet() }
+            }
+        }
+        val configB = KhronaConfig().apply {
+            this.store = backingStore
+        }
+
+        backingStore.saveJob(configA.jobs.single())
+        val overdue = JobExecution(
+            jobId = "race-misfire-ignore",
+            scheduledAt = Instant.now(clock).minusSeconds(60)
+        )
+        backingStore.saveExecution(overdue)
+
+        val schedulerA = Scheduler(configA, backgroundScope, clock)
+        schedulerB = Scheduler(configB, backgroundScope, clock)
+
+        schedulerA.pollAndExecute()
+        runCurrent()
+
+        assertTrue(pauseTriggered.get())
+        assertTrue(pauseResult?.success == true)
+        assertEquals(0, runs.get())
+        assertEquals(ExecutionStatus.PENDING, backingStore.getExecution(overdue.id)?.status)
+        assertEquals(1, backingStore.listExecutions(JobExecutionQuery(jobId = "race-misfire-ignore")).size)
+    }
 }

@@ -3,7 +3,12 @@ package io.khrona.store.jdbc
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import io.khrona.core.ExecutionStatus
+import io.khrona.core.JobDefinition
+import io.khrona.core.JobExecution
+import io.khrona.core.JobExecutionQuery
+import io.khrona.core.JobStore
 import io.khrona.core.KhronaConfig
+import io.khrona.core.MisfirePolicy
 import io.khrona.core.Scheduler
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -15,6 +20,9 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -24,6 +32,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
+import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -231,6 +240,160 @@ class JdbcManagementTest {
         } finally {
             scheduler1.stop()
             scheduler2.stop()
+        }
+    }
+
+    @Test
+    fun `poll racing with pauseJob does not claim execute or misfire against H2 JdbcJobStore`() = runBlocking {
+        val runs = AtomicInteger(0)
+        val inPoll = AtomicBoolean(false)
+        val normalPauseTriggered = CompletableDeferred<Unit>()
+        val ignorePauseTriggered = CompletableDeferred<Unit>()
+        val scope1 = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        val scope2 = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        lateinit var scheduler2: Scheduler
+
+        val interceptingStore = object : JobStore by store {
+            override suspend fun listEligibleExecutions(
+                now: Instant,
+                limit: Int,
+                jobIds: Set<String>?
+            ): List<JobExecution> {
+                return store.listEligibleExecutions(now, limit, jobIds).also {
+                    if (it.isNotEmpty()) {
+                        inPoll.set(true)
+                    }
+                }
+            }
+
+            override suspend fun getJob(jobId: String): JobDefinition? {
+                val jobDef = store.getJob(jobId)
+                if (inPoll.get() && jobDef != null && !jobDef.paused) {
+                    if (jobId == "h2-race-normal" && !normalPauseTriggered.isCompleted) {
+                        assertTrue(scheduler2.pauseJob(jobId).success)
+                        normalPauseTriggered.complete(Unit)
+                    } else if (jobId == "h2-race-ignore" && !ignorePauseTriggered.isCompleted) {
+                        assertTrue(scheduler2.pauseJob(jobId).success)
+                        ignorePauseTriggered.complete(Unit)
+                    }
+                }
+                return jobDef
+            }
+        }
+
+        val scheduler1 = Scheduler(
+            KhronaConfig().apply {
+                this.store = interceptingStore
+                pollingInterval = Duration.ofMillis(50)
+                misfireThreshold = Duration.ofSeconds(5)
+                shutdownTimeout = Duration.ofSeconds(2)
+                job("h2-race-normal") {
+                    every(Duration.ofHours(1))
+                    misfirePolicy = MisfirePolicy.FIRE_NOW
+                    execute { runs.incrementAndGet() }
+                }
+                job("h2-race-ignore") {
+                    every(Duration.ofHours(1))
+                    misfirePolicy = MisfirePolicy.IGNORE
+                    execute { runs.incrementAndGet() }
+                }
+            },
+            scope1
+        )
+        scheduler2 = Scheduler(
+            KhronaConfig().apply {
+                this.store = JdbcJobStore(dataSource)
+                pollingInterval = Duration.ofHours(1)
+                shutdownTimeout = Duration.ofSeconds(1)
+            },
+            scope2
+        )
+
+        try {
+            scheduler1.config.jobs.forEach { store.saveJob(it) }
+            val overdueTime = Instant.now().minusSeconds(60)
+            val normalExec = JobExecution(jobId = "h2-race-normal", scheduledAt = overdueTime)
+            val ignoreExec = JobExecution(jobId = "h2-race-ignore", scheduledAt = overdueTime)
+            store.saveExecution(normalExec)
+            store.saveExecution(ignoreExec)
+
+            scheduler1.start()
+            withTimeout(5_000) {
+                normalPauseTriggered.await()
+                ignorePauseTriggered.await()
+            }
+            delay(250)
+
+            assertEquals(0, runs.get())
+            assertEquals(ExecutionStatus.PENDING, store.getExecution(normalExec.id)?.status)
+            assertNull(store.getExecution(normalExec.id)?.workerId)
+            assertEquals(ExecutionStatus.PENDING, store.getExecution(ignoreExec.id)?.status)
+            assertNull(store.getExecution(ignoreExec.id)?.workerId)
+            assertEquals(1, store.listExecutions(JobExecutionQuery(jobId = "h2-race-ignore")).size)
+        } finally {
+            scheduler1.stop()
+            scheduler2.stop()
+        }
+    }
+
+    @Test
+    fun `claimExecution serializes with uncommitted pauseJob transaction on khrona_jobs`() = runBlocking {
+        val jobId = "h2-lock-pause-${UUID.randomUUID()}"
+        val scheduler = Scheduler(
+            KhronaConfig().apply {
+                this.store = this@JdbcManagementTest.store
+                job(jobId) {
+                    once()
+                    execute {}
+                }
+            },
+            CoroutineScope(Dispatchers.Default + SupervisorJob())
+        )
+        val jobDef = scheduler.config.jobs.single()
+        store.saveJob(jobDef)
+
+        val execution = JobExecution(jobId = jobId, scheduledAt = Instant.now().minusSeconds(5))
+        store.saveExecution(execution)
+
+        val txConn = dataSource.connection
+        var txOpen = true
+        try {
+            txConn.autoCommit = false
+            val currentJson = txConn.prepareStatement("SELECT definition_json FROM khrona_jobs WHERE id = ? FOR UPDATE").use { stmt ->
+                stmt.setString(1, jobId)
+                stmt.executeQuery().use { rs ->
+                    assertTrue(rs.next())
+                    rs.getString("definition_json")!!
+                }
+            }
+            val parsedObj = Json.parseToJsonElement(currentJson) as JsonObject
+            val pausedJson = Json.encodeToString(
+                JsonObject.serializer(),
+                JsonObject(parsedObj + ("paused" to JsonPrimitive(true)))
+            )
+            txConn.prepareStatement("UPDATE khrona_jobs SET definition_json = ? WHERE id = ?").use { stmt ->
+                stmt.setString(1, pausedJson)
+                stmt.setString(2, jobId)
+                assertEquals(1, stmt.executeUpdate())
+            }
+
+            val claimDeferred = async(Dispatchers.Default) {
+                store.claimExecution(execution.id, "worker-1", Duration.ofMinutes(1))
+            }
+            delay(100)
+            assertFalse(claimDeferred.isCompleted, "claimExecution must block while khrona_jobs row is locked FOR UPDATE")
+
+            txConn.commit()
+            txOpen = false
+
+            assertFalse(withTimeout(5_000) { claimDeferred.await() })
+            assertEquals(ExecutionStatus.PENDING, store.getExecution(execution.id)?.status)
+        } finally {
+            if (txOpen) {
+                runCatching { txConn.rollback() }
+            }
+            runCatching { txConn.autoCommit = true }
+            runCatching { txConn.close() }
         }
     }
 }

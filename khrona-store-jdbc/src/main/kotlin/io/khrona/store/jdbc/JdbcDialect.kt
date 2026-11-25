@@ -3,6 +3,8 @@ package io.khrona.store.jdbc
 interface JdbcDialect {
     fun upsertJobSql(): String
     fun upsertExecutionSql(): String
+    fun selectJobForClaimSql(): String =
+        "SELECT definition_json FROM khrona_jobs WHERE id = ? FOR UPDATE"
     fun claimExecutionSql(): String
     fun listEligibleExecutionsSql(): String
     fun listEligibleExecutionsSql(jobIdCount: Int): String = listEligibleExecutionsSql()
@@ -48,6 +50,9 @@ class PostgresDialect : JdbcDialect {
             correlation_id = EXCLUDED.correlation_id
         WHERE khrona_executions.status = 'PENDING' OR EXCLUDED.status <> 'PENDING'
     """.trimIndent()
+
+    override fun selectJobForClaimSql(): String =
+        "SELECT definition_json FROM khrona_jobs WHERE id = ? FOR SHARE"
 
     override fun claimExecutionSql(): String = """
         UPDATE khrona_executions
@@ -190,6 +195,9 @@ class MySqlDialect : JdbcDialect {
             correlation_id = IF(khrona_executions.status = 'PENDING' OR VALUES(status) <> 'PENDING', VALUES(correlation_id), khrona_executions.correlation_id),
             status = IF(khrona_executions.status = 'PENDING' OR VALUES(status) <> 'PENDING', VALUES(status), khrona_executions.status)
     """.trimIndent()
+
+    override fun selectJobForClaimSql(): String =
+        "SELECT definition_json FROM khrona_jobs WHERE id = ? FOR SHARE"
 
     override fun claimExecutionSql(): String = """
         UPDATE khrona_executions

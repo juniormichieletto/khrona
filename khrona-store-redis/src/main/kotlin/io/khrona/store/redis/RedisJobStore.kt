@@ -263,7 +263,8 @@ class RedisJobStore private constructor(
                 keys.claimed,
                 keys.running,
                 keys.claimLock(id.toString()),
-                keys.executionLocks(id.toString())
+                keys.executionLocks(id.toString()),
+                keys.jobs
             ),
             id.toString(),
             workerId,
@@ -762,6 +763,16 @@ class RedisJobStore private constructor(
             end
 
             local execution = cjson.decode(execution_json)
+            local job_id = execution['jobId']
+            if job_id ~= nil and job_id ~= cjson.null then
+                local job_json = redis.call('HGET', KEYS[7], job_id)
+                if job_json then
+                    local ok, job = pcall(cjson.decode, job_json)
+                    if not ok or type(job) ~= 'table' or job['paused'] == true then
+                        return 0
+                    end
+                end
+            end
             local status = execution['status'] or 'PENDING'
             local claimable = false
 

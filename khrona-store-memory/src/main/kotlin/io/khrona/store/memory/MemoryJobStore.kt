@@ -16,7 +16,9 @@ class MemoryJobStore : JobStore {
     private val seededExecutionsByJob = ConcurrentHashMap<String, UUID>()
 
     override suspend fun saveJob(job: JobDefinition) {
-        jobs[job.id] = job
+        synchronized(executions) {
+            jobs[job.id] = job
+        }
     }
 
     override suspend fun getJob(jobId: String): JobDefinition? = jobs[jobId]
@@ -116,10 +118,13 @@ class MemoryJobStore : JobStore {
             .take(limit)
     }
 
-    override suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: Duration): Boolean {
+    override suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: Duration): Boolean = synchronized(executions) {
         var claimed = false
         val now = Instant.now()
         executions.computeIfPresent(id) { _, exec ->
+            if (jobs[exec.jobId]?.paused == true) {
+                return@computeIfPresent exec
+            }
             val expiresAt = exec.expiresAt
             val isExpired = (exec.status == ExecutionStatus.CLAIMED || exec.status == ExecutionStatus.RUNNING) && expiresAt != null && expiresAt <= now
             if (exec.status == ExecutionStatus.PENDING || isExpired) {
@@ -134,7 +139,7 @@ class MemoryJobStore : JobStore {
                 exec
             }
         }
-        return claimed
+        claimed
     }
 
     override suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean {

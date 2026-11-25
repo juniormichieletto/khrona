@@ -503,7 +503,11 @@ class JdbcJobStore(
 
     override suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: Duration): Boolean = inJdbcContext {
         val dialect = getDialect()
-        withWriteConnection { conn ->
+        inTransaction { conn ->
+            val jobId = findExecutionJobId(conn, id) ?: return@inTransaction false
+            if (isJobPausedForClaim(conn, dialect, jobId)) {
+                return@inTransaction false
+            }
             conn.prepareStatementWithTimeout(dialect.claimExecutionSql()).use { stmt ->
                 val now = Instant.now()
                 val expiresAt = now.plus(leaseDuration)
@@ -514,6 +518,31 @@ class JdbcJobStore(
                 stmt.setString(5, id.toString())
                 stmt.setTimestamp(6, Timestamp.from(now), utcCalendar())
                 stmt.executeUpdate() > 0
+            }
+        }
+    }
+
+    private fun findExecutionJobId(conn: java.sql.Connection, id: UUID): String? {
+        conn.prepareStatementWithTimeout("SELECT job_id FROM khrona_executions WHERE id = ?").use { stmt ->
+            stmt.setString(1, id.toString())
+            stmt.executeQuery().use { rs ->
+                return if (rs.next()) rs.getString("job_id") else null
+            }
+        }
+    }
+
+    private fun isJobPausedForClaim(conn: java.sql.Connection, dialect: JdbcDialect, jobId: String): Boolean {
+        conn.prepareStatementWithTimeout(dialect.selectJobForClaimSql()).use { stmt ->
+            stmt.setString(1, jobId)
+            stmt.executeQuery().use { rs ->
+                if (!rs.next()) return false
+                val definitionJson = rs.getString("definition_json") ?: return false
+                return try {
+                    json.decodeFromString<JobDefinition>(definitionJson).paused
+                } catch (e: Exception) {
+                    log.error("[$jobId] Refusing claim because job definition JSON could not be parsed", e)
+                    true
+                }
             }
         }
     }

@@ -608,4 +608,52 @@ interface JobStoreContract {
         store.saveJob(activeJob.copy(paused = true))
         assertTrue(store.getJob(jobId)!!.paused)
     }
+
+    @Test
+    fun `claimExecution rejects paused jobs including expired claims and succeeds after resume`() = runTest {
+        val store = createStore()
+        val jobId = "paused-claim-contract-${UUID.randomUUID()}"
+        val job = JobDefinition(
+            id = jobId,
+            handler = {},
+            trigger = IntervalTrigger(Duration.ofMinutes(1)),
+            paused = true
+        )
+        store.saveJob(job)
+
+        val pendingExec = JobExecution(
+            jobId = jobId,
+            scheduledAt = Instant.now().minusSeconds(10),
+            status = ExecutionStatus.PENDING
+        )
+        store.saveExecution(pendingExec)
+
+        assertFalse(store.claimExecution(pendingExec.id, "worker-1", Duration.ofMinutes(1)))
+        val stillPending = store.getExecution(pendingExec.id)
+        assertEquals(ExecutionStatus.PENDING, stillPending?.status)
+        assertNull(stillPending?.workerId)
+        assertNull(stillPending?.expiresAt)
+
+        store.saveJob(job.copy(paused = false))
+        assertTrue(store.claimExecution(pendingExec.id, "worker-1", Duration.ofMinutes(1)))
+        assertEquals(ExecutionStatus.CLAIMED, store.getExecution(pendingExec.id)?.status)
+
+        val expiredExec = JobExecution(
+            jobId = jobId,
+            scheduledAt = Instant.now().minusSeconds(5),
+            status = ExecutionStatus.PENDING
+        )
+        store.saveExecution(expiredExec)
+        assertTrue(store.claimExecution(expiredExec.id, "worker-1", Duration.ofSeconds(-5)))
+
+        store.saveJob(job.copy(paused = true))
+        assertFalse(store.claimExecution(expiredExec.id, "worker-2", Duration.ofMinutes(1)))
+        assertEquals("worker-1", store.getExecution(expiredExec.id)?.workerId)
+
+        store.saveJob(job.copy(paused = false))
+        assertTrue(store.claimExecution(expiredExec.id, "worker-2", Duration.ofMinutes(1)))
+        assertEquals("worker-2", store.getExecution(expiredExec.id)?.workerId)
+
+        assertFalse(store.claimExecution(UUID.randomUUID(), "worker-1", Duration.ofMinutes(1)))
+    }
 }
