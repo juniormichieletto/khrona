@@ -15,7 +15,7 @@ The current generated-app E2E baseline covers Memory, PostgreSQL, and Redis via 
 
 ## Next Tasks
 - [x] Run Redis v0.4 release-readiness review
-- [ ] Implement Core Job Management API (v0.5)
+- [x] Implement Core Job Management API (v0.5)
 - [ ] Implement Metrics (Micrometer/OpenTelemetry) (v0.5)
 - [ ] Add lock inspection capabilities (v0.5)
 - [ ] Implement Android SQLite Store (v0.7)
@@ -80,7 +80,7 @@ The current generated-app E2E baseline covers Memory, PostgreSQL, and Redis via 
 - [x] Execution Retention & Cleanup (v0.5.1)
 - [x] Kotlin Duration DSL Support (v0.5.1)
 - [x] Misfire Policies (v0.5.0)
-- [ ] Core Job Management API
+- [x] Core Job Management API
 - [ ] Metrics & Tracing (Micrometer/OpenTelemetry)
 - [ ] Lock Inspection
 
@@ -97,7 +97,7 @@ The current generated-app E2E baseline covers Memory, PostgreSQL, and Redis via 
 - [ ] Establish Performance Test CI Pipeline to prevent regressions
 - [ ] Timezone-aware cron scheduling
 - [ ] Dead-letter queue tooling enhancements for inspection, replay, and cleanup
-- [ ] Job pause/disable support
+- [x] Job pause/disable support
 - [ ] Persisted job reconciliation for jobs removed from code
 - [ ] Cross-Database Adaptive Delay Scheduler
 - [ ] Adaptive scheduler configuration docs

@@ -3,9 +3,17 @@ package io.khrona.store.jdbc
 interface JdbcDialect {
     fun upsertJobSql(): String
     fun upsertExecutionSql(): String
+    fun selectJobForClaimSql(): String =
+        "SELECT definition_json FROM khrona_jobs WHERE id = ? FOR UPDATE"
     fun claimExecutionSql(): String
     fun listEligibleExecutionsSql(): String
     fun listEligibleExecutionsSql(jobIdCount: Int): String = listEligibleExecutionsSql()
+    fun listExecutionsSql(
+        hasJobId: Boolean,
+        statusCount: Int,
+        hasScheduledFrom: Boolean,
+        hasScheduledUntil: Boolean
+    ): String = buildListExecutionsSql(hasJobId, statusCount, hasScheduledFrom, hasScheduledUntil, "LIMIT ?")
 
     /**
      * Returns the SQL UPDATE statement used to atomically extend an active execution lease.
@@ -42,6 +50,9 @@ class PostgresDialect : JdbcDialect {
             correlation_id = EXCLUDED.correlation_id
         WHERE khrona_executions.status = 'PENDING' OR EXCLUDED.status <> 'PENDING'
     """.trimIndent()
+
+    override fun selectJobForClaimSql(): String =
+        "SELECT definition_json FROM khrona_jobs WHERE id = ? FOR SHARE"
 
     override fun claimExecutionSql(): String = """
         UPDATE khrona_executions
@@ -185,6 +196,9 @@ class MySqlDialect : JdbcDialect {
             status = IF(khrona_executions.status = 'PENDING' OR VALUES(status) <> 'PENDING', VALUES(status), khrona_executions.status)
     """.trimIndent()
 
+    override fun selectJobForClaimSql(): String =
+        "SELECT definition_json FROM khrona_jobs WHERE id = ? FOR SHARE"
+
     override fun claimExecutionSql(): String = """
         UPDATE khrona_executions
         SET status = 'CLAIMED', claimed_at = ?, claimed_by = ?, expires_at = ?, started_at = ?
@@ -279,6 +293,19 @@ class OracleDialect : JdbcDialect {
         FETCH FIRST ? ROWS ONLY
     """.trimIndent()
 
+    override fun listExecutionsSql(
+        hasJobId: Boolean,
+        statusCount: Int,
+        hasScheduledFrom: Boolean,
+        hasScheduledUntil: Boolean
+    ): String = buildListExecutionsSql(
+        hasJobId,
+        statusCount,
+        hasScheduledFrom,
+        hasScheduledUntil,
+        "FETCH FIRST ? ROWS ONLY"
+    )
+
     override fun heartbeatSql(): String = """
         UPDATE khrona_executions SET expires_at = ?
         WHERE id = ? AND claimed_by = ? AND expires_at > ? AND (status = 'CLAIMED' OR status = 'RUNNING')
@@ -326,3 +353,27 @@ private fun jobIdFilterClause(jobIdCount: Int): String =
     } else {
         ""
     }
+
+private fun buildListExecutionsSql(
+    hasJobId: Boolean,
+    statusCount: Int,
+    hasScheduledFrom: Boolean,
+    hasScheduledUntil: Boolean,
+    limitClause: String
+): String {
+    val conditions = buildList {
+        if (hasJobId) add("job_id = ?")
+        if (statusCount > 0) {
+            val placeholders = (1..statusCount).joinToString(",") { "?" }
+            add("status IN ($placeholders)")
+        }
+        if (hasScheduledFrom) add("scheduled_at >= ?")
+        if (hasScheduledUntil) add("scheduled_at <= ?")
+    }
+    val whereClause = if (conditions.isEmpty()) "" else "WHERE ${conditions.joinToString(" AND ")}\n        "
+    return """
+        SELECT * FROM khrona_executions
+        ${whereClause}ORDER BY scheduled_at DESC, id DESC
+        $limitClause
+    """.trimIndent()
+}

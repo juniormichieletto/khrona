@@ -28,6 +28,7 @@ class DslCoverageTest {
                 assertEquals("dsl-job", id)
                 assertEquals("covered", description)
                 assertEquals("dsl-lock", lockKey)
+                org.junit.jupiter.api.Assertions.assertFalse(paused)
                 retry {
                     maxAttempts = 2
                     initialDelay = Duration.ofMillis(10)
@@ -56,6 +57,7 @@ class DslCoverageTest {
         assertEquals(1.5, job.retryPolicy.factor)
         assertEquals(0.0, job.retryPolicy.jitter)
         assertEquals(Duration.ofSeconds(1), job.timeout)
+        org.junit.jupiter.api.Assertions.assertFalse(job.paused)
         assertTrue(job.trigger is OneTimeTrigger)
         org.junit.jupiter.api.Assertions.assertFalse(RetentionPolicy().apply { enabled = false }.enabled)
     }

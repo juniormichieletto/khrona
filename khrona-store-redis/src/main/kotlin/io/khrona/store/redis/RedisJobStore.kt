@@ -5,6 +5,7 @@ import io.khrona.core.ExecutionStatus
 import io.khrona.core.IntervalTrigger
 import io.khrona.core.JobDefinition
 import io.khrona.core.JobExecution
+import io.khrona.core.JobExecutionQuery
 import io.khrona.core.JobStore
 import io.khrona.core.OneTimeTrigger
 import io.khrona.core.Trigger
@@ -166,7 +167,7 @@ class RedisJobStore private constructor(
         nextExecution: JobExecution?
     ): Boolean = inRedisContext {
         val current = getStoredExecution(id) ?: return@inRedisContext false
-        val completedAt = if (status.isTerminal()) Instant.now().toString() else current.completedAt ?: ""
+        val completedAt = if (status.isTerminal) Instant.now().toString() else current.completedAt ?: ""
         val nextStored = nextExecution?.toStored()
         commands.eval<Long>(
             UPDATE_EXECUTION_STATUS_SCRIPT,
@@ -175,7 +176,7 @@ class RedisJobStore private constructor(
             id.toString(),
             status.name,
             error ?: "",
-            status.isTerminal().toString(),
+            status.isTerminal.toString(),
             completedAt,
             current.scheduledAt.toScore().toString(),
             keys.lockPrefix,
@@ -189,6 +190,26 @@ class RedisJobStore private constructor(
 
     override suspend fun getExecution(id: UUID): JobExecution? = inRedisContext {
         getStoredExecution(id)?.toExecution()
+    }
+
+    override suspend fun listExecutions(query: JobExecutionQuery): List<JobExecution> = inRedisContext {
+        val statuses = query.statuses
+        if (statuses != null && statuses.isEmpty()) return@inRedisContext emptyList()
+        val seen = LinkedHashMap<UUID, JobExecution>()
+        var cursor = io.lettuce.core.ScanCursor.INITIAL
+        do {
+            val scanResult = commands.hscan(
+                keys.executions,
+                cursor,
+                io.lettuce.core.ScanArgs.Builder.limit(1_000L)
+            )
+            cursor = scanResult
+            scanResult.map.values.forEach { raw ->
+                val execution = json.decodeFromString<StoredExecution>(raw).toExecution()
+                seen[execution.id] = execution
+            }
+        } while (!cursor.isFinished)
+        query.selectFrom(seen.values)
     }
 
     override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> =
@@ -242,7 +263,8 @@ class RedisJobStore private constructor(
                 keys.claimed,
                 keys.running,
                 keys.claimLock(id.toString()),
-                keys.executionLocks(id.toString())
+                keys.executionLocks(id.toString()),
+                keys.jobs
             ),
             id.toString(),
             workerId,
@@ -741,6 +763,16 @@ class RedisJobStore private constructor(
             end
 
             local execution = cjson.decode(execution_json)
+            local job_id = execution['jobId']
+            if job_id ~= nil and job_id ~= cjson.null then
+                local job_json = redis.call('HGET', KEYS[7], job_id)
+                if job_json then
+                    local ok, job = pcall(cjson.decode, job_json)
+                    if not ok or type(job) ~= 'table' or job['paused'] == true then
+                        return 0
+                    end
+                end
+            end
             local status = execution['status'] or 'PENDING'
             local claimable = false
 
@@ -1047,14 +1079,6 @@ private object RedisPayloadJson {
             is JsonArray -> map { it.toAny() }
         }
     }
-}
-
-private fun ExecutionStatus.isTerminal(): Boolean {
-    return this == ExecutionStatus.SUCCESS ||
-        this == ExecutionStatus.FAILED ||
-        this == ExecutionStatus.DEAD_LETTERED ||
-        this == ExecutionStatus.MISFIRED ||
-        this == ExecutionStatus.SUPERSEDED
 }
 
 private fun Instant.toScore(): String = toEpochMilli().toString()

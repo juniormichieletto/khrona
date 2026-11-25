@@ -71,7 +71,9 @@ interface JobStore {
     }
 
     suspend fun getExecution(id: UUID): JobExecution?
-    
+
+    suspend fun listExecutions(query: JobExecutionQuery = JobExecutionQuery()): List<JobExecution>
+
     suspend fun listEligibleExecutions(now: Instant, limit: Int = Int.MAX_VALUE): List<JobExecution>
 
     suspend fun listEligibleExecutions(
@@ -86,6 +88,17 @@ interface JobStore {
         return eligible.asSequence().filter { it.jobId in jobIds }.take(limit).toList()
     }
 
+    /**
+     * Atomically transitions an eligible (`PENDING`, or expired `CLAIMED`/`RUNNING`) execution [id]
+     * to `CLAIMED` for [workerId] with [leaseDuration].
+     *
+     * When a `JobDefinition` exists for the execution's `jobId` with `paused == true`, this method
+     * must atomically refuse the claim and return `false` without mutating the execution. If no
+     * `JobDefinition` is persisted for the execution's `jobId`, claiming proceeds normally.
+     *
+     * Built-in stores (`MemoryJobStore`, `JdbcJobStore`, `RedisJobStore`) serialize this pause check
+     * atomically with [saveJob]; production custom stores must enforce the same guarantee.
+     */
     suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: java.time.Duration): Boolean
     
     /**
@@ -114,7 +127,8 @@ interface JobStore {
             ExecutionStatus.SUCCESS,
             ExecutionStatus.FAILED,
             ExecutionStatus.MISFIRED,
-            ExecutionStatus.SUPERSEDED
+            ExecutionStatus.SUPERSEDED,
+            ExecutionStatus.CANCELLED
         ),
         limit: Int = 1000
     ): Int

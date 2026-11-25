@@ -3,6 +3,7 @@ package io.khrona.store.memory
 import io.khrona.core.ExecutionStatus
 import io.khrona.core.JobDefinition
 import io.khrona.core.JobExecution
+import io.khrona.core.JobExecutionQuery
 import io.khrona.core.JobStore
 import java.time.Duration
 import java.time.Instant
@@ -15,7 +16,9 @@ class MemoryJobStore : JobStore {
     private val seededExecutionsByJob = ConcurrentHashMap<String, UUID>()
 
     override suspend fun saveJob(job: JobDefinition) {
-        jobs[job.id] = job
+        synchronized(executions) {
+            jobs[job.id] = job
+        }
     }
 
     override suspend fun getJob(jobId: String): JobDefinition? = jobs[jobId]
@@ -80,12 +83,7 @@ class MemoryJobStore : JobStore {
                 workerId = if (status == ExecutionStatus.PENDING) null else exec.workerId,
                 startedAt = if (status == ExecutionStatus.PENDING) null else exec.startedAt,
                 expiresAt = if (status == ExecutionStatus.PENDING) null else exec.expiresAt,
-                completedAt = if (status == ExecutionStatus.SUCCESS ||
-                    status == ExecutionStatus.FAILED ||
-                    status == ExecutionStatus.DEAD_LETTERED ||
-                    status == ExecutionStatus.MISFIRED ||
-                    status == ExecutionStatus.SUPERSEDED
-                ) Instant.now() else exec.completedAt
+                completedAt = if (status.isTerminal) Instant.now() else exec.completedAt
             )
         }
         if (updated && nextExecution != null) {
@@ -95,6 +93,9 @@ class MemoryJobStore : JobStore {
     }
 
     override suspend fun getExecution(id: UUID): JobExecution? = executions[id]
+
+    override suspend fun listExecutions(query: JobExecutionQuery): List<JobExecution> =
+        query.selectFrom(executions.values)
 
     override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> {
         return listEligibleExecutions(now, limit, null)
@@ -117,10 +118,13 @@ class MemoryJobStore : JobStore {
             .take(limit)
     }
 
-    override suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: Duration): Boolean {
+    override suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: Duration): Boolean = synchronized(executions) {
         var claimed = false
         val now = Instant.now()
         executions.computeIfPresent(id) { _, exec ->
+            if (jobs[exec.jobId]?.paused == true) {
+                return@computeIfPresent exec
+            }
             val expiresAt = exec.expiresAt
             val isExpired = (exec.status == ExecutionStatus.CLAIMED || exec.status == ExecutionStatus.RUNNING) && expiresAt != null && expiresAt <= now
             if (exec.status == ExecutionStatus.PENDING || isExpired) {
@@ -135,7 +139,7 @@ class MemoryJobStore : JobStore {
                 exec
             }
         }
-        return claimed
+        claimed
     }
 
     override suspend fun heartbeat(id: UUID, workerId: String, leaseDuration: Duration): Boolean {

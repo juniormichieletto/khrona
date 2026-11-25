@@ -29,7 +29,7 @@ object UUIDSerializer : KSerializer<UUID> {
     override fun deserialize(decoder: Decoder): UUID = UUID.fromString(decoder.decodeString())
 }
 
-typealias JobHandler = suspend (payload: Any?) -> Unit
+typealias JobHandler = suspend ExecutionContext.(payload: Any?) -> Unit
 
 enum class ConcurrencyPolicy {
     ALLOW,
@@ -55,7 +55,8 @@ data class JobDefinition(
     val misfirePolicy: MisfirePolicy = MisfirePolicy.FIRE_NOW,
     val lockKey: String? = null,
     @Serializable(with = DurationSerializer::class)
-    val timeout: Duration? = null
+    val timeout: Duration? = null,
+    val paused: Boolean = false
 )
 
 @Serializable

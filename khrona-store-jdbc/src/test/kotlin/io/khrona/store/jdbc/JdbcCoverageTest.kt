@@ -104,7 +104,8 @@ class JdbcCoverageTest : AbstractJdbcJobStoreTest() {
                     ExecutionStatus.FAILED,
                     ExecutionStatus.DEAD_LETTERED,
                     ExecutionStatus.MISFIRED,
-                    ExecutionStatus.SUPERSEDED
+                    ExecutionStatus.SUPERSEDED,
+                    ExecutionStatus.CANCELLED
                 )
             ) {
                 assertTrue(updated?.completedAt != null)
@@ -115,11 +116,49 @@ class JdbcCoverageTest : AbstractJdbcJobStoreTest() {
     }
 
     @Test
-    fun `dialects cover lock exclusion sql branches`() {
+    fun `dialects cover lock exclusion and listExecutions sql branches`() {
+        val legacy = object : JdbcDialect {
+            override fun upsertJobSql(): String = ""
+            override fun upsertExecutionSql(): String = ""
+            override fun claimExecutionSql(): String = ""
+            override fun listEligibleExecutionsSql(): String = ""
+            override fun heartbeatSql(): String = ""
+            override fun isLockHeldSql(excludeId: Boolean): String = ""
+            override fun resetExpiredExecutionsSql(): String = ""
+            override fun cleanupCompletedExecutionsSql(statusCount: Int): String = ""
+        }
+        listOf(PostgresDialect(), H2Dialect(), MySqlDialect(), OracleDialect(), legacy).forEach { dialect ->
+            val unfiltered = dialect.listExecutionsSql(
+                hasJobId = false,
+                statusCount = 0,
+                hasScheduledFrom = false,
+                hasScheduledUntil = false
+            )
+            assertFalse(unfiltered.contains("WHERE"))
+            assertTrue(unfiltered.contains("ORDER BY scheduled_at DESC, id DESC"))
+
+            val filtered = dialect.listExecutionsSql(
+                hasJobId = true,
+                statusCount = 2,
+                hasScheduledFrom = true,
+                hasScheduledUntil = true
+            )
+            assertTrue(filtered.contains("WHERE job_id = ? AND status IN (?,?) AND scheduled_at >= ? AND scheduled_at <= ?"))
+            if (dialect is OracleDialect) {
+                assertTrue(filtered.contains("FETCH FIRST ? ROWS ONLY"))
+            } else {
+                assertTrue(filtered.contains("LIMIT ?"))
+            }
+        }
         listOf(PostgresDialect(), H2Dialect(), MySqlDialect(), OracleDialect()).forEach { dialect ->
             assertFalse(dialect.isLockHeldSql(false).contains("id !="))
             assertTrue(dialect.isLockHeldSql(true).contains("id !="))
         }
+        assertEquals("SELECT definition_json FROM khrona_jobs WHERE id = ? FOR SHARE", PostgresDialect().selectJobForClaimSql())
+        assertEquals("SELECT definition_json FROM khrona_jobs WHERE id = ? FOR SHARE", MySqlDialect().selectJobForClaimSql())
+        assertEquals("SELECT definition_json FROM khrona_jobs WHERE id = ? FOR UPDATE", H2Dialect().selectJobForClaimSql())
+        assertEquals("SELECT definition_json FROM khrona_jobs WHERE id = ? FOR UPDATE", OracleDialect().selectJobForClaimSql())
+        assertEquals("SELECT definition_json FROM khrona_jobs WHERE id = ? FOR UPDATE", legacy.selectJobForClaimSql())
     }
 
     @Test
@@ -708,6 +747,30 @@ class JdbcCoverageTest : AbstractJdbcJobStoreTest() {
             store.saveExecution(JobExecution(jobId = job.id, scheduledAt = Instant.EPOCH))
             assertEquals(1, store.listEligibleExecutions(Instant.now(), 10, setOf(job.id)).size)
         }
+    }
+
+    @Test
+    fun `claimExecution handles null and corrupt job definition json safely`() = runBlocking {
+        val nullDefExec = JobExecution(jobId = "null-def-job", scheduledAt = Instant.EPOCH)
+        val corruptDefExec = JobExecution(jobId = "corrupt-def-job", scheduledAt = Instant.EPOCH)
+        dataSource.connection.use { conn ->
+            conn.prepareStatement("INSERT INTO khrona_jobs (id, definition_json) VALUES (?, ?)").use { stmt ->
+                stmt.setString(1, "null-def-job")
+                stmt.setNull(2, java.sql.Types.VARCHAR)
+                stmt.executeUpdate()
+                stmt.setString(1, "corrupt-def-job")
+                stmt.setString(2, "{corrupt-json")
+                stmt.executeUpdate()
+            }
+        }
+        store.saveExecution(nullDefExec)
+        store.saveExecution(corruptDefExec)
+
+        assertTrue(store.claimExecution(nullDefExec.id, "worker-1", Duration.ofMinutes(1)))
+        assertEquals(ExecutionStatus.CLAIMED, store.getExecution(nullDefExec.id)?.status)
+
+        assertFalse(store.claimExecution(corruptDefExec.id, "worker-1", Duration.ofMinutes(1)))
+        assertEquals(ExecutionStatus.PENDING, store.getExecution(corruptDefExec.id)?.status)
     }
 }
 

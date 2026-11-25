@@ -372,12 +372,7 @@ class JdbcJobStore(
         conn.prepareStatementWithTimeout(sql).use { stmt ->
             stmt.setString(1, status.name)
             stmt.setString(2, error)
-            val isTerminal = status == ExecutionStatus.SUCCESS ||
-                status == ExecutionStatus.FAILED ||
-                status == ExecutionStatus.DEAD_LETTERED ||
-                status == ExecutionStatus.MISFIRED ||
-                status == ExecutionStatus.SUPERSEDED
-            stmt.setTimestamp(3, if (isTerminal) Timestamp.from(Instant.now()) else null, utcCalendar())
+            stmt.setTimestamp(3, if (status.isTerminal) Timestamp.from(Instant.now()) else null, utcCalendar())
             stmt.setString(4, id.toString())
             if (workerId != null) {
                 stmt.setString(5, workerId)
@@ -398,6 +393,46 @@ class JdbcJobStore(
             }
         }
         return@inJdbcContext null
+    }
+
+    override suspend fun listExecutions(query: JobExecutionQuery): List<JobExecution> = inJdbcContext {
+        val statuses = query.statuses
+        if (statuses != null && statuses.isEmpty()) return@inJdbcContext emptyList()
+        val dialect = getDialect()
+        val statusList = statuses?.toList().orEmpty()
+        val scheduledFrom = query.scheduledFrom
+        val scheduledUntil = query.scheduledUntil
+        val sql = dialect.listExecutionsSql(
+            hasJobId = query.jobId != null,
+            statusCount = statusList.size,
+            hasScheduledFrom = scheduledFrom != null,
+            hasScheduledUntil = scheduledUntil != null
+        )
+        val executions = mutableListOf<JobExecution>()
+        dataSource.connection.use { conn ->
+            conn.prepareStatementWithTimeout(sql).use { stmt ->
+                var paramIndex = 1
+                if (query.jobId != null) {
+                    stmt.setString(paramIndex++, query.jobId)
+                }
+                statusList.forEach { status ->
+                    stmt.setString(paramIndex++, status.name)
+                }
+                if (scheduledFrom != null) {
+                    stmt.setTimestamp(paramIndex++, Timestamp.from(scheduledFrom), utcCalendar())
+                }
+                if (scheduledUntil != null) {
+                    stmt.setTimestamp(paramIndex++, Timestamp.from(scheduledUntil), utcCalendar())
+                }
+                stmt.setInt(paramIndex, query.limit)
+                stmt.executeQuery().use { rs ->
+                    while (rs.next()) {
+                        executions.add(mapExecution(rs))
+                    }
+                }
+            }
+        }
+        return@inJdbcContext executions
     }
 
     override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> =
@@ -468,7 +503,11 @@ class JdbcJobStore(
 
     override suspend fun claimExecution(id: UUID, workerId: String, leaseDuration: Duration): Boolean = inJdbcContext {
         val dialect = getDialect()
-        withWriteConnection { conn ->
+        inTransaction { conn ->
+            val jobId = findExecutionJobId(conn, id) ?: return@inTransaction false
+            if (isJobPausedForClaim(conn, dialect, jobId)) {
+                return@inTransaction false
+            }
             conn.prepareStatementWithTimeout(dialect.claimExecutionSql()).use { stmt ->
                 val now = Instant.now()
                 val expiresAt = now.plus(leaseDuration)
@@ -479,6 +518,31 @@ class JdbcJobStore(
                 stmt.setString(5, id.toString())
                 stmt.setTimestamp(6, Timestamp.from(now), utcCalendar())
                 stmt.executeUpdate() > 0
+            }
+        }
+    }
+
+    private fun findExecutionJobId(conn: java.sql.Connection, id: UUID): String? {
+        conn.prepareStatementWithTimeout("SELECT job_id FROM khrona_executions WHERE id = ?").use { stmt ->
+            stmt.setString(1, id.toString())
+            stmt.executeQuery().use { rs ->
+                return if (rs.next()) rs.getString("job_id") else null
+            }
+        }
+    }
+
+    private fun isJobPausedForClaim(conn: java.sql.Connection, dialect: JdbcDialect, jobId: String): Boolean {
+        conn.prepareStatementWithTimeout(dialect.selectJobForClaimSql()).use { stmt ->
+            stmt.setString(1, jobId)
+            stmt.executeQuery().use { rs ->
+                if (!rs.next()) return false
+                val definitionJson = rs.getString("definition_json") ?: return false
+                return try {
+                    json.decodeFromString<JobDefinition>(definitionJson).paused
+                } catch (e: Exception) {
+                    log.error("[$jobId] Refusing claim because job definition JSON could not be parsed", e)
+                    true
+                }
             }
         }
     }

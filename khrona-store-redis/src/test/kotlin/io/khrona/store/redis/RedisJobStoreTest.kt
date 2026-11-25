@@ -895,6 +895,27 @@ class RedisJobStoreTest : JobStoreContract {
         assertEquals(1, slots.size, "All keys in a hash-tagged namespace must map to the exact same Redis Cluster slot")
     }
 
+    @Test
+    fun `claimExecution safely rejects corrupt job definition JSON without throwing`() = runTest {
+        val namespace = "corrupt-job-claim-${UUID.randomUUID()}"
+        val store = RedisJobStore(redisUri(), namespace = namespace).also { stores.add(it) }
+        val execution = JobExecution(
+            jobId = "corrupt-job-def",
+            scheduledAt = Instant.now().minusSeconds(5),
+            status = ExecutionStatus.PENDING
+        )
+        store.saveExecution(execution)
+
+        RedisClient.create(redisUri()).use { client ->
+            client.connect().use { conn ->
+                conn.sync().hset("$namespace:jobs", "corrupt-job-def", "{not-valid-json")
+            }
+        }
+
+        assertFalse(store.claimExecution(execution.id, "worker-1", Duration.ofMinutes(1)))
+        assertEquals(ExecutionStatus.PENDING, store.getExecution(execution.id)?.status)
+    }
+
     @AfterEach
     fun tearDown() {
         stores.forEach { it.close() }

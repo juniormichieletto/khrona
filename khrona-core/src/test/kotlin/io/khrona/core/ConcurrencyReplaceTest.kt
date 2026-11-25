@@ -219,6 +219,8 @@ class ConcurrencyReplaceTest {
 
         override suspend fun getExecution(id: UUID): JobExecution? = executions[id]
 
+        override suspend fun listExecutions(query: JobExecutionQuery): List<JobExecution> = emptyList()
+
         override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> {
             return executions.values
                 .filter { it.status == ExecutionStatus.PENDING && it.scheduledAt <= now }
