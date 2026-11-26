@@ -916,6 +916,17 @@ class RedisJobStoreTest : JobStoreContract {
         assertEquals(ExecutionStatus.PENDING, store.getExecution(execution.id)?.status)
     }
 
+    @Test
+    fun `checkHealth returns DOWN when Redis connection is closed`() = runTest {
+        val store = RedisJobStore(redisUri(), namespace = "closed-health-${UUID.randomUUID()}")
+        assertEquals(io.khrona.core.HealthStatus.UP, store.checkHealth().status)
+
+        store.close()
+        val down = store.checkHealth()
+        assertEquals(io.khrona.core.HealthStatus.DOWN, down.status)
+        assertNotNull(down.errorType)
+    }
+
     @AfterEach
     fun tearDown() {
         stores.forEach { it.close() }

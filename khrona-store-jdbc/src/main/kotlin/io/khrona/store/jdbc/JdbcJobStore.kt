@@ -400,31 +400,17 @@ class JdbcJobStore(
         if (statuses != null && statuses.isEmpty()) return@inJdbcContext emptyList()
         val dialect = getDialect()
         val statusList = statuses?.toList().orEmpty()
-        val scheduledFrom = query.scheduledFrom
-        val scheduledUntil = query.scheduledUntil
         val sql = dialect.listExecutionsSql(
             hasJobId = query.jobId != null,
             statusCount = statusList.size,
-            hasScheduledFrom = scheduledFrom != null,
-            hasScheduledUntil = scheduledUntil != null
+            hasScheduledFrom = query.scheduledFrom != null,
+            hasScheduledUntil = query.scheduledUntil != null
         )
         val executions = mutableListOf<JobExecution>()
         dataSource.connection.use { conn ->
             conn.prepareStatementWithTimeout(sql).use { stmt ->
-                var paramIndex = 1
-                if (query.jobId != null) {
-                    stmt.setString(paramIndex++, query.jobId)
-                }
-                statusList.forEach { status ->
-                    stmt.setString(paramIndex++, status.name)
-                }
-                if (scheduledFrom != null) {
-                    stmt.setTimestamp(paramIndex++, Timestamp.from(scheduledFrom), utcCalendar())
-                }
-                if (scheduledUntil != null) {
-                    stmt.setTimestamp(paramIndex++, Timestamp.from(scheduledUntil), utcCalendar())
-                }
-                stmt.setInt(paramIndex, query.limit)
+                val nextParamIndex = bindExecutionQueryParams(stmt, query, statusList)
+                stmt.setInt(nextParamIndex, query.limit)
                 stmt.executeQuery().use { rs ->
                     while (rs.next()) {
                         executions.add(mapExecution(rs))
@@ -433,6 +419,77 @@ class JdbcJobStore(
             }
         }
         return@inJdbcContext executions
+    }
+
+    override suspend fun countExecutions(query: JobExecutionQuery): Long = inJdbcContext {
+        val statuses = query.statuses
+        if (statuses != null && statuses.isEmpty()) return@inJdbcContext 0L
+        val dialect = getDialect()
+        val statusList = statuses?.toList().orEmpty()
+        val sql = dialect.countExecutionsSql(
+            hasJobId = query.jobId != null,
+            statusCount = statusList.size,
+            hasScheduledFrom = query.scheduledFrom != null,
+            hasScheduledUntil = query.scheduledUntil != null
+        )
+        dataSource.connection.use { conn ->
+            conn.prepareStatementWithTimeout(sql).use { stmt ->
+                bindExecutionQueryParams(stmt, query, statusList)
+                stmt.executeQuery().use { rs ->
+                    if (rs.next()) rs.getLong(1) else 0L
+                }
+            }
+        }
+    }
+
+    override suspend fun checkHealth(): StoreHealth {
+        val startNanos = System.nanoTime()
+        return try {
+            inJdbcContext {
+                val dialect = getDialect()
+                dataSource.connection.use { conn ->
+                    conn.prepareStatementWithTimeout(dialect.healthCheckSql()).use { stmt ->
+                        stmt.executeQuery().use { rs ->
+                            rs.next()
+                        }
+                    }
+                }
+            }
+            StoreHealth(
+                status = HealthStatus.UP,
+                latency = Duration.ofNanos((System.nanoTime() - startNanos).coerceAtLeast(0L))
+            )
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            StoreHealth(
+                status = HealthStatus.DOWN,
+                latency = Duration.ofNanos((System.nanoTime() - startNanos).coerceAtLeast(0L)),
+                errorType = ErrorDiagnosticFormatter.typeName(e),
+                detail = e.message
+            )
+        }
+    }
+
+    private fun bindExecutionQueryParams(
+        stmt: java.sql.PreparedStatement,
+        query: JobExecutionQuery,
+        statusList: List<ExecutionStatus>
+    ): Int {
+        var paramIndex = 1
+        query.jobId?.let { jobId ->
+            stmt.setString(paramIndex++, jobId)
+        }
+        statusList.forEach { status ->
+            stmt.setString(paramIndex++, status.name)
+        }
+        query.scheduledFrom?.let { from ->
+            stmt.setTimestamp(paramIndex++, Timestamp.from(from), utcCalendar())
+        }
+        query.scheduledUntil?.let { until ->
+            stmt.setTimestamp(paramIndex++, Timestamp.from(until), utcCalendar())
+        }
+        return paramIndex
     }
 
     override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> =

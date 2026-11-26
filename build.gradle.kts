@@ -155,7 +155,7 @@ subprojects {
         }
     }
 
-    if (project.name in setOf("khrona-core", "khrona-ktor", "khrona-store-memory", "khrona-store-jdbc")) {
+    if (project.name in setOf("khrona-core", "khrona-ktor", "khrona-store-memory", "khrona-store-jdbc", "khrona-observability")) {
         val pitestCli = configurations.create("pitestCli")
         dependencies {
             add("pitestCli", "org.pitest:pitest-command-line:1.25.9")

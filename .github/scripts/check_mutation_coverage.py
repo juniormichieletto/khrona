@@ -14,6 +14,7 @@ MIN_THRESHOLD_PCT = 90.00
 MODULES = [
     "khrona-core",
     "khrona-ktor",
+    "khrona-observability",
     "khrona-store-jdbc",
     "khrona-store-memory",
 ]

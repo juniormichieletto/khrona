@@ -1,5 +1,7 @@
 package io.khrona.core
 
+import kotlinx.coroutines.CancellationException
+import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 
@@ -73,6 +75,29 @@ interface JobStore {
     suspend fun getExecution(id: UUID): JobExecution?
 
     suspend fun listExecutions(query: JobExecutionQuery = JobExecutionQuery()): List<JobExecution>
+
+    suspend fun countExecutions(query: JobExecutionQuery = JobExecutionQuery()): Long =
+        listExecutions(query.copy(limit = Int.MAX_VALUE)).size.toLong()
+
+    suspend fun checkHealth(): StoreHealth {
+        val startNanos = System.nanoTime()
+        return try {
+            listJobs()
+            StoreHealth(
+                status = HealthStatus.UP,
+                latency = Duration.ofNanos((System.nanoTime() - startNanos).coerceAtLeast(0L))
+            )
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            StoreHealth(
+                status = HealthStatus.DOWN,
+                latency = Duration.ofNanos((System.nanoTime() - startNanos).coerceAtLeast(0L)),
+                errorType = ErrorDiagnosticFormatter.typeName(e),
+                detail = e.message
+            )
+        }
+    }
 
     suspend fun listEligibleExecutions(now: Instant, limit: Int = Int.MAX_VALUE): List<JobExecution>
 

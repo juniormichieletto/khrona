@@ -1,6 +1,7 @@
 package io.khrona.core.testing
 
 import io.khrona.core.ExecutionStatus
+import io.khrona.core.HealthStatus
 import io.khrona.core.JobDefinition
 import io.khrona.core.JobExecution
 import io.khrona.core.JobExecutionQuery
@@ -655,5 +656,66 @@ interface JobStoreContract {
         assertEquals("worker-2", store.getExecution(expiredExec.id)?.workerId)
 
         assertFalse(store.claimExecution(UUID.randomUUID(), "worker-1", Duration.ofMinutes(1)))
+    }
+
+    @Test
+    fun `checkHealth reports UP with non-negative latency on a healthy store`() = runTest {
+        val store = createStore()
+        val health = store.checkHealth()
+
+        assertEquals(HealthStatus.UP, health.status)
+        assertFalse(health.latency.isNegative)
+        assertNull(health.errorType)
+    }
+
+    @Test
+    fun `countExecutions counts all matching executions across filters without applying query limit`() = runTest {
+        val store = createStore()
+        val runId = UUID.randomUUID()
+        val targetJob = "count-target-$runId"
+        val otherJob = "count-other-$runId"
+        val base = Instant.parse("2031-03-01T12:00:00Z")
+
+        val dlq1 = JobExecution(jobId = targetJob, scheduledAt = base, status = ExecutionStatus.DEAD_LETTERED)
+        val dlq2 = JobExecution(jobId = targetJob, scheduledAt = base.plusSeconds(10), status = ExecutionStatus.DEAD_LETTERED)
+        val dlq3 = JobExecution(jobId = targetJob, scheduledAt = base.plusSeconds(20), status = ExecutionStatus.DEAD_LETTERED)
+        val successSameJob = JobExecution(jobId = targetJob, scheduledAt = base.plusSeconds(30), status = ExecutionStatus.SUCCESS)
+        val dlqOtherJob = JobExecution(jobId = otherJob, scheduledAt = base.plusSeconds(15), status = ExecutionStatus.DEAD_LETTERED)
+
+        listOf(dlq1, dlq2, dlq3, successSameJob, dlqOtherJob).forEach { store.saveExecution(it) }
+
+        assertEquals(
+            3L,
+            store.countExecutions(
+                JobExecutionQuery(
+                    jobId = targetJob,
+                    statuses = setOf(ExecutionStatus.DEAD_LETTERED),
+                    limit = 1
+                )
+            )
+        )
+        assertEquals(
+            4L,
+            store.countExecutions(JobExecutionQuery(jobId = targetJob, limit = 1))
+        )
+        assertEquals(
+            4L,
+            store.countExecutions(JobExecutionQuery(statuses = setOf(ExecutionStatus.DEAD_LETTERED), limit = 1))
+        )
+        assertEquals(
+            0L,
+            store.countExecutions(JobExecutionQuery(jobId = targetJob, statuses = emptySet()))
+        )
+        assertEquals(
+            2L,
+            store.countExecutions(
+                JobExecutionQuery(
+                    jobId = targetJob,
+                    statuses = setOf(ExecutionStatus.DEAD_LETTERED),
+                    scheduledFrom = base.plusSeconds(10),
+                    scheduledUntil = base.plusSeconds(20)
+                )
+            )
+        )
     }
 }
