@@ -1,6 +1,7 @@
 package io.khrona.core
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import org.slf4j.LoggerFactory
@@ -194,10 +195,7 @@ internal suspend fun <T> invokeAroundSafely(
     block: suspend () -> T
 ): T {
     val blockInvoked = AtomicBoolean(false)
-    var blockCompleted = false
-    var blockFailed = false
-    var blockResult: T? = null
-    var blockError: Throwable? = null
+    val blockOutcome = CompletableDeferred<Result<T>>()
 
     val wrappedBlock: suspend () -> T = {
         if (!blockInvoked.compareAndSet(false, true)) {
@@ -205,12 +203,10 @@ internal suspend fun <T> invokeAroundSafely(
         }
         try {
             val value = block()
-            blockResult = value
-            blockCompleted = true
+            blockOutcome.complete(Result.success(value))
             value
         } catch (t: Throwable) {
-            blockFailed = true
-            blockError = t
+            blockOutcome.complete(Result.failure(t))
             throw t
         }
     }
@@ -218,24 +214,19 @@ internal suspend fun <T> invokeAroundSafely(
     try {
         observer.aroundExecution(context, wrappedBlock)
     } catch (t: Throwable) {
-        if (blockFailed) throw blockError!!
-        if (t is CancellationException && !currentCoroutineContext().isActive) throw t
-        if (blockCompleted) {
-            observerLog.warn("KhronaObserver.aroundExecution failed after handler completed", t)
-            @Suppress("UNCHECKED_CAST")
-            return blockResult as T
+        if (blockInvoked.get()) {
+            if (!blockOutcome.isCompleted && t is CancellationException && !currentCoroutineContext().isActive) {
+                throw t
+            }
+            return blockOutcome.await().getOrThrow()
         }
+        if (t is CancellationException && !currentCoroutineContext().isActive) throw t
         observerLog.warn("KhronaObserver.aroundExecution failed before invoking handler", t)
         return block()
     }
 
-    if (blockFailed) {
-        observerLog.warn("KhronaObserver.aroundExecution swallowed handler failure; rethrowing original exception")
-        throw blockError!!
-    }
-    if (blockCompleted) {
-        @Suppress("UNCHECKED_CAST")
-        return blockResult as T
+    if (blockInvoked.get()) {
+        return blockOutcome.await().getOrThrow()
     }
     observerLog.warn("KhronaObserver.aroundExecution returned without invoking handler; executing handler directly")
     return block()

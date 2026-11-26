@@ -6,6 +6,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
@@ -13,6 +14,7 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestCoroutineScheduler
@@ -33,6 +35,7 @@ import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
+import java.time.ZoneOffset
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
@@ -1488,7 +1491,7 @@ class ObservabilityTest {
         }
         val originalError = IllegalStateException("first-attempt-failed")
         val thrown = assertThrows(IllegalStateException::class.java) {
-            runBlocking<Unit> {
+            runBlocking {
                 invokeAroundSafely(retryingObserver, ctx) {
                     if (retryAfterFailCount.incrementAndGet() == 1) {
                         throw originalError
@@ -1662,7 +1665,7 @@ class ObservabilityTest {
         assertEquals("remote-corr-A", supersededCtx.correlationId)
         assertTrue(elapsed >= Duration.ofSeconds(3))
 
-        // Fallback when store.getExecution(supersededId) throws or returns null still emits SUPERSEDED
+        // When store.getExecution(supersededId) throws or returns null, replacement succeeds without misattributing jobId
         val missingId = UUID.randomUUID()
         val throwingId = UUID.randomUUID()
         val fallbackCompleted = CopyOnWriteArrayList<ExecutionContext>()
@@ -1676,6 +1679,7 @@ class ObservabilityTest {
                 return fallbackBase.getExecution(id)
             }
         }
+        val fallbackRan = AtomicBoolean(false)
         val fallbackWorker = Scheduler(
             KhronaConfig().apply {
                 this.store = fallbackStore
@@ -1695,7 +1699,7 @@ class ObservabilityTest {
                     at(Instant.now(clock).plusSeconds(3600))
                     concurrencyPolicy = ConcurrencyPolicy.REPLACE
                     lockKey = "fallback-lock"
-                    execute {}
+                    execute { fallbackRan.set(true) }
                 }
             },
             backgroundScope,
@@ -1707,6 +1711,110 @@ class ObservabilityTest {
         advanceTimeBy(5.milliseconds)
         runCurrent()
 
-        assertEquals(setOf(missingId, throwingId), fallbackCompleted.map { it.executionId }.toSet())
+        assertTrue(fallbackRan.get())
+        assertTrue(fallbackCompleted.isEmpty())
+    }
+
+    @Test
+    fun `a timeout local to dead letter sampling leaves the polling loop healthy`() = runTest {
+        var sampleAttempts = 0
+        val backend = object : MockJobStore() {
+            override suspend fun countExecutions(query: JobExecutionQuery): Long {
+                sampleAttempts++
+                return withTimeout(5) {
+                    delay(10)
+                    0L
+                }
+            }
+        }
+        val config = KhronaConfig().apply {
+            store = backend
+            observer = object : KhronaObserver {}
+        }
+        val scheduler = Scheduler(config, backgroundScope)
+
+        scheduler.start()
+        advanceTimeBy(6)
+
+        assertEquals(1, sampleAttempts)
+        assertEquals(HealthStatus.UP, scheduler.health().status)
+    }
+
+    @Test
+    fun `observer failure while the handler is suspended does not rerun it`() = runTest {
+        val releaseHandler = CompletableDeferred<Unit>()
+        var handlerCalls = 0
+        val observer = object : KhronaObserver {
+            override suspend fun <T> aroundExecution(context: ExecutionContext, block: suspend () -> T): T {
+                // Start the handler up to its first suspension before the observer fails.
+                backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) { block() }
+                error("Observer failed while the handler was suspended")
+            }
+        }
+        val context = sampleContext(jobId = "test-job")
+
+        val execution = async {
+            invokeAroundSafely(observer, context) {
+                handlerCalls++
+                releaseHandler.await()
+                "handler result"
+            }
+        }
+        runCurrent()
+        releaseHandler.complete(Unit)
+
+        assertEquals("handler result", execution.await())
+        assertEquals(1, handlerCalls)
+    }
+
+    @Test
+    fun `failed remote lookup does not attribute supersession to the replacing job`() = runTest {
+        val clock = Clock.fixed(Instant.EPOCH, ZoneOffset.UTC)
+        val base = MockJobStore(clock)
+        val remote = JobExecution(
+            jobId = "older-job",
+            lockKey = "shared",
+            status = ExecutionStatus.RUNNING,
+            workerId = "other-node",
+            scheduledAt = Instant.EPOCH,
+            expiresAt = Instant.EPOCH.plusSeconds(60)
+        )
+        val replacement = JobExecution(jobId = "newer-job", lockKey = remote.lockKey, scheduledAt = Instant.EPOCH)
+        val backend = object : JobStore by base {
+            override suspend fun getExecution(id: UUID): JobExecution? {
+                if (id == remote.id) error("Superseded execution lookup failed")
+                return base.getExecution(id)
+            }
+        }
+        val supersededJobs = mutableListOf<String>()
+        val config = KhronaConfig().apply {
+            store = backend
+            observer = object : KhronaObserver {
+                override fun onExecutionCompleted(
+                    context: ExecutionContext,
+                    outcome: ExecutionOutcome,
+                    duration: Duration,
+                    errorType: String?
+                ) {
+                    if (outcome == ExecutionOutcome.SUPERSEDED) supersededJobs.add(context.jobId)
+                }
+            }
+            job(replacement.jobId) {
+                at(Instant.EPOCH.plusSeconds(3600))
+                concurrencyPolicy = ConcurrencyPolicy.REPLACE
+                lockKey = replacement.lockKey
+                execute {}
+            }
+        }
+        val scheduler = Scheduler(config, backgroundScope, clock)
+        base.saveJob(config.jobs.single())
+        base.saveExecution(remote)
+        base.saveExecution(replacement)
+
+        scheduler.pollAndExecute()
+        runCurrent()
+
+        assertEquals(ExecutionStatus.SUPERSEDED, base.getExecution(remote.id)?.status)
+        assertFalse(replacement.jobId in supersededJobs, "Reported superseded jobs: $supersededJobs")
     }
 }

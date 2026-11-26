@@ -141,7 +141,8 @@ class Scheduler(
                             )
                             safeNotify { config.observer.onDeadLetterCountSampled(deadLetterCount) }
                         } catch (ce: CancellationException) {
-                            throw ce
+                            if (!isActive) throw ce
+                            log.warn("Dead-letter execution count sampling timed out or was cancelled", ce)
                         } catch (e: Exception) {
                             log.warn("Failed to sample dead-letter execution count", e)
                         } finally {
@@ -424,7 +425,7 @@ class Scheduler(
                                         startedAtNanos = supersededClaim.startedAtNanos.get()
                                     )
                                 } else {
-                                    emitRemoteSupersededCompletion(id, execution, store)
+                                    emitRemoteSupersededCompletion(id, store)
                                 }
                                 activeJobs[id]?.cancel("Superseded by a new execution for lock ${jobDef.lockKey}")
                             }
@@ -512,31 +513,24 @@ class Scheduler(
 
     private suspend fun emitRemoteSupersededCompletion(
         supersededId: UUID,
-        replacingExecution: JobExecution,
         store: JobStore
     ) {
         val supersededExecution = try {
             store.getExecution(supersededId)
         } catch (ce: CancellationException) {
-            throw ce
+            if (!currentCoroutineContext().isActive) throw ce
+            log.warn("Lookup of superseded execution $supersededId timed out or was cancelled", ce)
+            null
         } catch (e: Exception) {
             log.warn("Failed to load superseded execution $supersededId from store for observability", e)
             null
         }
-        val context = if (supersededExecution != null) {
-            buildExecutionContext(supersededExecution)
-        } else {
-            ExecutionContext(
-                executionId = supersededId,
-                jobId = replacingExecution.jobId,
-                attempt = 0,
-                scheduledAt = replacingExecution.scheduledAt,
-                payload = null,
-                correlationId = supersededId.toString(),
-                isStopping = { stopping }
-            )
+        if (supersededExecution == null) {
+            log.warn("Skipping SUPERSEDED completion callback for $supersededId because execution metadata is unavailable")
+            return
         }
-        val elapsed = supersededExecution?.startedAt?.let { startedAt ->
+        val context = buildExecutionContext(supersededExecution)
+        val elapsed = supersededExecution.startedAt?.let { startedAt ->
             val raw = Duration.between(startedAt, Instant.now(clock))
             if (raw.isNegative) Duration.ZERO else raw
         } ?: Duration.ZERO
