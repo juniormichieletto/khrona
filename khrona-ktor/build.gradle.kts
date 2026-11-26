@@ -32,6 +32,7 @@ tasks.register<Test>("e2eTest") {
     dependsOn(
         ":khrona-core:publishToMavenLocal",
         ":khrona-ktor:publishToMavenLocal",
+        ":khrona-observability:publishToMavenLocal",
         ":khrona-store-memory:publishToMavenLocal",
         ":khrona-store-jdbc:publishToMavenLocal",
         ":khrona-store-redis:publishToMavenLocal"

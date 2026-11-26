@@ -587,6 +587,78 @@ class GeneratedBranchCoverageTest {
         assertNotNull(RetryPolicy.serializer())
         assertNotNull(ExecutionStatus.entries)
         assertNotNull(MisfirePolicy.entries)
+        assertNotNull(HealthStatus.entries)
+        assertNotNull(ScheduleReason.entries)
+        assertNotNull(ExecutionOutcome.entries)
+        assertNotNull(HeartbeatFailureReason.entries)
+    }
+
+    @Test
+    fun `health and observability DTO branches are covered`() {
+        val instant = Instant.parse("2030-01-01T00:00:00Z")
+        val upStore = StoreHealth(status = HealthStatus.UP, latency = Duration.ofMillis(2))
+        val downStore = StoreHealth(
+            status = HealthStatus.DOWN,
+            latency = Duration.ofMillis(3),
+            errorType = "SQLException",
+            detail = "connection refused"
+        )
+        assertEquals(HealthStatus.UP, upStore.status)
+        assertEquals(Duration.ofMillis(2), upStore.latency)
+        assertEquals(null, upStore.errorType)
+        assertEquals(null, upStore.detail)
+        assertEquals("SQLException", downStore.errorType)
+        assertEquals("connection refused", downStore.detail)
+
+        val defaultHealth = SchedulerHealth(
+            status = HealthStatus.STOPPED,
+            storeHealth = upStore,
+            workerId = "w-1",
+            activeExecutions = 0,
+            lastPollAt = null,
+            lastSuccessfulPollAt = null,
+            consecutivePollFailures = 0,
+            stopping = false
+        )
+        assertEquals(false, defaultHealth.isHealthy)
+        assertEquals(false, defaultHealth.isReady)
+        assertEquals(null, defaultHealth.lastPollErrorType)
+        assertEquals("w-1", defaultHealth.workerId)
+        assertEquals(0, defaultHealth.activeExecutions)
+        assertEquals(null, defaultHealth.lastPollAt)
+        assertEquals(null, defaultHealth.lastSuccessfulPollAt)
+        assertEquals(0, defaultHealth.consecutivePollFailures)
+        assertEquals(false, defaultHealth.stopping)
+        assertEquals(upStore, defaultHealth.storeHealth)
+
+        val starting = defaultHealth.copy(status = HealthStatus.STARTING)
+        assertEquals(false, starting.isHealthy)
+        assertEquals(false, starting.isReady)
+
+        val up = defaultHealth.copy(
+            status = HealthStatus.UP,
+            lastPollAt = instant,
+            lastSuccessfulPollAt = instant
+        )
+        assertEquals(true, up.isHealthy)
+        assertEquals(true, up.isReady)
+
+        val degraded = defaultHealth.copy(
+            status = HealthStatus.DEGRADED,
+            consecutivePollFailures = 1,
+            lastPollErrorType = "IOException"
+        )
+        assertEquals(true, degraded.isHealthy)
+        assertEquals(false, degraded.isReady)
+        assertEquals("IOException", degraded.lastPollErrorType)
+
+        val down = defaultHealth.copy(status = HealthStatus.DOWN, storeHealth = downStore, stopping = true)
+        assertEquals(false, down.isHealthy)
+        assertEquals(false, down.isReady)
+        assertEquals(true, down.stopping)
+
+        val noop = KhronaObserver.NO_OP
+        assertNotNull(noop)
     }
 
     private inline fun <reified T> construct(vararg parameterTypes: Class<*>, args: Array<Any?>): T {

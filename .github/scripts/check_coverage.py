@@ -20,6 +20,7 @@ AGGREGATE_MIN_PCT = {
 MODULES = [
     "khrona-core",
     "khrona-ktor",
+    "khrona-observability",
     "khrona-store-jdbc",
     "khrona-store-memory",
     "khrona-store-redis",

@@ -19,6 +19,10 @@ suspend fun Application.scheduler(block: KhronaConfig.() -> Unit) {
         heartbeatInterval = currentConfig.heartbeatInterval
         pollBatchSize = currentConfig.pollBatchSize
         maxConcurrentExecutions = currentConfig.maxConcurrentExecutions
+        observer = currentConfig.observer
+        errorFormatter = currentConfig.errorFormatter
+        healthPollFailureThreshold = currentConfig.healthPollFailureThreshold
+        deadLetterSamplingInterval = currentConfig.deadLetterSamplingInterval
         retentionPolicy.enabled = currentConfig.retentionPolicy.enabled
         retentionPolicy.maxAge = currentConfig.retentionPolicy.maxAge
         retentionPolicy.cleanupInterval = currentConfig.retentionPolicy.cleanupInterval
@@ -37,6 +41,10 @@ suspend fun Application.scheduler(block: KhronaConfig.() -> Unit) {
     currentConfig.heartbeatInterval = candidate.heartbeatInterval
     currentConfig.pollBatchSize = candidate.pollBatchSize
     currentConfig.maxConcurrentExecutions = candidate.maxConcurrentExecutions
+    currentConfig.observer = candidate.observer
+    currentConfig.errorFormatter = candidate.errorFormatter
+    currentConfig.healthPollFailureThreshold = candidate.healthPollFailureThreshold
+    currentConfig.deadLetterSamplingInterval = candidate.deadLetterSamplingInterval
     currentConfig.retentionPolicy.enabled = candidate.retentionPolicy.enabled
     currentConfig.retentionPolicy.maxAge = candidate.retentionPolicy.maxAge
     currentConfig.retentionPolicy.cleanupInterval = candidate.retentionPolicy.cleanupInterval

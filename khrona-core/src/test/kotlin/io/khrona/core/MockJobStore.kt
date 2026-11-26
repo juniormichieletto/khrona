@@ -100,6 +100,14 @@ open class MockJobStore(private val clock: java.time.Clock = java.time.Clock.sys
     override suspend fun listExecutions(query: JobExecutionQuery): List<JobExecution> =
         query.selectFrom(executions.values)
 
+    override suspend fun countExecutions(query: JobExecutionQuery): Long {
+        val statuses = query.statuses
+        if (statuses != null && statuses.isEmpty()) return 0L
+        return executions.values.asSequence().filter(query::matches).count().toLong()
+    }
+
+    override suspend fun checkHealth(): StoreHealth = StoreHealth(HealthStatus.UP, Duration.ZERO)
+
     override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> {
         return executions.values.filter {
             val expiresAt = it.expiresAt

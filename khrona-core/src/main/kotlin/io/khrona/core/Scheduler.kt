@@ -9,6 +9,9 @@ import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.toJavaDuration
 
@@ -29,15 +32,30 @@ class Scheduler(
     }
 
     private val activeJobs = ConcurrentHashMap<UUID, Job>()
-    private data class ActiveClaim(val jobId: String, val owner: String, val store: JobStore)
+    private data class ActiveClaim(
+        val jobId: String,
+        val owner: String,
+        val store: JobStore,
+        val executionContext: ExecutionContext,
+        val startedAtNanos: AtomicLong = AtomicLong(0L),
+        val completionRecorded: AtomicBoolean = AtomicBoolean(false)
+    )
 
     private val activeClaims = ConcurrentHashMap<UUID, ActiveClaim>()
     private val workerId = UUID.randomUUID().toString()
     private val heartbeatInterval: Duration
         get() = config.heartbeatInterval ?: config.executionLeaseDuration.dividedBy(2)
+    @Volatile
     private var job: Job? = null
     @Volatile
     private var stopping = false
+    @Volatile
+    private var lastPollAt: Instant? = null
+    @Volatile
+    private var lastSuccessfulPollAt: Instant? = null
+    private val consecutivePollFailures = AtomicInteger(0)
+    @Volatile
+    private var lastPollErrorType: String? = null
     internal var random: kotlin.random.Random = kotlin.random.Random.Default
 
     init {
@@ -56,28 +74,40 @@ class Scheduler(
     fun start() {
         if (job != null) return
         stopping = false
+        lastPollAt = null
+        lastSuccessfulPollAt = null
+        consecutivePollFailures.set(0)
+        lastPollErrorType = null
         log.info("Starting Khrona Scheduler (workerId: $workerId, pollingInterval: ${config.pollingInterval})")
 
         val correlationId = MDC.get("correlationId")
 
         job = scope.launch {
-            // Register jobs from config into store
-            config.jobs.forEach { persistJobDefinition(it, store) }
-            
-            // Basic initial scheduling: for each job, create its first execution if none exist
-            config.jobs.forEach { jobDef ->
-                seedFirstExecution(jobDef, correlationId, store)
-            }
-
+            var jobsInitialized = false
             var lastRecovery = Instant.MIN
+            var lastDeadLetterSample = Instant.MIN
             var nextCleanupAt = initialCleanupTime(Instant.now(clock))
             while (isActive) {
                 try {
+                    if (!jobsInitialized) {
+                        // Register jobs from config into store (retried if store is down at startup)
+                        config.jobs.forEach { persistJobDefinition(it, store) }
+                        if (!isActive) break
+                        config.jobs.forEach { jobDef ->
+                            seedFirstExecution(jobDef, correlationId, store)
+                        }
+                        jobsInitialized = true
+                        if (!isActive) break
+                    }
+
                     val now = Instant.now(clock)
                     // Periodic recovery of stale executions
                     if (Duration.between(lastRecovery, now) > Duration.ofMinutes(1)) {
                         val recovered = store.resetExpiredExecutions(now)
-                        if (recovered > 0) log.info("Recovered $recovered stale executions")
+                        if (recovered > 0) {
+                            log.info("Recovered $recovered stale executions")
+                            safeNotify { config.observer.onStaleExecutionsRecovered(recovered) }
+                        }
                         lastRecovery = now
                     }
 
@@ -96,19 +126,134 @@ class Scheduler(
                             batchCount++
                             if (cleaned < config.retentionPolicy.batchSize) break
                         }
-                        if (totalCleaned > 0) log.info("Cleaned up $totalCleaned completed executions older than $cutoff")
+                        if (totalCleaned > 0) {
+                            log.info("Cleaned up $totalCleaned completed executions older than $cutoff")
+                            safeNotify { config.observer.onRetentionCleanup(totalCleaned) }
+                        }
                         nextCleanupAt = nextCleanupTime(now)
                     }
 
+                    // Periodic DLQ count sampling
+                    if (Duration.between(lastDeadLetterSample, now) >= config.deadLetterSamplingInterval) {
+                        val deadLetterCount = store.countExecutions(
+                            JobExecutionQuery(statuses = setOf(ExecutionStatus.DEAD_LETTERED))
+                        )
+                        safeNotify { config.observer.onDeadLetterCountSampled(deadLetterCount) }
+                        lastDeadLetterSample = now
+                    }
+
                     pollAndExecute()
+
+                    val completedPollAt = Instant.now(clock)
+                    lastPollAt = completedPollAt
+                    lastSuccessfulPollAt = completedPollAt
+                    consecutivePollFailures.set(0)
+                    lastPollErrorType = null
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     log.error("Error in scheduler loop", e)
+                    lastPollAt = Instant.now(clock)
+                    consecutivePollFailures.incrementAndGet()
+                    lastPollErrorType = ErrorDiagnosticFormatter.typeName(e)
                 }
                 // TODO: Consider Adaptive Delay in the future. 
                 // Currently using fixed polling to ensure discovery of jobs added by other nodes 
                 // without needing a distributed wake-up signal (e.g. Postgres NOTIFY).
                 delay(config.pollingInterval.toMillis())
             }
+        }
+    }
+
+    suspend fun health(): SchedulerHealth {
+        val storeHealth = try {
+            store.checkHealth()
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            StoreHealth(
+                status = HealthStatus.DOWN,
+                latency = Duration.ZERO,
+                errorType = ErrorDiagnosticFormatter.typeName(e),
+                detail = formatError(e)
+            )
+        }
+        val activeJob = this.job
+        val isStopping = this.stopping
+        val lastPoll = this.lastPollAt
+        val lastSuccess = this.lastSuccessfulPollAt
+        val failures = consecutivePollFailures.get()
+        val lastErrorType = this.lastPollErrorType
+        val now = Instant.now(clock)
+
+        val status = when {
+            isStopping || activeJob == null || !activeJob.isActive -> HealthStatus.STOPPED
+            storeHealth.status == HealthStatus.DOWN || failures >= config.healthPollFailureThreshold -> HealthStatus.DOWN
+            lastPoll == null -> HealthStatus.STARTING
+            failures > 0 || isPollLoopStalled(lastPoll, now) -> HealthStatus.DEGRADED
+            else -> HealthStatus.UP
+        }
+
+        return SchedulerHealth(
+            status = status,
+            storeHealth = storeHealth,
+            workerId = workerId,
+            activeExecutions = activeJobs.size,
+            lastPollAt = lastPoll,
+            lastSuccessfulPollAt = lastSuccess,
+            consecutivePollFailures = failures,
+            lastPollErrorType = lastErrorType,
+            stopping = isStopping
+        )
+    }
+
+    private fun isPollLoopStalled(lastPoll: Instant, now: Instant): Boolean {
+        val tripledPolling = config.pollingInterval.multipliedBy(3)
+        val minStallWindow = Duration.ofSeconds(5)
+        val stallThreshold = if (tripledPolling > minStallWindow) tripledPolling else minStallWindow
+        return Duration.between(lastPoll, now) > stallThreshold
+    }
+
+    private fun formatError(error: Throwable): String = try {
+        config.errorFormatter.format(error)
+    } catch (formatterEx: Exception) {
+        log.warn("ErrorDiagnosticFormatter failed; falling back to default formatter", formatterEx)
+        ErrorDiagnosticFormatter.DEFAULT.format(error)
+    }
+
+    private fun elapsedSince(startedAtNanos: Long): Duration {
+        if (startedAtNanos <= 0L) return Duration.ZERO
+        return Duration.ofNanos((System.nanoTime() - startedAtNanos).coerceAtLeast(0L))
+    }
+
+    private fun buildExecutionContext(
+        execution: JobExecution,
+        correlationId: String = execution.correlationId ?: execution.id.toString()
+    ): ExecutionContext = ExecutionContext(
+        executionId = execution.id,
+        jobId = execution.jobId,
+        attempt = execution.attempt,
+        scheduledAt = execution.scheduledAt,
+        payload = execution.payload,
+        correlationId = correlationId,
+        isStopping = { stopping }
+    )
+
+    private fun recordCompletion(
+        claim: ActiveClaim?,
+        context: ExecutionContext,
+        outcome: ExecutionOutcome,
+        startedAtNanos: Long,
+        errorType: String? = null
+    ) {
+        if (claim != null && !claim.completionRecorded.compareAndSet(false, true)) return
+        safeNotify {
+            config.observer.onExecutionCompleted(
+                context = context,
+                outcome = outcome,
+                duration = elapsedSince(startedAtNanos),
+                errorType = errorType
+            )
         }
     }
 
@@ -213,6 +358,7 @@ class Scheduler(
                 if (jobDef.concurrencyPolicy == ConcurrencyPolicy.FORBID && jobDef.lockKey != null) {
                     if (store.isLockHeld(jobDef.lockKey)) {
                         log.debug("[${execution.jobId}] Skipping execution ${execution.id} because lock ${jobDef.lockKey} is held")
+                        safeNotify { config.observer.onLockContention(execution.jobId, jobDef.lockKey, ConcurrencyPolicy.FORBID) }
                         blockedJobIds.add(execution.jobId)
                         return@forEach
                     }
@@ -234,7 +380,13 @@ class Scheduler(
                         store.updateExecutionStatus(execution.id, ExecutionStatus.PENDING, workerId = claimOwner)
                         return@forEach
                     }
-                    val claim = ActiveClaim(execution.jobId, claimOwner, store)
+                    val executionContext = buildExecutionContext(execution)
+                    val claim = ActiveClaim(
+                        jobId = execution.jobId,
+                        owner = claimOwner,
+                        store = store,
+                        executionContext = executionContext
+                    )
                     activeClaims[execution.id] = claim
 
                     var launched = false
@@ -250,6 +402,15 @@ class Scheduler(
                                 excludeExecutionId = execution.id
                             )
                             supersededIds.forEach { id ->
+                                val supersededClaim = activeClaims[id]
+                                if (supersededClaim != null) {
+                                    recordCompletion(
+                                        claim = supersededClaim,
+                                        context = supersededClaim.executionContext,
+                                        outcome = ExecutionOutcome.SUPERSEDED,
+                                        startedAtNanos = supersededClaim.startedAtNanos.get()
+                                    )
+                                }
                                 activeJobs[id]?.cancel("Superseded by a new execution for lock ${jobDef.lockKey}")
                             }
                         }
@@ -263,6 +424,7 @@ class Scheduler(
                             // To be safe, we should check if any OTHER execution is holding the lock.
                             if (isAnyOtherExecutionHoldingLock(execution.id, jobDef.lockKey, store)) {
                                 log.warn("[${execution.jobId}] Release claim for ${execution.id} because another execution already holds the lock ${jobDef.lockKey}")
+                                safeNotify { config.observer.onLockContention(execution.jobId, jobDef.lockKey, ConcurrencyPolicy.FORBID) }
                                 store.updateExecutionStatus(execution.id, ExecutionStatus.PENDING, workerId = claimOwner)
                                 blockedJobIds.add(execution.jobId)
                                 return@forEach
@@ -276,7 +438,7 @@ class Scheduler(
                         val executionJob = scope.launch(start = CoroutineStart.LAZY) {
                             val selfJob = coroutineContext[Job]!!
                             try {
-                                executeJobWithHeartbeat(execution, jobDef, leaseDuration, claimOwner, initialLeaseDeadline, store)
+                                executeJobWithHeartbeat(execution, jobDef, leaseDuration, claim, initialLeaseDeadline)
                             } finally {
                                 activeJobs.remove(execution.id, selfJob)
                                 activeClaims.remove(execution.id, claim)
@@ -347,13 +509,24 @@ class Scheduler(
                 // Do NOT propagate correlationId to next recurring run
             )
         }
-        store.completeExecution(
+        val completed = store.completeExecution(
             id = execution.id,
             status = ExecutionStatus.MISFIRED,
             error = "Misfire threshold exceeded",
             workerId = claimOwner,
             nextExecution = nextExecution
         )
+        if (completed) {
+            recordCompletion(
+                claim = null,
+                context = buildExecutionContext(execution),
+                outcome = ExecutionOutcome.MISFIRED,
+                startedAtNanos = 0L
+            )
+            if (nextExecution != null) {
+                safeNotify { config.observer.onExecutionScheduled(jobDef.id, ScheduleReason.RECURRING_NEXT) }
+            }
+        }
     }
 
     private fun newLeaseDeadline(duration: Duration): LeaseDeadline {
@@ -365,12 +538,19 @@ class Scheduler(
         execution: JobExecution,
         jobDef: JobDefinition,
         leaseDuration: Duration,
-        claimOwner: String,
-        initialLeaseDeadline: LeaseDeadline,
-        store: JobStore
+        claim: ActiveClaim,
+        initialLeaseDeadline: LeaseDeadline
     ) {
         coroutineScope {
-            if (initialLeaseDeadline.remaining(Instant.now(clock)) <= Duration.ZERO) return@coroutineScope
+            if (initialLeaseDeadline.remaining(Instant.now(clock)) <= Duration.ZERO) {
+                safeNotify {
+                    config.observer.onHeartbeatFailed(
+                        claim.executionContext,
+                        HeartbeatFailureReason.LEASE_BUDGET_EXCEEDED
+                    )
+                }
+                return@coroutineScope
+            }
             val leaseDeadline = AtomicReference(initialLeaseDeadline)
             val watchdogJob = launch {
                 while (isActive) {
@@ -379,6 +559,12 @@ class Scheduler(
                     val remaining = deadline.remaining(now)
                     if (remaining <= Duration.ZERO) {
                         log.warn("[${execution.jobId}] Execution ${execution.id} lease expired at ${deadline.expiresAt} without renewal; cancelling handler")
+                        safeNotify {
+                            config.observer.onHeartbeatFailed(
+                                claim.executionContext,
+                                HeartbeatFailureReason.LEASE_BUDGET_EXCEEDED
+                            )
+                        }
                         this@coroutineScope.cancel("Execution ${execution.id} lease expired")
                         break
                     }
@@ -392,15 +578,29 @@ class Scheduler(
                     // Budget from request start so network latency never extends ownership.
                     val renewalDeadline = newLeaseDeadline(leaseDuration)
                     val renewed = try {
-                        val ok = store.heartbeat(execution.id, claimOwner, leaseDuration)
+                        val ok = claim.store.heartbeat(execution.id, claim.owner, leaseDuration)
                         if (ok) {
                             leaseDeadline.set(renewalDeadline)
+                            safeNotify { config.observer.onHeartbeatSucceeded(claim.executionContext) }
+                        } else {
+                            safeNotify {
+                                config.observer.onHeartbeatFailed(
+                                    claim.executionContext,
+                                    HeartbeatFailureReason.LOST_OWNERSHIP_OR_EXPIRED
+                                )
+                            }
                         }
                         ok
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
                         log.error("[${execution.jobId}] Error during heartbeat for execution ${execution.id}", e)
+                        safeNotify {
+                            config.observer.onHeartbeatFailed(
+                                claim.executionContext,
+                                HeartbeatFailureReason.STORE_ERROR
+                            )
+                        }
                         leaseDeadline.get().remaining(Instant.now(clock)) > Duration.ZERO
                     }
                     if (!renewed) {
@@ -412,7 +612,7 @@ class Scheduler(
             }
 
             try {
-                executeJob(execution, jobDef, claimOwner, store)
+                executeJob(execution, jobDef, claim)
             } finally {
                 heartbeatJob.cancel()
                 watchdogJob.cancel()
@@ -420,50 +620,56 @@ class Scheduler(
         }
     }
 
-    private suspend fun executeJob(execution: JobExecution, jobDef: JobDefinition, claimOwner: String, store: JobStore) {
-        val correlationId = execution.correlationId ?: execution.id.toString()
+    private suspend fun executeJob(execution: JobExecution, jobDef: JobDefinition, claim: ActiveClaim) {
+        val executionContext = claim.executionContext
+        val correlationId = executionContext.correlationId
         withContext(MDCContext(mapOf("correlationId" to correlationId))) {
             log.info("[${execution.jobId}] [$correlationId] Executing job (execution: ${execution.id})")
-            if (!store.updateExecutionStatus(execution.id, ExecutionStatus.RUNNING, workerId = claimOwner)) {
-                log.warn("[${execution.jobId}] [$correlationId] Execution ${execution.id} is no longer owned by $claimOwner before start; aborting")
+            if (!claim.store.updateExecutionStatus(execution.id, ExecutionStatus.RUNNING, workerId = claim.owner)) {
+                log.warn("[${execution.jobId}] [$correlationId] Execution ${execution.id} is no longer owned by ${claim.owner} before start; aborting")
                 return@withContext
             }
+
+            val rawLag = Duration.between(execution.scheduledAt, Instant.now(clock))
+            val lag = if (rawLag.isNegative) Duration.ZERO else rawLag
+            val executionStartNanos = System.nanoTime()
+            claim.startedAtNanos.set(executionStartNanos)
+            safeNotify { config.observer.onExecutionStarted(executionContext, lag) }
 
             val handlerFailure: Throwable? = try {
                 val handler = handlerRegistry.get(jobDef.id)
                     ?: throw IllegalStateException("No handler registered for job ${jobDef.id}")
-                val executionContext = ExecutionContext(
-                    executionId = execution.id,
-                    jobId = execution.jobId,
-                    attempt = execution.attempt,
-                    scheduledAt = execution.scheduledAt,
-                    payload = execution.payload,
-                    correlationId = correlationId,
-                    isStopping = { stopping }
-                )
 
-                if (jobDef.timeout != null) {
-                    withTimeout(jobDef.timeout.toMillis()) {
+                invokeAroundSafely(config.observer, executionContext) {
+                    if (jobDef.timeout != null) {
+                        withTimeout(jobDef.timeout.toMillis()) {
+                            executionContext.handler(execution.payload)
+                        }
+                    } else {
                         executionContext.handler(execution.payload)
                     }
-                } else {
-                    executionContext.handler(execution.payload)
                 }
                 null
             } catch (e: ShutdownCheckpointException) {
                 log.info("[${execution.jobId}] [$correlationId] Execution ${execution.id} stopped at shutdown checkpoint; releasing back to PENDING")
                 withContext(NonCancellable) {
                     try {
-                        store.updateExecutionStatus(
+                        claim.store.updateExecutionStatus(
                             id = execution.id,
                             status = ExecutionStatus.PENDING,
                             error = "Interrupted at shutdown checkpoint",
-                            workerId = claimOwner
+                            workerId = claim.owner
                         )
                     } catch (releaseEx: Exception) {
                         log.error("[${execution.jobId}] [$correlationId] Failed to release execution ${execution.id} after shutdown checkpoint", releaseEx)
                     }
                 }
+                recordCompletion(
+                    claim = claim,
+                    context = executionContext,
+                    outcome = ExecutionOutcome.SHUTDOWN_CHECKPOINT,
+                    startedAtNanos = executionStartNanos
+                )
                 return@withContext
             } catch (e: Throwable) {
                 if (e is CancellationException && e !is TimeoutCancellationException) {
@@ -478,19 +684,30 @@ class Scheduler(
             if (handlerFailure == null) {
                 val nextExecution = buildNextRecurringExecution(execution, jobDef)
                 if (completeExecutionWithRetry(
-                        store = store,
+                        store = claim.store,
                         id = execution.id,
                         status = ExecutionStatus.SUCCESS,
-                        workerId = claimOwner,
+                        workerId = claim.owner,
                         nextExecution = nextExecution
                     )
                 ) {
                     log.info("[${execution.jobId}] [$correlationId] Job finished successfully")
+                    recordCompletion(
+                        claim = claim,
+                        context = executionContext,
+                        outcome = ExecutionOutcome.SUCCESS,
+                        startedAtNanos = executionStartNanos
+                    )
+                    if (nextExecution != null) {
+                        safeNotify { config.observer.onExecutionScheduled(jobDef.id, ScheduleReason.RECURRING_NEXT) }
+                    }
                 } else {
                     log.warn("[${execution.jobId}] [$correlationId] Execution ${execution.id} lost ownership before completion; skipping SUCCESS and next-run scheduling")
                 }
             } else {
                 log.error("[${execution.jobId}] [$correlationId] Job failed", handlerFailure)
+                val errorType = ErrorDiagnosticFormatter.typeName(handlerFailure)
+                val formattedError = formatError(handlerFailure)
                 val nextAttempt = execution.attempt + 1
                 if (nextAttempt < jobDef.retryPolicy.maxAttempts) {
                     val nextDelay = jobDef.retryPolicy.calculateDelay(nextAttempt)
@@ -505,30 +722,56 @@ class Scheduler(
                     )
 
                     if (completeExecutionWithRetry(
-                            store = store,
+                            store = claim.store,
                             id = execution.id,
                             status = ExecutionStatus.FAILED,
-                            error = handlerFailure.message,
-                            workerId = claimOwner,
+                            error = formattedError,
+                            workerId = claim.owner,
                             nextExecution = retryExecution
                         )
                     ) {
                         log.info("[${execution.jobId}] [$correlationId] Scheduled retry at $nextRun (attempt $nextAttempt)")
+                        safeNotify {
+                            config.observer.onRetryScheduled(
+                                context = executionContext,
+                                nextAttempt = nextAttempt,
+                                delay = nextDelay,
+                                errorType = errorType
+                            )
+                        }
+                        safeNotify { config.observer.onExecutionScheduled(jobDef.id, ScheduleReason.RETRY) }
+                        recordCompletion(
+                            claim = claim,
+                            context = executionContext,
+                            outcome = ExecutionOutcome.FAILED_RETRY,
+                            startedAtNanos = executionStartNanos,
+                            errorType = errorType
+                        )
                     } else {
                         log.warn("[${execution.jobId}] [$correlationId] Execution ${execution.id} lost ownership before failure transition; skipping retry scheduling")
                     }
                 } else {
                     val nextExecution = buildNextRecurringExecution(execution, jobDef)
                     if (completeExecutionWithRetry(
-                            store = store,
+                            store = claim.store,
                             id = execution.id,
                             status = ExecutionStatus.DEAD_LETTERED,
-                            error = handlerFailure.message,
-                            workerId = claimOwner,
+                            error = formattedError,
+                            workerId = claim.owner,
                             nextExecution = nextExecution
                         )
                     ) {
                         log.warn("[${execution.jobId}] [$correlationId] Reached max attempts (${jobDef.retryPolicy.maxAttempts}) and is now DEAD_LETTERED")
+                        recordCompletion(
+                            claim = claim,
+                            context = executionContext,
+                            outcome = ExecutionOutcome.DEAD_LETTERED,
+                            startedAtNanos = executionStartNanos,
+                            errorType = errorType
+                        )
+                        if (nextExecution != null) {
+                            safeNotify { config.observer.onExecutionScheduled(jobDef.id, ScheduleReason.RECURRING_NEXT) }
+                        }
                     } else {
                         log.warn("[${execution.jobId}] [$correlationId] Execution ${execution.id} lost ownership before DEAD_LETTERED transition; skipping next-run scheduling")
                     }
@@ -592,12 +835,15 @@ class Scheduler(
     }
 
     suspend fun stop() {
+        val shutdownStartNanos = System.nanoTime()
         log.info("Stopping Khrona Scheduler")
         stopping = true
         val pollingJob = job
         job = null
         pollingJob?.cancel() // Stop polling for new jobs
 
+        var cleanShutdown = true
+        var remainingActiveCount = 0
         val totalTimeoutMs = config.shutdownTimeout.toMillis()
         withTimeoutOrNull(totalTimeoutMs + 5L) {
             withTimeoutOrNull(minOf(50L, totalTimeoutMs)) {
@@ -619,7 +865,9 @@ class Scheduler(
                 if (completedCleanly) {
                     log.info("All active jobs completed cleanly during shutdown.")
                 } else {
-                    log.warn("Shutdown timeout reached. Cancelling ${activeJobs.size} remaining jobs.")
+                    cleanShutdown = false
+                    remainingActiveCount = activeJobs.size
+                    log.warn("Shutdown timeout reached. Cancelling $remainingActiveCount remaining jobs.")
                     activeJobs.values.forEach { it.cancel("Scheduler stopping (timeout)") }
 
                     val releaseJob = scope.launch(Dispatchers.IO + NonCancellable) {
@@ -651,6 +899,8 @@ class Scheduler(
 
         activeJobs.clear()
         activeClaims.clear()
+        val shutdownDuration = elapsedSince(shutdownStartNanos)
+        safeNotify { config.observer.onShutdownCompleted(shutdownDuration, cleanShutdown, remainingActiveCount) }
         log.info("Khrona Scheduler stopped")
     }
 
@@ -690,7 +940,7 @@ class Scheduler(
         if (next != null) {
             // Use a deterministic UUID for the first execution to avoid duplicates when multiple nodes start.
             val deterministicId = UUID.nameUUIDFromBytes("${jobDef.id}:$next".toByteArray())
-            store.seedInitialExecution(
+            val seeded = store.seedInitialExecution(
                 JobExecution(
                     id = deterministicId,
                     jobId = jobDef.id,
@@ -699,6 +949,9 @@ class Scheduler(
                     correlationId = correlationId ?: deterministicId.toString()
                 )
             )
+            if (seeded) {
+                safeNotify { config.observer.onExecutionScheduled(jobDef.id, ScheduleReason.INITIAL_SEED) }
+            }
         }
     }
 
@@ -743,6 +996,7 @@ class Scheduler(
                 correlationId = correlationId ?: executionId.toString()
             )
         )
+        safeNotify { config.observer.onExecutionScheduled(jobDef.id, ScheduleReason.MANUAL_TRIGGER) }
         return executionId
     }
 
@@ -808,6 +1062,12 @@ class Scheduler(
             )
         }
 
+        recordCompletion(
+            claim = activeClaim,
+            context = activeClaim.executionContext,
+            outcome = ExecutionOutcome.CANCELLED,
+            startedAtNanos = activeClaim.startedAtNanos.get()
+        )
         activeJob.cancel("Execution $executionId stopped locally")
         return JobControlResult(
             success = true,

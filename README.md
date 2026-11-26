@@ -28,6 +28,10 @@ It provides a reliable, idiomatic, and production-capable platform for backgroun
   - [Structured Payloads](#structured-payloads)
   - [Misfire Policies](#misfire-policies)
   - [Correlation ID & Observability](#correlation-id--observability)
+    - [Zero-Dependency Observer SPI (KhronaObserver)](#zero-dependency-observer-spi-khronaobserver)
+    - [Micrometer and OpenTelemetry (khrona-observability)](#micrometer-and-opentelemetry-khrona-observability)
+    - [Health, Readiness, and Outage Recovery](#health-readiness-and-outage-recovery)
+    - [Error Diagnostics and Sensitive Data](#error-diagnostics-and-sensitive-data)
 - [Manual Control (Standalone)](#manual-control-standalone)
   - [Job Management API](#job-management-api)
 - [Trigger Formats](#trigger-formats)
@@ -75,6 +79,9 @@ dependencies {
     implementation("io.github.juniormichieletto:khrona-store-memory:0.7.0") // Dev / testing
     implementation("io.github.juniormichieletto:khrona-store-jdbc:0.7.0")   // Production JDBC
     // implementation("io.github.juniormichieletto:khrona-store-redis:0.7.0") // Production Redis store
+
+    // Optional Micrometer & OpenTelemetry adapters (bring your own telemetry dependencies):
+    // implementation("io.github.juniormichieletto:khrona-observability:0.7.0")
 
     // When using JDBC, add the driver for your database:
     runtimeOnly("org.postgresql:postgresql:42.7.5")           // PostgreSQL
@@ -583,6 +590,95 @@ To show the ID in your logs, update your `logback.xml` pattern to include `%X{co
 <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger - [%X{correlationId}] %msg%n</pattern>
 ```
 
+#### Zero-Dependency Observer SPI (`KhronaObserver`)
+
+`khrona-core` exposes `KhronaObserver` with zero external telemetry dependencies. All observer callbacks are exception-isolated and logged rather than aborting job execution, heartbeats, or the polling loop. Multiple observers can be composed cleanly via `addObserver(...)` / `CompositeKhronaObserver`, and any `JobStore` can be wrapped with `.observedBy(observer)` (`ObservableJobStore`) to emit per-operation `onStoreOperation` timing and failure events.
+
+```kotlin
+import io.khrona.core.*
+import io.khrona.store.memory.MemoryJobStore
+
+val customObserver = object : KhronaObserver {
+    override fun onExecutionCompleted(
+        context: ExecutionContext,
+        outcome: ExecutionOutcome,
+        duration: java.time.Duration,
+        errorType: String?
+    ) {
+        println("job=${context.jobId} outcome=$outcome duration=$duration errorType=$errorType")
+    }
+}
+
+val config = Khrona {
+    store = MemoryJobStore().observedBy(customObserver)
+    addObserver(customObserver)
+}
+```
+
+#### Micrometer and OpenTelemetry (`khrona-observability`)
+
+Add `khrona-observability` alongside the Micrometer or OpenTelemetry API dependencies your application already uses (`khrona-observability` declares both as `compileOnly` so consumers only pull the telemetry stack they configure):
+
+```kotlin
+import io.khrona.core.*
+import io.khrona.observability.MicrometerKhronaObserver
+import io.khrona.observability.OpenTelemetryKhronaObserver
+import io.micrometer.prometheusmetrics.PrometheusMeterRegistry
+import io.opentelemetry.api.GlobalOpenTelemetry
+
+val micrometerObserver = MicrometerKhronaObserver(meterRegistry)
+val otelObserver = OpenTelemetryKhronaObserver(GlobalOpenTelemetry.get())
+
+val config = Khrona {
+    store = baseStore.observedBy(micrometerObserver)
+    addObserver(micrometerObserver)
+    addObserver(otelObserver) // Creates "khrona.job.execute" spans and propagates coroutine context
+}
+```
+
+To keep time-series cardinality strictly bounded, built-in metric tags/attributes only use bounded dimensions (`job_id`, `outcome`, `error_type`, `reason`, `policy`, `operation`, `status`, `clean`). Unbounded identifiers (`executionId`, `correlationId`, `workerId`, dynamic `lockKey`, and raw error messages) never appear as metric labels and belong exclusively in logs and `OpenTelemetryKhronaObserver` trace spans (`khrona.execution.id`, `khrona.job.id`, `khrona.attempt`, `khrona.scheduled_at`, `khrona.correlation_id`).
+
+#### Health, Readiness, and Outage Recovery
+
+Call `scheduler.health()` (`SchedulerHealth`) and `store.checkHealth()` (`StoreHealth`) to inspect both scheduler loop liveness and backing store connectivity:
+
+- `STOPPED`: Before `start()`, while stopping, or after `stop()`.
+- `STARTING`: After `start()` until the first poll cycle completes (unless the store is already unhealthy).
+- `UP`: Store health check is `UP` and the polling loop is running without unrecovered failures (`isHealthy = true`, `isReady = true`).
+- `DEGRADED`: Transient poll failures (`consecutivePollFailures > 0` below `healthPollFailureThreshold`) or poll-loop stalls while the store ping still succeeds (`isHealthy = true`, `isReady = false`).
+- `DOWN`: Backing store health check returns `DOWN`, or `consecutivePollFailures >= healthPollFailureThreshold` (`isHealthy = false`, `isReady = false`).
+
+Startup or mid-run store outages do not terminate the scheduler polling loop; once the backing store recovers, pending startup registration/seeding completes, `consecutivePollFailures` resets to `0`, and `scheduler.health()` transitions back to `UP`. Khrona intentionally does not bundle built-in HTTP endpoints, exporters, or authorization filters — host applications expose `/health`, `/ready`, and `/metrics` routes using their own Ktor routing and access policies:
+
+```kotlin
+routing {
+    get("/health") {
+        val h = application.plugin(Khrona).scheduler.health()
+        val status = if (h.isHealthy) HttpStatusCode.OK else HttpStatusCode.ServiceUnavailable
+        call.respondText(h.status.name, status = status)
+    }
+    get("/ready") {
+        val h = application.plugin(Khrona).scheduler.health()
+        val status = if (h.isReady) HttpStatusCode.OK else HttpStatusCode.ServiceUnavailable
+        call.respondText(h.status.name, status = status)
+    }
+}
+```
+
+#### Error Diagnostics and Sensitive Data
+
+Persisted failure diagnostics on `FAILED` / `DEAD_LETTERED` executions use `KhronaConfig.errorFormatter` (`ErrorDiagnosticFormatter`), defaulting to bounded `"ClassSimpleName: message"` (or `"ClassSimpleName"` when `message` is null/blank) capped at 512 characters. Supply a custom `ErrorDiagnosticFormatter` when you need redaction, and avoid embedding secrets, credentials, or PII in exception messages or serialized job payloads:
+
+```kotlin
+val config = Khrona {
+    store = baseStore
+    errorFormatter = ErrorDiagnosticFormatter { error ->
+        ErrorDiagnosticFormatter.DEFAULT.format(error)
+            .replace(Regex("Bearer\\s+[A-Za-z0-9._-]+"), "Bearer [REDACTED]")
+    }
+}
+```
+
 ## Manual Control (Standalone)
 
 You can also run Khrona outside of Ktor. Note that registration and triggering are **suspend** functions for better error handling and observability.
@@ -826,7 +922,8 @@ For JDBC, the main database access points are:
 - [x] **v0.6.0:** Breaking heartbeat ownership validation and expired-lease handling, atomic Lua scripts, and production-ready `RedisJobStore` graduation.
 - [x] **v0.7.0:** Production readiness hardening (atomic follow-ups, initial seeding, query-side candidate filtering, dual-clock lease watchdog, dynamic store binding, bounded concurrency, MySQL DATETIME(6), UTC calendars).
 - [x] **Core Job Management API & ExecutionContext:** `listJobOverviews`, `getJobOverview`, `listJobHistory`, `listExecutions`, `startJob`, persistent `pauseJob`/`resumeJob`, local `stopExecution`/`stopJob` (`ExecutionStatus.CANCELLED`), and `ExecutionContext` with cooperative shutdown `checkpoint()`.
-- [ ] **Future:** Metrics (Micrometer/OpenTelemetry), lock inspection, further production hardening, testkit improvements, adaptive delay, and operator ergonomics (DLQ replay, job reconciliation, cross-node stop).
+- [x] **Observability & Health (OBS-1):** Zero-dependency `KhronaObserver` SPI, `ErrorDiagnosticFormatter` diagnostics/redaction, `ObservableJobStore`, `Scheduler.health()` & `JobStore.checkHealth()` readiness/recovery, and optional `khrona-observability` (`MicrometerKhronaObserver`, `OpenTelemetryKhronaObserver`).
+- [ ] **Future:** Lock inspection, further production hardening, testkit improvements, adaptive delay, and operator ergonomics (DLQ replay, job reconciliation, cross-node stop).
 - [ ] **v0.8:** Android SQLite storage support.
 
 ## License

@@ -75,6 +75,8 @@ class KtorGeneratorDockerE2ETest {
             dependencies {
                 implementation("io.github.juniormichieletto:khrona-ktor:$khronaVersion")
                 implementation("io.github.juniormichieletto:khrona-store-memory:$khronaVersion")
+                implementation("io.github.juniormichieletto:khrona-observability:$khronaVersion")
+                implementation("io.micrometer:micrometer-core:1.14.5")
             }
         """.trimIndent()
 
@@ -107,6 +109,42 @@ class KtorGeneratorDockerE2ETest {
             assertEquals(true, status["fencingPassed"]?.jsonPrimitive?.boolean)
             assertEquals(true, status["managementVerified"]?.jsonPrimitive?.boolean)
             assertEquals(true, status["checkpointShutdownVerified"]?.jsonPrimitive?.boolean)
+
+            // Verify Micrometer metrics and bounded tag cardinality via /metrics-summary
+            val metrics = awaitJson("$baseUrl/metrics-summary") { json ->
+                (json["deadLetterSize"]?.jsonPrimitive?.int ?: 0) >= 1 &&
+                    (json["completedDeadLettered"]?.jsonPrimitive?.int ?: 0) >= 1 &&
+                    (json["completedSuccess"]?.jsonPrimitive?.int ?: 0) >= 1 &&
+                    (json["completedFailedRetry"]?.jsonPrimitive?.int ?: 0) >= 1
+            }
+            assertTrue((metrics["started"]?.jsonPrimitive?.int ?: 0) >= 1)
+            assertTrue((metrics["storeOps"]?.jsonPrimitive?.int ?: 0) >= 1)
+            assertEquals(false, metrics["unboundedTagLeak"]?.jsonPrimitive?.boolean)
+
+            // Verify host-owned /health lifecycle: UP -> outage (DOWN 503) -> recovery (UP 200)
+            val initialHealth = httpGet("$baseUrl/health")
+            assertEquals(200, initialHealth.statusCode())
+            val initialHealthJson = Json.parseToJsonElement(initialHealth.body()) as JsonObject
+            assertEquals("UP", initialHealthJson["status"]?.jsonPrimitive?.content)
+            assertEquals("UP", initialHealthJson["storeStatus"]?.jsonPrimitive?.content)
+            assertEquals(true, initialHealthJson["isHealthy"]?.jsonPrimitive?.boolean)
+            assertEquals(true, initialHealthJson["isReady"]?.jsonPrimitive?.boolean)
+
+            assertEquals(200, httpPost("$baseUrl/admin/outage/on").statusCode())
+            val outageHealth = awaitHttpJson("$baseUrl/health", expectedStatus = 503) { json ->
+                json["status"]?.jsonPrimitive?.content == "DOWN" &&
+                    json["storeStatus"]?.jsonPrimitive?.content == "DOWN"
+            }
+            assertEquals(false, outageHealth["isHealthy"]?.jsonPrimitive?.boolean)
+            assertEquals(false, outageHealth["isReady"]?.jsonPrimitive?.boolean)
+
+            assertEquals(200, httpPost("$baseUrl/admin/outage/off").statusCode())
+            val recoveredHealth = awaitHttpJson("$baseUrl/health", expectedStatus = 200) { json ->
+                json["status"]?.jsonPrimitive?.content == "UP" &&
+                    json["storeStatus"]?.jsonPrimitive?.content == "UP"
+            }
+            assertEquals(true, recoveredHealth["isHealthy"]?.jsonPrimitive?.boolean)
+            assertEquals(true, recoveredHealth["isReady"]?.jsonPrimitive?.boolean)
         }
     }
 
@@ -298,12 +336,14 @@ class KtorGeneratorDockerE2ETest {
 
         import io.khrona.core.*
         import io.khrona.ktor.*
+        import io.khrona.observability.MicrometerKhronaObserver
         import io.khrona.store.memory.MemoryJobStore
         import io.ktor.http.*
         import io.ktor.server.application.*
         import io.ktor.server.request.*
         import io.ktor.server.response.*
         import io.ktor.server.routing.*
+        import io.micrometer.core.instrument.simple.SimpleMeterRegistry
         import kotlinx.coroutines.CompletableDeferred
         import kotlinx.coroutines.async
         import kotlinx.coroutines.awaitCancellation
@@ -323,7 +363,47 @@ class KtorGeneratorDockerE2ETest {
         import kotlin.time.Duration.Companion.seconds
 
         fun Application.configureRouting() {
-            val store = MemoryJobStore()
+            val baseStore = MemoryJobStore()
+            val outageActive = AtomicBoolean(false)
+            val meterRegistry = SimpleMeterRegistry()
+            val micrometerObserver = MicrometerKhronaObserver(meterRegistry)
+            val store = object : JobStore by baseStore {
+                private fun ensureAvailable() {
+                    if (outageActive.get()) {
+                        throw IllegalStateException("Simulated store outage")
+                    }
+                }
+
+                override suspend fun checkHealth(): StoreHealth {
+                    ensureAvailable()
+                    return baseStore.checkHealth()
+                }
+
+                override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> {
+                    ensureAvailable()
+                    return baseStore.listEligibleExecutions(now, limit)
+                }
+
+                override suspend fun listEligibleExecutions(
+                    now: Instant,
+                    limit: Int,
+                    jobIds: Set<String>?
+                ): List<JobExecution> {
+                    ensureAvailable()
+                    return baseStore.listEligibleExecutions(now, limit, jobIds)
+                }
+
+                override suspend fun countExecutions(query: JobExecutionQuery): Long {
+                    ensureAvailable()
+                    return baseStore.countExecutions(query)
+                }
+
+                override suspend fun resetExpiredExecutions(now: Instant): Int {
+                    ensureAvailable()
+                    return baseStore.resetExpiredExecutions(now)
+                }
+            }.observedBy(micrometerObserver)
+
             val onceRuns = AtomicInteger(0)
             val intervalRuns = AtomicInteger(0)
             val manualRuns = AtomicInteger(0)
@@ -341,6 +421,9 @@ class KtorGeneratorDockerE2ETest {
 
             installKhrona {
                 this.store = store
+                this.observer = micrometerObserver
+                healthPollFailureThreshold = 1
+                deadLetterSamplingInterval(200.milliseconds)
                 pollingInterval(100.milliseconds)
                 executionLeaseDuration(5.seconds)
                 heartbeatInterval(1.seconds)
@@ -527,7 +610,53 @@ class KtorGeneratorDockerE2ETest {
 
             routing {
                 get("/health") {
-                    call.respondText("OK", ContentType.Text.Plain, HttpStatusCode.OK)
+                    val h = this@configureRouting.plugin(KhronaPlugin).scheduler.health()
+                    val code = if (h.isReady) HttpStatusCode.OK else HttpStatusCode.ServiceUnavailable
+                    val body = ""${'"'}{
+                        "status": "${'$'}{h.status.name}",
+                        "storeStatus": "${'$'}{h.storeHealth.status.name}",
+                        "isHealthy": ${'$'}{h.isHealthy},
+                        "isReady": ${'$'}{h.isReady},
+                        "consecutivePollFailures": ${'$'}{h.consecutivePollFailures}
+                    }""${'"'}.trimIndent()
+                    call.respondText(body, ContentType.Application.Json, code)
+                }
+
+                post("/admin/outage/on") {
+                    outageActive.set(true)
+                    call.respondText("Outage ON", ContentType.Text.Plain, HttpStatusCode.OK)
+                }
+
+                post("/admin/outage/off") {
+                    outageActive.set(false)
+                    call.respondText("Outage OFF", ContentType.Text.Plain, HttpStatusCode.OK)
+                }
+
+                get("/metrics-summary") {
+                    val started = meterRegistry.find("khrona.executions.started").counters().sumOf { it.count() }.toInt()
+                    val completedSuccess = meterRegistry.find("khrona.executions.completed").tag("outcome", "success").counters().sumOf { it.count() }.toInt()
+                    val completedFailedRetry = meterRegistry.find("khrona.executions.completed").tag("outcome", "failed_retry").counters().sumOf { it.count() }.toInt()
+                    val completedDeadLettered = meterRegistry.find("khrona.executions.completed").tag("outcome", "dead_lettered").counters().sumOf { it.count() }.toInt()
+                    val deadLetterSize = meterRegistry.find("khrona.dead_letter.size").gauge()?.value()?.toInt() ?: 0
+                    val storeOps = meterRegistry.find("khrona.store.operation.duration").timers().sumOf { it.count() }.toInt()
+                    val forbiddenKeys = setOf("execution_id", "executionId", "correlation_id", "correlationId", "worker_id", "workerId", "lock_key", "lockKey")
+                    val leakDetected = meterRegistry.meters.any { meter ->
+                        meter.id.tags.any { tag ->
+                            tag.key in forbiddenKeys ||
+                                tag.value.contains("e2e-corr-memory-1") ||
+                                tag.value.contains("Simulated transient error")
+                        }
+                    }
+                    val body = ""${'"'}{
+                        "started": ${'$'}started,
+                        "completedSuccess": ${'$'}completedSuccess,
+                        "completedFailedRetry": ${'$'}completedFailedRetry,
+                        "completedDeadLettered": ${'$'}completedDeadLettered,
+                        "deadLetterSize": ${'$'}deadLetterSize,
+                        "storeOps": ${'$'}storeOps,
+                        "unboundedTagLeak": ${'$'}leakDetected
+                    }""${'"'}.trimIndent()
+                    call.respondText(body, ContentType.Application.Json, HttpStatusCode.OK)
                 }
 
                 post("/trigger") {
@@ -976,6 +1105,15 @@ class KtorGeneratorDockerE2ETest {
         }
     """.trimIndent()
 
+    private fun httpGet(url: String): HttpResponse<String> {
+        val request = HttpRequest.newBuilder()
+            .uri(URI.create(url))
+            .timeout(Duration.ofSeconds(10))
+            .GET()
+            .build()
+        return httpClient.send(request, HttpResponse.BodyHandlers.ofString())
+    }
+
     private fun httpPost(url: String, headers: Map<String, String> = emptyMap()): HttpResponse<String> {
         val builder = HttpRequest.newBuilder()
             .uri(URI.create(url))
@@ -989,20 +1127,30 @@ class KtorGeneratorDockerE2ETest {
         baseUrl: String,
         timeout: Duration = Duration.ofSeconds(30),
         predicate: (JsonObject) -> Boolean
+    ): JsonObject = awaitHttpJson("$baseUrl/status", expectedStatus = 200, timeout = timeout, predicate = predicate)
+
+    private fun awaitJson(
+        url: String,
+        timeout: Duration = Duration.ofSeconds(15),
+        predicate: (JsonObject) -> Boolean
+    ): JsonObject = awaitHttpJson(url, expectedStatus = 200, timeout = timeout, predicate = predicate)
+
+    private fun awaitHttpJson(
+        url: String,
+        expectedStatus: Int,
+        timeout: Duration = Duration.ofSeconds(15),
+        predicate: (JsonObject) -> Boolean
     ): JsonObject {
         val deadline = System.currentTimeMillis() + timeout.toMillis()
-        var lastJson: JsonObject? = null
+        var lastStatus: Int? = null
+        var lastBody: String? = null
         while (System.currentTimeMillis() < deadline) {
             try {
-                val request = HttpRequest.newBuilder()
-                    .uri(URI.create("$baseUrl/status"))
-                    .timeout(Duration.ofSeconds(5))
-                    .GET()
-                    .build()
-                val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
-                if (response.statusCode() == 200) {
-                    val json = Json.parseToJsonElement(response.body()) as JsonObject
-                    lastJson = json
+                val response = httpGet(url)
+                lastStatus = response.statusCode()
+                lastBody = response.body()
+                if (lastStatus == expectedStatus) {
+                    val json = Json.parseToJsonElement(lastBody) as JsonObject
                     if (predicate(json)) {
                         return json
                     }
@@ -1010,8 +1158,8 @@ class KtorGeneratorDockerE2ETest {
             } catch (_: Exception) {
                 // Ignore transient errors while polling
             }
-            Thread.sleep(250)
+            Thread.sleep(150)
         }
-        throw AssertionError("Timed out waiting for /status condition. Last status: $lastJson")
+        throw AssertionError("Timed out waiting for $url status=$expectedStatus. Last status=$lastStatus body=$lastBody")
     }
 }

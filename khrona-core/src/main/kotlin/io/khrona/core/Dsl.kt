@@ -149,6 +149,10 @@ class KhronaConfig {
     var heartbeatInterval: java.time.Duration? = null
     var pollBatchSize: Int = 100
     var maxConcurrentExecutions: Int = 100
+    var observer: KhronaObserver = KhronaObserver.NO_OP
+    var errorFormatter: ErrorDiagnosticFormatter = ErrorDiagnosticFormatter.DEFAULT
+    var healthPollFailureThreshold: Int = 2
+    var deadLetterSamplingInterval: java.time.Duration = java.time.Duration.ofMinutes(1)
     val jobs = mutableListOf<JobDefinition>()
 
     fun pollingInterval(interval: kotlin.time.Duration) {
@@ -169,6 +173,20 @@ class KhronaConfig {
 
     fun heartbeatInterval(interval: kotlin.time.Duration) {
         this.heartbeatInterval = java.time.Duration.ofMillis(interval.inWholeMilliseconds)
+    }
+
+    fun deadLetterSamplingInterval(interval: kotlin.time.Duration) {
+        this.deadLetterSamplingInterval = java.time.Duration.ofMillis(interval.inWholeMilliseconds)
+    }
+
+    fun addObserver(observer: KhronaObserver) {
+        if (observer === KhronaObserver.NO_OP) return
+        val current = this.observer
+        this.observer = when {
+            current === KhronaObserver.NO_OP -> observer
+            current is CompositeKhronaObserver -> CompositeKhronaObserver(current.observers + observer)
+            else -> CompositeKhronaObserver(listOf(current, observer))
+        }
     }
 
     fun job(id: String, block: JobBuilder.() -> Unit) {
@@ -199,6 +217,12 @@ class KhronaConfig {
         }
         if (maxConcurrentExecutions <= 0) {
             throw IllegalArgumentException("maxConcurrentExecutions must be positive")
+        }
+        if (healthPollFailureThreshold <= 0) {
+            throw IllegalArgumentException("healthPollFailureThreshold must be positive")
+        }
+        if (deadLetterSamplingInterval.isNegative || deadLetterSamplingInterval.isZero) {
+            throw IllegalArgumentException("deadLetterSamplingInterval must be positive")
         }
         if (retentionPolicy.enabled) {
             if (!retentionPolicy.maxAge.isPositive()) {

@@ -256,5 +256,24 @@ class DslCoverageTest {
         assertEquals(ExecutionStatus.PENDING, delegate.getExecution(followUpExec.id)?.status)
         assertTrue(defaultCompleteStore.completeExecution(otherExec.id, ExecutionStatus.SUCCESS, nextExecution = followUpExec))
         assertTrue(defaultCompleteStore.completeExecution(otherExec.id, ExecutionStatus.FAILED, error = "err", nextExecution = null))
+
+        // Default checkHealth and countExecutions fallbacks on custom JobStore
+        assertEquals(HealthStatus.UP, store.checkHealth().status)
+        assertEquals(1L, store.countExecutions(JobExecutionQuery(jobId = "other-job", limit = 1)))
+
+        val failingHealthStore = object : JobStore by delegate {
+            override suspend fun listJobs(): List<JobDefinition> = throw IllegalStateException("store unavailable")
+        }
+        val downHealth = failingHealthStore.checkHealth()
+        assertEquals(HealthStatus.DOWN, downHealth.status)
+        assertEquals("IllegalStateException", downHealth.errorType)
+        assertEquals("store unavailable", downHealth.detail)
+
+        val cancellingHealthStore = object : JobStore by delegate {
+            override suspend fun listJobs(): List<JobDefinition> = throw kotlinx.coroutines.CancellationException("cancelled")
+        }
+        assertThrows(kotlinx.coroutines.CancellationException::class.java) {
+            kotlinx.coroutines.runBlocking { cancellingHealthStore.checkHealth() }
+        }
     }
 }

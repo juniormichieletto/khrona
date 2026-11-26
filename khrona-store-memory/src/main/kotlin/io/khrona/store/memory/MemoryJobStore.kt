@@ -1,10 +1,12 @@
 package io.khrona.store.memory
 
 import io.khrona.core.ExecutionStatus
+import io.khrona.core.HealthStatus
 import io.khrona.core.JobDefinition
 import io.khrona.core.JobExecution
 import io.khrona.core.JobExecutionQuery
 import io.khrona.core.JobStore
+import io.khrona.core.StoreHealth
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
@@ -96,6 +98,14 @@ class MemoryJobStore : JobStore {
 
     override suspend fun listExecutions(query: JobExecutionQuery): List<JobExecution> =
         query.selectFrom(executions.values)
+
+    override suspend fun countExecutions(query: JobExecutionQuery): Long {
+        val statuses = query.statuses
+        if (statuses != null && statuses.isEmpty()) return 0L
+        return executions.values.asSequence().filter(query::matches).count().toLong()
+    }
+
+    override suspend fun checkHealth(): StoreHealth = StoreHealth(HealthStatus.UP, Duration.ZERO)
 
     override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> {
         return listEligibleExecutions(now, limit, null)

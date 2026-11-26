@@ -5,7 +5,7 @@
 Detailed deliverables, acceptance evidence, and Dockerized Ktor generator coverage are tracked in [the 1.0 readiness notes](../../docs/1.0-readiness.md).
 
 - [ ] API-1: Stable handler/store API and SPI, execution context, compatibility checks, and deprecation policy.
-- [ ] OBS-1: Metrics, tracing/integration hooks, scheduler/store health, and failure diagnostics.
+- [x] OBS-1: Metrics, tracing/integration hooks, scheduler/store health, and failure diagnostics (`.specs/features/observability-and-health/`).
 - [ ] OPS-1: Queries, pause/resume, supported cancellation, DLQ inspection/replay, and job reconciliation. Manual triggering already exists.
 - [ ] UPG-1: Versioned migrations, populated-data upgrades, and rollback/recovery procedures.
 - [ ] DIST-1: Clock-skew/crash-recovery policy, partitions/failover evidence, soak tests, and blocking/cancellation limits.
@@ -16,7 +16,7 @@ The current generated-app E2E baseline covers Memory, PostgreSQL, and Redis via 
 ## Next Tasks
 - [x] Run Redis v0.4 release-readiness review
 - [x] Implement Core Job Management API (v0.5)
-- [ ] Implement Metrics (Micrometer/OpenTelemetry) (v0.5)
+- [x] Implement Metrics (Micrometer/OpenTelemetry) (v0.5)
 - [ ] Add lock inspection capabilities (v0.5)
 - [ ] Implement Android SQLite Store (v0.7)
 
@@ -81,7 +81,7 @@ The current generated-app E2E baseline covers Memory, PostgreSQL, and Redis via 
 - [x] Kotlin Duration DSL Support (v0.5.1)
 - [x] Misfire Policies (v0.5.0)
 - [x] Core Job Management API
-- [ ] Metrics & Tracing (Micrometer/OpenTelemetry)
+- [x] Metrics & Tracing (Micrometer/OpenTelemetry) — `.specs/features/observability-and-health/`
 - [ ] Lock Inspection
 
 ## v0.6: Hardening

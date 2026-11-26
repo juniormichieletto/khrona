@@ -106,6 +106,12 @@ class KhronaKtorTest {
                     heartbeatInterval = Duration.ofSeconds(10)
                     pollBatchSize = 25
                     maxConcurrentExecutions = 8
+                    val customObserver = object : KhronaObserver {}
+                    val customFormatter = ErrorDiagnosticFormatter { "redacted" }
+                    observer = customObserver
+                    errorFormatter = customFormatter
+                    healthPollFailureThreshold = 4
+                    deadLetterSamplingInterval = Duration.ofSeconds(45)
                     retention {
                         enabled = false
                         batchSize = 500
@@ -130,6 +136,10 @@ class KhronaKtorTest {
             assertEquals(Duration.ofSeconds(10), config.heartbeatInterval)
             assertEquals(25, config.pollBatchSize)
             assertEquals(8, config.maxConcurrentExecutions)
+            assertEquals(4, config.healthPollFailureThreshold)
+            assertEquals(Duration.ofSeconds(45), config.deadLetterSamplingInterval)
+            assertEquals("redacted", config.errorFormatter.format(IllegalStateException("secret")))
+            assertNotSame(KhronaObserver.NO_OP, config.observer)
             assertFalse(config.retentionPolicy.enabled)
             assertEquals(500, config.retentionPolicy.batchSize)
             assertEquals(listOf("initial-job", "second-job"), config.jobs.map { it.id })

@@ -1,13 +1,16 @@
 package io.khrona.store.redis
 
 import io.khrona.core.CronTrigger
+import io.khrona.core.ErrorDiagnosticFormatter
 import io.khrona.core.ExecutionStatus
+import io.khrona.core.HealthStatus
 import io.khrona.core.IntervalTrigger
 import io.khrona.core.JobDefinition
 import io.khrona.core.JobExecution
 import io.khrona.core.JobExecutionQuery
 import io.khrona.core.JobStore
 import io.khrona.core.OneTimeTrigger
+import io.khrona.core.StoreHealth
 import io.khrona.core.Trigger
 import io.lettuce.core.ClientOptions
 import io.lettuce.core.RedisException
@@ -16,6 +19,7 @@ import io.lettuce.core.RedisClient
 import io.lettuce.core.ScriptOutputType
 import io.lettuce.core.TimeoutOptions
 import io.lettuce.core.api.StatefulRedisConnection
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -195,7 +199,51 @@ class RedisJobStore private constructor(
     override suspend fun listExecutions(query: JobExecutionQuery): List<JobExecution> = inRedisContext {
         val statuses = query.statuses
         if (statuses != null && statuses.isEmpty()) return@inRedisContext emptyList()
-        val seen = LinkedHashMap<UUID, JobExecution>()
+        val matched = mutableListOf<JobExecution>()
+        forEachUniqueExecution { execution ->
+            if (query.matches(execution)) {
+                matched.add(execution)
+            }
+        }
+        matched.sortedWith(JobExecutionQuery.NEWEST_FIRST_COMPARATOR).take(query.limit)
+    }
+
+    override suspend fun countExecutions(query: JobExecutionQuery): Long = inRedisContext {
+        val statuses = query.statuses
+        if (statuses != null && statuses.isEmpty()) return@inRedisContext 0L
+        var count = 0L
+        forEachUniqueExecution { execution ->
+            if (query.matches(execution)) {
+                count++
+            }
+        }
+        count
+    }
+
+    override suspend fun checkHealth(): StoreHealth {
+        val startNanos = System.nanoTime()
+        return try {
+            val pong = inRedisContext { commands.ping() }
+            val latency = Duration.ofNanos((System.nanoTime() - startNanos).coerceAtLeast(0L))
+            if (pong.equals("PONG", ignoreCase = true)) {
+                StoreHealth(HealthStatus.UP, latency)
+            } else {
+                StoreHealth(HealthStatus.DOWN, latency, detail = "Unexpected PING response: $pong")
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            StoreHealth(
+                status = HealthStatus.DOWN,
+                latency = Duration.ofNanos((System.nanoTime() - startNanos).coerceAtLeast(0L)),
+                errorType = ErrorDiagnosticFormatter.typeName(e),
+                detail = e.message
+            )
+        }
+    }
+
+    private fun forEachUniqueExecution(action: (JobExecution) -> Unit) {
+        val seenIds = HashSet<String>()
         var cursor = io.lettuce.core.ScanCursor.INITIAL
         do {
             val scanResult = commands.hscan(
@@ -204,12 +252,12 @@ class RedisJobStore private constructor(
                 io.lettuce.core.ScanArgs.Builder.limit(1_000L)
             )
             cursor = scanResult
-            scanResult.map.values.forEach { raw ->
-                val execution = json.decodeFromString<StoredExecution>(raw).toExecution()
-                seen[execution.id] = execution
+            scanResult.map.forEach { (id, raw) ->
+                if (seenIds.add(id)) {
+                    action(json.decodeFromString<StoredExecution>(raw).toExecution())
+                }
             }
         } while (!cursor.isFinished)
-        query.selectFrom(seen.values)
     }
 
     override suspend fun listEligibleExecutions(now: Instant, limit: Int): List<JobExecution> =

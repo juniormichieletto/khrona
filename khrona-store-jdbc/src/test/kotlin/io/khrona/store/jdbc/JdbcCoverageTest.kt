@@ -772,5 +772,211 @@ class JdbcCoverageTest : AbstractJdbcJobStoreTest() {
         assertFalse(store.claimExecution(corruptDefExec.id, "worker-1", Duration.ofMinutes(1)))
         assertEquals(ExecutionStatus.PENDING, store.getExecution(corruptDefExec.id)?.status)
     }
+
+    @Test
+    fun `dialects expose healthCheckSql and countExecutionsSql and store checkHealth reports DOWN on closed DataSource`() = runBlocking {
+        val h2 = H2Dialect()
+        val legacy = object : JdbcDialect {
+            override fun upsertJobSql() = h2.upsertJobSql()
+            override fun upsertExecutionSql() = h2.upsertExecutionSql()
+            override fun claimExecutionSql() = h2.claimExecutionSql()
+            override fun listEligibleExecutionsSql() = h2.listEligibleExecutionsSql()
+            override fun heartbeatSql() = h2.heartbeatSql()
+            override fun isLockHeldSql(excludeId: Boolean) = h2.isLockHeldSql(excludeId)
+            override fun resetExpiredExecutionsSql() = h2.resetExpiredExecutionsSql()
+            override fun cleanupCompletedExecutionsSql(statusCount: Int) = h2.cleanupCompletedExecutionsSql(statusCount)
+        }
+        listOf(PostgresDialect(), H2Dialect(), MySqlDialect(), OracleDialect(), legacy).forEach { dialect ->
+            if (dialect is OracleDialect) {
+                assertEquals("SELECT 1 FROM DUAL", dialect.healthCheckSql())
+            } else {
+                assertEquals("SELECT 1", dialect.healthCheckSql())
+            }
+            val unfilteredCountSql = dialect.countExecutionsSql(
+                hasJobId = false,
+                statusCount = 0,
+                hasScheduledFrom = false,
+                hasScheduledUntil = false
+            )
+            assertEquals("SELECT COUNT(*) FROM khrona_executions", unfilteredCountSql)
+            val filteredCountSql = dialect.countExecutionsSql(
+                hasJobId = true,
+                statusCount = 2,
+                hasScheduledFrom = true,
+                hasScheduledUntil = true
+            )
+            assertTrue(filteredCountSql.contains("SELECT COUNT(*) FROM khrona_executions WHERE job_id = ? AND status IN (?,?) AND scheduled_at >= ? AND scheduled_at <= ?"))
+        }
+
+        val closedDs = HikariDataSource(HikariConfig().apply {
+            jdbcUrl = "jdbc:h2:mem:closed_health_${java.util.UUID.randomUUID()};MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1"
+            username = "sa"
+            password = ""
+        })
+        val failingStore = JdbcJobStore(closedDs, H2Dialect())
+        closedDs.close()
+
+        val downHealth = failingStore.checkHealth()
+        assertEquals(io.khrona.core.HealthStatus.DOWN, downHealth.status)
+        assertNotNull(downHealth.errorType)
+
+        // Exercise concrete dialect default bridge methods directly on concrete classes
+        val pg = PostgresDialect()
+        assertEquals("SELECT 1", pg.healthCheckSql())
+        assertTrue(pg.countExecutionsSql(false, 0, false, false).startsWith("SELECT COUNT(*)"))
+        assertTrue(pg.listExecutionsSql(false, 0, false, false).contains("LIMIT ?"))
+        assertTrue(pg.selectJobForClaimSql().contains("khrona_jobs"))
+
+        val h2Concrete = H2Dialect()
+        assertEquals("SELECT 1", h2Concrete.healthCheckSql())
+        assertTrue(h2Concrete.countExecutionsSql(false, 0, false, false).startsWith("SELECT COUNT(*)"))
+        assertTrue(h2Concrete.listExecutionsSql(false, 0, false, false).contains("LIMIT ?"))
+        assertTrue(h2Concrete.selectJobForClaimSql().contains("khrona_jobs"))
+
+        val mysql = MySqlDialect()
+        assertEquals("SELECT 1", mysql.healthCheckSql())
+        assertTrue(mysql.countExecutionsSql(false, 0, false, false).startsWith("SELECT COUNT(*)"))
+        assertTrue(mysql.listExecutionsSql(false, 0, false, false).contains("LIMIT ?"))
+        assertTrue(mysql.selectJobForClaimSql().contains("khrona_jobs"))
+
+        val oracle = OracleDialect()
+        assertEquals("SELECT 1 FROM DUAL", oracle.healthCheckSql())
+        assertTrue(oracle.countExecutionsSql(false, 0, false, false).startsWith("SELECT COUNT(*)"))
+        assertTrue(oracle.listExecutionsSql(false, 0, false, false).contains("FETCH FIRST ? ROWS ONLY"))
+        assertTrue(oracle.selectJobForClaimSql().contains("khrona_jobs"))
+    }
+
+    @Test
+    fun `Oracle cleanup and seeded execution extraction branches are covered`() = runBlocking {
+        // Test extractSeededExecutionId non-primitive & non-string JSON branches
+        val objSeedExec = JobExecution(jobId = "obj-seed-json", scheduledAt = Instant.EPOCH)
+        dataSource.connection.use { conn ->
+            conn.prepareStatement("INSERT INTO khrona_jobs (id, definition_json) VALUES (?, ?)").use { stmt ->
+                stmt.setString(1, "obj-seed-json")
+                stmt.setString(2, "{\"_seededExecutionId\":{}}")
+                stmt.executeUpdate()
+                stmt.setString(1, "num-seed-json")
+                stmt.setString(2, "{\"_seededExecutionId\":123}")
+                stmt.executeUpdate()
+            }
+        }
+        assertTrue(store.seedInitialExecution(objSeedExec))
+        assertTrue(store.seedInitialExecution(JobExecution(jobId = "num-seed-json", scheduledAt = Instant.EPOCH)))
+
+        // Exercise OracleDialect SKIP LOCKED cleanup via a JDBC proxy DataSource
+        val returnedRows = mutableListOf("id-1", "id-2", "id-3")
+        val batchedIds = mutableListOf<String>()
+        var rollbackCalled = false
+        val throwOnBatch = java.util.concurrent.atomic.AtomicBoolean(false)
+
+        val fakeDs = Proxy.newProxyInstance(
+            DataSource::class.java.classLoader,
+            arrayOf(DataSource::class.java)
+        ) { _, method, _ ->
+            if (method.name == "getConnection") {
+                var autoCommit = true
+                Proxy.newProxyInstance(
+                    Connection::class.java.classLoader,
+                    arrayOf(Connection::class.java)
+                ) { _, connMethod, args ->
+                    when (connMethod.name) {
+                        "getAutoCommit" -> autoCommit
+                        "setAutoCommit" -> {
+                            autoCommit = args[0] as Boolean
+                            null
+                        }
+                        "commit" -> null
+                        "rollback" -> {
+                            rollbackCalled = true
+                            null
+                        }
+                        "close" -> null
+                        "prepareStatement" -> {
+                            var rowIndex = -1
+                            var lastParam1: String? = null
+                            Proxy.newProxyInstance(
+                                java.sql.PreparedStatement::class.java.classLoader,
+                                arrayOf(java.sql.PreparedStatement::class.java)
+                            ) { _, psMethod, psArgs ->
+                                when (psMethod.name) {
+                                    "setFetchSize", "setQueryTimeout", "setTimestamp", "close" -> null
+                                    "setString" -> {
+                                        if (psArgs != null && psArgs[0] == 1) {
+                                            lastParam1 = psArgs[1] as? String
+                                        }
+                                        null
+                                    }
+                                    "addBatch" -> {
+                                        lastParam1?.let { batchedIds.add(it) }
+                                        null
+                                    }
+                                    "executeBatch" -> {
+                                        if (throwOnBatch.get()) throw SQLException("oracle batch failed")
+                                        IntArray(batchedIds.size) { i ->
+                                            when (i) {
+                                                0 -> 1
+                                                1 -> Statement.SUCCESS_NO_INFO
+                                                else -> 1
+                                            }
+                                        }
+                                    }
+                                    "executeQuery" -> Proxy.newProxyInstance(
+                                        java.sql.ResultSet::class.java.classLoader,
+                                        arrayOf(java.sql.ResultSet::class.java)
+                                    ) { _, rsMethod, _ ->
+                                        when (rsMethod.name) {
+                                            "next" -> {
+                                                rowIndex++
+                                                rowIndex < returnedRows.size
+                                            }
+                                            "getString" -> returnedRows[rowIndex]
+                                            "close" -> null
+                                            else -> null
+                                        }
+                                    }
+                                    else -> null
+                                }
+                            }
+                        }
+                        else -> null
+                    }
+                }
+            } else null
+        } as DataSource
+
+        val oracleStore = JdbcJobStore(fakeDs, OracleDialect())
+        assertEquals(
+            2,
+            oracleStore.cleanupCompletedExecutions(
+                before = Instant.now(),
+                statuses = setOf(ExecutionStatus.SUCCESS),
+                limit = 2
+            )
+        )
+        assertEquals(listOf("id-1", "id-2"), batchedIds)
+
+        returnedRows.clear()
+        assertEquals(
+            0,
+            oracleStore.cleanupCompletedExecutions(
+                before = Instant.now(),
+                statuses = setOf(ExecutionStatus.SUCCESS),
+                limit = 5
+            )
+        )
+
+        returnedRows.add("id-err")
+        throwOnBatch.set(true)
+        assertThrows(SQLException::class.java) {
+            runBlocking {
+                oracleStore.cleanupCompletedExecutions(
+                    before = Instant.now(),
+                    statuses = setOf(ExecutionStatus.SUCCESS),
+                    limit = 5
+                )
+            }
+        }
+        assertTrue(rollbackCalled)
+    }
 }
 

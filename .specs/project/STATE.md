@@ -27,15 +27,15 @@
 - [x] Add Redis Store implementation plan (v0.4)
 - [x] Implement Redis Store (v0.4)
 - [x] Implement Core Job Management API & ExecutionContext
-- [ ] Implement Metrics & Lock Inspection (v0.5)
+- [x] Implement Metrics & Tracing / Observability (`OBS-1`)
 - [ ] Implement Android SQLite Store (v0.7)
 
 ## Current Implementation Status
 - **Redis Store (v0.4 -> v0.6.0):** Production-ready (graduated in v0.6.0). Uses Lettuce, `RedisJobStoreConfig`, `RedisJobStoreConfig.clusterNamespace(namespace)`, `KhronaRedisOomException`, single-round-trip atomic Lua scripts across `saveExecution`, `claimExecution`, `heartbeat`, `updateExecutionStatus`, `resetExpiredExecutions`, `listEligibleExecutions`, `isLockHeld`, `supersedeExecutionsByLockKey`, and chunked `cleanupCompletedExecutions` (with `$namespace:cleanup:lock` and automatic orphan/stale index self-healing), verified by `RedisJobStoreTest`, shared `JobStoreContract`, Dockerized Ktor E2E tests, and 1/2/15-node cluster drain benchmarks. `./gradlew clean test` passes.
-- **Redis remaining work:** Optional command-latency observability hook (Micrometer/OpenTelemetry) planned alongside core metrics.
+- **Observability & Health (OBS-1):** Implemented zero-dependency `KhronaObserver` SPI, `ErrorDiagnosticFormatter`, `ObservableJobStore`, `Scheduler.health()`, `JobStore.checkHealth()` / `countExecutions()` across Memory/JDBC/Redis/Mock, and the optional `khrona-observability` module (`MicrometerKhronaObserver` & `OpenTelemetryKhronaObserver`).
 ## Next Tasks
 - [x] Implement Core Job Management API (v0.5)
-- [ ] Implement Metrics (Micrometer) (v0.5)
+- [x] Implement Metrics (Micrometer/OpenTelemetry) (v0.5)
 - [ ] Add lock inspection capabilities (v0.5)
 - [ ] Implement Android SQLite Store (v0.7)
 - [ ] Add shutdown/cancellation contract hardening to a future reliability release
@@ -79,3 +79,10 @@
 - Implemented `JobStore.listExecutions(query)` across Memory, JDBC (PostgreSQL, MySQL, Oracle, H2), Redis, and `MockJobStore`, plus terminal `ExecutionStatus.CANCELLED` and `JobDefinition.paused` persistence.
 - Added `Scheduler` management APIs (`listJobOverviews`, `getJobOverview`, `listJobHistory`, `listExecutions`, `startJob`, `pauseJob`, `resumeJob`, `stopExecution`, `stopJob`) and `ExecutionContext` (`executionId`, `jobId`, `attempt`, `scheduledAt`, `payload`, `correlationId`, `checkpoint()`).
 - Updated `JobHandler` to `suspend ExecutionContext.(payload: Any?) -> Unit`; standard DSL lambdas remain source-compatible, while callers holding pre-typed `suspend (Any?) -> Unit` references should update them to `JobHandler`.
+
+## Observability and Health (`OBS-1`, 2026-11-25)
+
+- Added zero-dependency `KhronaObserver` SPI (`Observability.kt`), `CompositeKhronaObserver` (with callback & `aroundExecution` error isolation), `ObservableJobStore`, `ErrorDiagnosticFormatter` (bounded `"TypeName: message"` / `"TypeName"` diagnostics with custom redaction hook), and `Health.kt` (`HealthStatus`, `StoreHealth`, `SchedulerHealth`).
+- Extended `JobStore` with `checkHealth()` and `countExecutions(query)` across `MemoryJobStore`, `JdbcJobStore` / `JdbcDialect` (including Oracle `SELECT 1 FROM DUAL`), `RedisJobStore`, and `MockJobStore`.
+- Instrumented `Scheduler` lifecycle callbacks, `aroundExecution` coroutine propagation, DLQ sampling (`deadLetterSamplingInterval`), and `Scheduler.health()` readiness/liveness state machine (`STOPPED`, `STARTING`, `UP`, `DEGRADED`, `DOWN` + startup/outage recovery).
+- Added the optional `khrona-observability` module with `compileOnly` dependencies on Micrometer and OpenTelemetry, shipping `MicrometerKhronaObserver` and `OpenTelemetryKhronaObserver` with strictly bounded metric labels.
