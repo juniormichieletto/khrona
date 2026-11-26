@@ -5,6 +5,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Tag
@@ -149,7 +150,7 @@ class KtorGeneratorDockerE2ETest {
     }
 
     @Test
-    fun `scaffolds Ktor project inside Docker with JdbcJobStore and PostgreSQL and validates persistence FORBID REPLACE misfires and retention`() {
+    fun `scaffolds Ktor project inside Docker with JdbcJobStore PostgreSQL and OpenTelemetry and validates persistence FORBID REPLACE misfires retention tracing metrics and health`() {
         Network.newNetwork().use { network ->
             PostgreSQLContainer("postgres:16-alpine")
                 .withNetwork(network)
@@ -165,6 +166,10 @@ class KtorGeneratorDockerE2ETest {
                         dependencies {
                             implementation("io.github.juniormichieletto:khrona-ktor:$khronaVersion")
                             implementation("io.github.juniormichieletto:khrona-store-jdbc:$khronaVersion")
+                            implementation("io.github.juniormichieletto:khrona-observability:$khronaVersion")
+                            implementation("io.opentelemetry:opentelemetry-api:1.47.0")
+                            implementation("io.opentelemetry:opentelemetry-extension-kotlin:1.47.0")
+                            implementation("io.opentelemetry:opentelemetry-sdk-testing:1.47.0")
                             implementation("com.zaxxer:HikariCP:6.2.1")
                             runtimeOnly("org.postgresql:postgresql:42.7.5")
                         }
@@ -197,6 +202,27 @@ class KtorGeneratorDockerE2ETest {
                             assertTrue(status["retentionCleaned"]?.jsonPrimitive?.boolean == true)
                             assertTrue(status["fencingVerified"]?.jsonPrimitive?.boolean == true)
                             assertTrue(status["managementVerified"]?.jsonPrimitive?.boolean == true)
+
+                            // Verify OpenTelemetryKhronaObserver spans, coroutine context propagation, and bounded metrics
+                            val otel = awaitJson("$baseUrl/otel-summary") { json ->
+                                (json["otelSpanCount"]?.jsonPrimitive?.int ?: 0) >= 2 &&
+                                    json["otelContextPropagated"]?.jsonPrimitive?.boolean == true &&
+                                    (json["otelCompletedCount"]?.jsonPrimitive?.long ?: 0L) >= 2L &&
+                                    (json["otelStoreOpCount"]?.jsonPrimitive?.long ?: 0L) >= 1L
+                            }
+                            assertTrue((otel["otelSpanCount"]?.jsonPrimitive?.int ?: 0) >= 2)
+                            assertEquals(true, otel["otelContextPropagated"]?.jsonPrimitive?.boolean)
+                            assertTrue((otel["otelCompletedCount"]?.jsonPrimitive?.long ?: 0L) >= 2L)
+                            assertTrue((otel["otelStoreOpCount"]?.jsonPrimitive?.long ?: 0L) >= 1L)
+                            assertEquals(false, otel["unboundedMetricAttributeLeak"]?.jsonPrimitive?.boolean)
+
+                            // Verify host-owned /health endpoint backed by scheduler.health() against live PostgreSQL
+                            val health = awaitHttpJson("$baseUrl/health", expectedStatus = 200) { json ->
+                                json["status"]?.jsonPrimitive?.content == "UP" &&
+                                    json["storeStatus"]?.jsonPrimitive?.content == "UP"
+                            }
+                            assertEquals(true, health["isHealthy"]?.jsonPrimitive?.boolean)
+                            assertEquals(true, health["isReady"]?.jsonPrimitive?.boolean)
                         }
                 }
         }
@@ -245,6 +271,14 @@ class KtorGeneratorDockerE2ETest {
                             assertTrue(status["replaceSuperseded"]?.jsonPrimitive?.boolean == true)
                             assertTrue(status["retentionCleaned"]?.jsonPrimitive?.boolean == true)
                             assertTrue(status["fencingVerified"]?.jsonPrimitive?.boolean == true)
+
+                            // Verify host-owned /health endpoint backed by scheduler.health() against live Redis
+                            val health = awaitHttpJson("$baseUrl/health", expectedStatus = 200) { json ->
+                                json["status"]?.jsonPrimitive?.content == "UP" &&
+                                    json["storeStatus"]?.jsonPrimitive?.content == "UP"
+                            }
+                            assertEquals(true, health["isHealthy"]?.jsonPrimitive?.boolean)
+                            assertEquals(true, health["isReady"]?.jsonPrimitive?.boolean)
                         }
                 }
         }
@@ -701,14 +735,25 @@ class KtorGeneratorDockerE2ETest {
         import com.zaxxer.hikari.HikariDataSource
         import io.khrona.core.*
         import io.khrona.ktor.*
+        import io.khrona.observability.OpenTelemetryKhronaObserver
         import io.khrona.store.jdbc.JdbcJobStore
         import io.ktor.http.*
         import io.ktor.server.application.*
         import io.ktor.server.response.*
         import io.ktor.server.routing.*
+        import io.opentelemetry.api.trace.Span
+        import io.opentelemetry.sdk.OpenTelemetrySdk
+        import io.opentelemetry.sdk.metrics.SdkMeterProvider
+        import io.opentelemetry.sdk.testing.exporter.InMemoryMetricReader
+        import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter
+        import io.opentelemetry.sdk.trace.SdkTracerProvider
+        import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor
         import kotlinx.coroutines.CancellationException
         import kotlinx.coroutines.CompletableDeferred
+        import kotlinx.coroutines.Dispatchers
+        import kotlinx.coroutines.async
         import kotlinx.coroutines.awaitCancellation
+        import kotlinx.coroutines.coroutineScope
         import kotlinx.coroutines.delay
         import kotlinx.coroutines.launch
         import kotlinx.coroutines.runBlocking
@@ -728,12 +773,31 @@ class KtorGeneratorDockerE2ETest {
                 password = System.getenv("DB_PASSWORD")
                 maximumPoolSize = 5
             })
+            val spanExporter = InMemorySpanExporter.create()
+            val metricReader = InMemoryMetricReader.create()
+            val otelSdk = OpenTelemetrySdk.builder()
+                .setTracerProvider(
+                    SdkTracerProvider.builder()
+                        .addSpanProcessor(SimpleSpanProcessor.create(spanExporter))
+                        .build()
+                )
+                .setMeterProvider(
+                    SdkMeterProvider.builder()
+                        .registerMetricReader(metricReader)
+                        .build()
+                )
+                .build()
+            val otelObserver = OpenTelemetryKhronaObserver(otelSdk)
             monitor.subscribe(ApplicationStopped) {
+                otelObserver.close()
+                otelSdk.close()
                 hikari.close()
             }
-            val store = JdbcJobStore(hikari)
+            val rawStore = JdbcJobStore(hikari)
+            val store = rawStore.observedBy(otelObserver)
 
             val intervalRuns = AtomicInteger(0)
+            val otelContextPropagated = AtomicBoolean(false)
             val replaceCount = AtomicInteger(0)
             val replaceCancelledFirst = AtomicBoolean(false)
             val replaceCompletedSecond = AtomicBoolean(false)
@@ -750,11 +814,12 @@ class KtorGeneratorDockerE2ETest {
             val staleMisfireId = staleMisfire.id
 
             runBlocking {
-                store.migrate()
+                rawStore.migrate()
             }
 
             installKhrona {
                 this.store = store
+                this.observer = otelObserver
                 pollingInterval(100.milliseconds)
                 misfireThreshold(2.seconds)
                 executionLeaseDuration(5.seconds)
@@ -772,6 +837,16 @@ class KtorGeneratorDockerE2ETest {
                     job("jdbc-interval") {
                         every(200.milliseconds)
                         execute {
+                            val parentSpan = Span.current().spanContext
+                            delay(5)
+                            val childSpanId = coroutineScope {
+                                async(Dispatchers.Default) {
+                                    Span.current().spanContext.spanId
+                                }.await()
+                            }
+                            if (parentSpan.isValid && childSpanId == parentSpan.spanId) {
+                                otelContextPropagated.set(true)
+                            }
                             intervalRuns.incrementAndGet()
                         }
                     }
@@ -908,7 +983,46 @@ class KtorGeneratorDockerE2ETest {
 
             routing {
                 get("/health") {
-                    call.respondText("OK", ContentType.Text.Plain, HttpStatusCode.OK)
+                    val health = this@configureRouting.plugin(KhronaPlugin).scheduler.health()
+                    val code = if (health.isReady) HttpStatusCode.OK else HttpStatusCode.ServiceUnavailable
+                    val body = ""${'"'}{
+                        "status": "${'$'}{health.status.name}",
+                        "storeStatus": "${'$'}{health.storeHealth.status.name}",
+                        "isHealthy": ${'$'}{health.isHealthy},
+                        "isReady": ${'$'}{health.isReady}
+                    }""${'"'}.trimIndent()
+                    call.respondText(body, ContentType.Application.Json, code)
+                }
+
+                get("/otel-summary") {
+                    val spans = spanExporter.finishedSpanItems.filter { it.name == "khrona.job.execute" }
+                    val metrics = metricReader.collectAllMetrics()
+                    val metricsByName = metrics.associateBy { it.name }
+                    val completedCount = metricsByName["khrona.executions.completed"]
+                        ?.longSumData?.points?.sumOf { it.value } ?: 0L
+                    val storeOpCount = metricsByName["khrona.store.operation.duration"]
+                        ?.histogramData?.points?.sumOf { it.count } ?: 0L
+                    val forbiddenKeys = setOf(
+                        "execution_id", "executionId", "khrona.execution.id",
+                        "correlation_id", "correlationId", "khrona.correlation_id",
+                        "worker_id", "workerId", "lock_key", "lockKey"
+                    )
+                    val unboundedLeak = metrics.any { metric ->
+                        val points = metric.longSumData.points +
+                            metric.histogramData.points +
+                            metric.longGaugeData.points
+                        points.any { point ->
+                            point.attributes.asMap().keys.any { it.key in forbiddenKeys }
+                        }
+                    }
+                    val body = ""${'"'}{
+                        "otelSpanCount": ${'$'}{spans.size},
+                        "otelContextPropagated": ${'$'}{otelContextPropagated.get()},
+                        "otelCompletedCount": ${'$'}completedCount,
+                        "otelStoreOpCount": ${'$'}storeOpCount,
+                        "unboundedMetricAttributeLeak": ${'$'}unboundedLeak
+                    }""${'"'}.trimIndent()
+                    call.respondText(body, ContentType.Application.Json)
                 }
 
                 get("/status") {
@@ -1084,7 +1198,15 @@ class KtorGeneratorDockerE2ETest {
 
             routing {
                 get("/health") {
-                    call.respondText("OK", ContentType.Text.Plain, HttpStatusCode.OK)
+                    val health = this@configureRouting.plugin(KhronaPlugin).scheduler.health()
+                    val code = if (health.isReady) HttpStatusCode.OK else HttpStatusCode.ServiceUnavailable
+                    val body = ""${'"'}{
+                        "status": "${'$'}{health.status.name}",
+                        "storeStatus": "${'$'}{health.storeHealth.status.name}",
+                        "isHealthy": ${'$'}{health.isHealthy},
+                        "isReady": ${'$'}{health.isReady}
+                    }""${'"'}.trimIndent()
+                    call.respondText(body, ContentType.Application.Json, code)
                 }
 
                 get("/status") {
