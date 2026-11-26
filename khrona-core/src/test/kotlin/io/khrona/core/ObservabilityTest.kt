@@ -1768,6 +1768,60 @@ class ObservabilityTest {
     }
 
     @Test
+    fun `queued observer callback does not rerun handler after fallback completes`() = runTest {
+        val context = sampleContext(jobId = "queued-job")
+
+        // 1. Observer queues block() and throws before the queued callback runs
+        var throwFallbackCalls = 0
+        val queuedRejections1 = AtomicInteger(0)
+        val queueAndThrowObserver = object : KhronaObserver {
+            override suspend fun <T> aroundExecution(context: ExecutionContext, block: suspend () -> T): T {
+                backgroundScope.launch {
+                    try {
+                        block()
+                    } catch (_: IllegalStateException) {
+                        queuedRejections1.incrementAndGet()
+                    }
+                }
+                error("Observer threw after queuing callback")
+            }
+        }
+        val result1 = invokeAroundSafely(queueAndThrowObserver, context) {
+            throwFallbackCalls++
+            "fallback-throw-result"
+        }
+        runCurrent()
+        assertEquals("fallback-throw-result", result1)
+        assertEquals(1, throwFallbackCalls)
+        assertEquals(1, queuedRejections1.get())
+
+        // 2. Observer queues block() and returns without awaiting it
+        var returnFallbackCalls = 0
+        val queuedRejections2 = AtomicInteger(0)
+        val queueAndReturnObserver = object : KhronaObserver {
+            @Suppress("UNCHECKED_CAST")
+            override suspend fun <T> aroundExecution(context: ExecutionContext, block: suspend () -> T): T {
+                backgroundScope.launch {
+                    try {
+                        block()
+                    } catch (_: IllegalStateException) {
+                        queuedRejections2.incrementAndGet()
+                    }
+                }
+                return "ignored" as T
+            }
+        }
+        val result2 = invokeAroundSafely(queueAndReturnObserver, context) {
+            returnFallbackCalls++
+            "fallback-return-result"
+        }
+        runCurrent()
+        assertEquals("fallback-return-result", result2)
+        assertEquals(1, returnFallbackCalls)
+        assertEquals(1, queuedRejections2.get())
+    }
+
+    @Test
     fun `failed remote lookup does not attribute supersession to the replacing job`() = runTest {
         val clock = Clock.fixed(Instant.EPOCH, ZoneOffset.UTC)
         val base = MockJobStore(clock)

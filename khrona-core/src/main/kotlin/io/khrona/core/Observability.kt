@@ -197,18 +197,27 @@ internal suspend fun <T> invokeAroundSafely(
     val blockInvoked = AtomicBoolean(false)
     val blockOutcome = CompletableDeferred<Result<T>>()
 
+    suspend fun executeGuarded(): T = try {
+        val value = block()
+        blockOutcome.complete(Result.success(value))
+        value
+    } catch (t: Throwable) {
+        blockOutcome.complete(Result.failure(t))
+        throw t
+    }
+
+    suspend fun runOnceOrAwait(): T =
+        if (blockInvoked.compareAndSet(false, true)) {
+            executeGuarded()
+        } else {
+            blockOutcome.await().getOrThrow()
+        }
+
     val wrappedBlock: suspend () -> T = {
         if (!blockInvoked.compareAndSet(false, true)) {
             throw IllegalStateException("KhronaObserver.aroundExecution must not invoke handler block more than once")
         }
-        try {
-            val value = block()
-            blockOutcome.complete(Result.success(value))
-            value
-        } catch (t: Throwable) {
-            blockOutcome.complete(Result.failure(t))
-            throw t
-        }
+        executeGuarded()
     }
 
     try {
@@ -222,14 +231,13 @@ internal suspend fun <T> invokeAroundSafely(
         }
         if (t is CancellationException && !currentCoroutineContext().isActive) throw t
         observerLog.warn("KhronaObserver.aroundExecution failed before invoking handler", t)
-        return block()
+        return runOnceOrAwait()
     }
 
-    if (blockInvoked.get()) {
-        return blockOutcome.await().getOrThrow()
+    if (!blockInvoked.get()) {
+        observerLog.warn("KhronaObserver.aroundExecution returned without invoking handler; executing handler directly")
     }
-    observerLog.warn("KhronaObserver.aroundExecution returned without invoking handler; executing handler directly")
-    return block()
+    return runOnceOrAwait()
 }
 
 class ObservableJobStore(
