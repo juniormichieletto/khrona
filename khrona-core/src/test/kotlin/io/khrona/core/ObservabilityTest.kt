@@ -802,7 +802,7 @@ class ObservabilityTest {
                 once()
                 retry { maxAttempts = 1 }
                 execute {
-                    throw IllegalStateException("fallback diagnostic works")
+                    throw IllegalStateException("secret-token=999")
                 }
             }
         }
@@ -818,7 +818,8 @@ class ObservabilityTest {
 
         val saved = store.getExecution(exec.id)
         assertEquals(ExecutionStatus.DEAD_LETTERED, saved?.status)
-        assertEquals("IllegalStateException: fallback diagnostic works", saved?.error)
+        assertEquals("IllegalStateException", saved?.error)
+        assertFalse(saved?.error?.contains("secret-token") == true)
         assertEquals(1, siblingCompleted.get())
     }
 
@@ -1324,5 +1325,388 @@ class ObservabilityTest {
         } finally {
             stallScope.cancel()
         }
+    }
+
+    @Test
+    fun `DLQ sampling skips NO_OP observer and isolates countExecutions failures without blocking polling`() = runBlocking {
+        // 1. Default NO_OP observer skips countExecutions completely
+        val noopBase = MockJobStore()
+        val noopCountCalls = AtomicInteger(0)
+        val noopJobRan = CompletableDeferred<Unit>()
+        val noopStore = object : JobStore by noopBase {
+            override suspend fun countExecutions(query: JobExecutionQuery): Long {
+                noopCountCalls.incrementAndGet()
+                throw IllegalStateException("countExecutions should not run when observer is NO_OP")
+            }
+        }
+        val scope1 = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        val scheduler1 = Scheduler(
+            KhronaConfig().apply {
+                this.store = noopStore
+                pollingInterval = Duration.ofMillis(30)
+                deadLetterSamplingInterval = Duration.ofMillis(30)
+                shutdownTimeout = Duration.ofMillis(500)
+                job("noop-dlq-job") {
+                    once()
+                    execute { noopJobRan.complete(Unit) }
+                }
+            },
+            scope1
+        )
+        try {
+            scheduler1.start()
+            withTimeout(3_000) { noopJobRan.await() }
+            delay(80)
+            assertEquals(0, noopCountCalls.get())
+            assertEquals(HealthStatus.UP, scheduler1.health().status)
+            scheduler1.stop()
+        } finally {
+            scope1.cancel()
+        }
+
+        // 2. Active observer with failing countExecutions still polls jobs and advances sampling cadence
+        val activeBase = MockJobStore()
+        val activeCountCalls = AtomicInteger(0)
+        val activeJobRuns = AtomicInteger(0)
+        val activeStore = object : JobStore by activeBase {
+            override suspend fun countExecutions(query: JobExecutionQuery): Long {
+                activeCountCalls.incrementAndGet()
+                throw IllegalStateException("DLQ count failed")
+            }
+        }
+        val scope2 = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        val scheduler2 = Scheduler(
+            KhronaConfig().apply {
+                this.store = activeStore
+                observer = object : KhronaObserver {}
+                pollingInterval = Duration.ofMillis(30)
+                deadLetterSamplingInterval = Duration.ofMinutes(10)
+                shutdownTimeout = Duration.ofMillis(500)
+                job("active-dlq-job") {
+                    every(Duration.ofMillis(40))
+                    execute { activeJobRuns.incrementAndGet() }
+                }
+            },
+            scope2
+        )
+        try {
+            scheduler2.start()
+            withTimeout(3_000) {
+                while (activeJobRuns.get() < 2) delay(15)
+            }
+            assertEquals(1, activeCountCalls.get(), "Failed DLQ sample must not retry on every poll tick")
+            assertEquals(HealthStatus.UP, scheduler2.health().status)
+            scheduler2.stop()
+        } finally {
+            scope2.cancel()
+        }
+    }
+
+    @Test
+    fun `observer throwing CancellationException in synchronous callbacks does not stop scheduler`() = runBlocking {
+        val store = MockJobStore()
+        val jobRan = CompletableDeferred<Unit>()
+        val siblingSawSample = AtomicBoolean(false)
+        val siblingSawCompleted = AtomicBoolean(false)
+
+        val cancellingObserver = object : KhronaObserver {
+            override fun onDeadLetterCountSampled(count: Long) {
+                throw CancellationException("observer cancelled on DLQ sample")
+            }
+
+            override fun onExecutionStarted(context: ExecutionContext, lag: Duration) {
+                throw CancellationException("observer cancelled on start")
+            }
+
+            override fun onExecutionCompleted(
+                context: ExecutionContext,
+                outcome: ExecutionOutcome,
+                duration: Duration,
+                errorType: String?
+            ) {
+                throw CancellationException("observer cancelled on complete")
+            }
+        }
+        val siblingObserver = object : KhronaObserver {
+            override fun onDeadLetterCountSampled(count: Long) {
+                siblingSawSample.set(true)
+            }
+
+            override fun onExecutionCompleted(
+                context: ExecutionContext,
+                outcome: ExecutionOutcome,
+                duration: Duration,
+                errorType: String?
+            ) {
+                siblingSawCompleted.set(true)
+            }
+        }
+
+        val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        val scheduler = Scheduler(
+            KhronaConfig().apply {
+                this.store = store
+                addObserver(cancellingObserver)
+                addObserver(siblingObserver)
+                pollingInterval = Duration.ofMillis(30)
+                deadLetterSamplingInterval = Duration.ofMillis(30)
+                shutdownTimeout = Duration.ofMillis(500)
+                job("cancel-safe-job") {
+                    once()
+                    execute { jobRan.complete(Unit) }
+                }
+            },
+            scope
+        )
+        try {
+            scheduler.start()
+            withTimeout(3_000) { jobRan.await() }
+            withTimeout(3_000) {
+                while (!siblingSawSample.get() || !siblingSawCompleted.get()) delay(15)
+            }
+            assertEquals(HealthStatus.UP, scheduler.health().status)
+            scheduler.stop()
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `aroundExecution cannot invoke handler twice or hide handler failure`() = runTest {
+        val ctx = sampleContext()
+
+        // 1. Retrying aroundExecution must NOT run handler twice and must preserve original failure
+        val retryAfterFailCount = AtomicInteger(0)
+        val retryingObserver = object : KhronaObserver {
+            override suspend fun <T> aroundExecution(context: ExecutionContext, block: suspend () -> T): T {
+                return try {
+                    block()
+                } catch (_: Throwable) {
+                    block()
+                }
+            }
+        }
+        val originalError = IllegalStateException("first-attempt-failed")
+        val thrown = assertThrows(IllegalStateException::class.java) {
+            runBlocking<Unit> {
+                invokeAroundSafely(retryingObserver, ctx) {
+                    if (retryAfterFailCount.incrementAndGet() == 1) {
+                        throw originalError
+                    }
+                    "hidden-success"
+                }
+            }
+        }
+        assertSame(originalError, thrown)
+        assertEquals(1, retryAfterFailCount.get())
+
+        // 2. Swallowing aroundExecution must still rethrow original failure
+        val swallowingObserver = object : KhronaObserver {
+            @Suppress("UNCHECKED_CAST")
+            override suspend fun <T> aroundExecution(context: ExecutionContext, block: suspend () -> T): T {
+                return try {
+                    block()
+                } catch (_: Throwable) {
+                    "swallowed" as T
+                }
+            }
+        }
+        val swallowedThrown = assertThrows(IllegalArgumentException::class.java) {
+            runBlocking {
+                invokeAroundSafely(swallowingObserver, ctx) {
+                    throw IllegalArgumentException("must-not-be-hidden")
+                }
+            }
+        }
+        assertEquals("must-not-be-hidden", swallowedThrown.message)
+
+        // 3. Double-invoking on success runs handler once and returns original result
+        val doubleSuccessCount = AtomicInteger(0)
+        val doubleCallObserver = object : KhronaObserver {
+            override suspend fun <T> aroundExecution(context: ExecutionContext, block: suspend () -> T): T {
+                val first = block()
+                block()
+                return first
+            }
+        }
+        val okResult = invokeAroundSafely(doubleCallObserver, ctx) {
+            "run-${doubleSuccessCount.incrementAndGet()}"
+        }
+        assertEquals("run-1", okResult)
+        assertEquals(1, doubleSuccessCount.get())
+
+        // 4. Short-circuiting aroundExecution (never invokes block) still executes handler once
+        val shortCircuitCount = AtomicInteger(0)
+        val shortCircuitObserver = object : KhronaObserver {
+            @Suppress("UNCHECKED_CAST")
+            override suspend fun <T> aroundExecution(context: ExecutionContext, block: suspend () -> T): T {
+                return "skipped" as T
+            }
+        }
+        val directResult = invokeAroundSafely(shortCircuitObserver, ctx) {
+            "direct-${shortCircuitCount.incrementAndGet()}"
+        }
+        assertEquals("direct-1", directResult)
+        assertEquals(1, shortCircuitCount.get())
+
+        // 5. End-to-end with Scheduler: retrying aroundExecution cannot mask handler failure from retry accounting
+        val clock = TestClock(testScheduler)
+        val store = MockJobStore(clock)
+        val handlerRuns = AtomicInteger(0)
+        val outcomes = CopyOnWriteArrayList<ExecutionOutcome>()
+        val scheduler = Scheduler(
+            KhronaConfig().apply {
+                this.store = store
+                addObserver(retryingObserver)
+                addObserver(object : KhronaObserver {
+                    override fun onExecutionCompleted(
+                        context: ExecutionContext,
+                        outcome: ExecutionOutcome,
+                        duration: Duration,
+                        errorType: String?
+                    ) {
+                        outcomes.add(outcome)
+                    }
+                })
+                job("no-double-run") {
+                    once()
+                    retry { maxAttempts = 2; initialDelay = Duration.ofSeconds(10) }
+                    execute {
+                        if (handlerRuns.incrementAndGet() == 1) {
+                            throw IllegalStateException("boom-once")
+                        }
+                    }
+                }
+            },
+            backgroundScope,
+            clock
+        )
+        store.saveJob(scheduler.config.jobs.single())
+        store.saveExecution(JobExecution(jobId = "no-double-run", scheduledAt = Instant.EPOCH))
+        scheduler.pollAndExecute()
+        advanceTimeBy(5.milliseconds)
+        runCurrent()
+
+        assertEquals(1, handlerRuns.get())
+        assertEquals(listOf(ExecutionOutcome.FAILED_RETRY), outcomes)
+    }
+
+    @Test
+    fun `cross-node REPLACE emits SUPERSEDED once from replacing worker using store execution details`() = runTest {
+        val clock = TestClock(testScheduler)
+        val baseStore = MockJobStore(clock)
+        val completed = CopyOnWriteArrayList<Triple<ExecutionContext, ExecutionOutcome, Duration>>()
+
+        val observer = object : KhronaObserver {
+            override fun onExecutionCompleted(
+                context: ExecutionContext,
+                outcome: ExecutionOutcome,
+                duration: Duration,
+                errorType: String?
+            ) {
+                completed.add(Triple(context, outcome, duration))
+            }
+        }
+
+        // Seed remote worker A's RUNNING execution directly into the shared store (no local activeClaims on worker B)
+        val remoteStartedAt = Instant.now(clock).minusSeconds(3)
+        val remoteExec = JobExecution(
+            id = UUID.randomUUID(),
+            jobId = "cross-node-replace",
+            status = ExecutionStatus.RUNNING,
+            scheduledAt = remoteStartedAt.minusSeconds(1),
+            startedAt = remoteStartedAt,
+            attempt = 2,
+            lockKey = "shared-cross-lock",
+            workerId = "remote-worker-A:claim-1",
+            expiresAt = Instant.now(clock).plusSeconds(60),
+            correlationId = "remote-corr-A"
+        )
+        val replacementExec = JobExecution(
+            id = UUID.randomUUID(),
+            jobId = "cross-node-replace",
+            status = ExecutionStatus.PENDING,
+            scheduledAt = Instant.now(clock),
+            lockKey = "shared-cross-lock"
+        )
+
+        val workerB = Scheduler(
+            KhronaConfig().apply {
+                this.store = baseStore
+                this.observer = observer
+                job("cross-node-replace") {
+                    at(Instant.now(clock).plusSeconds(3600))
+                    concurrencyPolicy = ConcurrencyPolicy.REPLACE
+                    lockKey = "shared-cross-lock"
+                    execute {}
+                }
+            },
+            backgroundScope,
+            clock
+        )
+        baseStore.saveJob(workerB.config.jobs.single())
+        baseStore.saveExecution(remoteExec)
+        baseStore.saveExecution(replacementExec)
+
+        workerB.pollAndExecute()
+        advanceTimeBy(5.milliseconds)
+        runCurrent()
+
+        val superseded = completed.filter { it.second == ExecutionOutcome.SUPERSEDED }
+        assertEquals(1, superseded.size)
+        val (supersededCtx, _, elapsed) = superseded.single()
+        assertEquals(remoteExec.id, supersededCtx.executionId)
+        assertEquals("cross-node-replace", supersededCtx.jobId)
+        assertEquals(2, supersededCtx.attempt)
+        assertEquals(remoteExec.scheduledAt, supersededCtx.scheduledAt)
+        assertEquals("remote-corr-A", supersededCtx.correlationId)
+        assertTrue(elapsed >= Duration.ofSeconds(3))
+
+        // Fallback when store.getExecution(supersededId) throws or returns null still emits SUPERSEDED
+        val missingId = UUID.randomUUID()
+        val throwingId = UUID.randomUUID()
+        val fallbackCompleted = CopyOnWriteArrayList<ExecutionContext>()
+        val fallbackBase = MockJobStore(clock)
+        val fallbackStore = object : JobStore by fallbackBase {
+            override suspend fun supersedeExecutionsByLockKey(lockKey: String, excludeExecutionId: UUID?): List<UUID> =
+                listOf(missingId, throwingId)
+
+            override suspend fun getExecution(id: UUID): JobExecution? {
+                if (id == throwingId) throw IllegalStateException("lookup failed")
+                return fallbackBase.getExecution(id)
+            }
+        }
+        val fallbackWorker = Scheduler(
+            KhronaConfig().apply {
+                this.store = fallbackStore
+                this.observer = object : KhronaObserver {
+                    override fun onExecutionCompleted(
+                        context: ExecutionContext,
+                        outcome: ExecutionOutcome,
+                        duration: Duration,
+                        errorType: String?
+                    ) {
+                        if (outcome == ExecutionOutcome.SUPERSEDED) {
+                            fallbackCompleted.add(context)
+                        }
+                    }
+                }
+                job("fallback-replace") {
+                    at(Instant.now(clock).plusSeconds(3600))
+                    concurrencyPolicy = ConcurrencyPolicy.REPLACE
+                    lockKey = "fallback-lock"
+                    execute {}
+                }
+            },
+            backgroundScope,
+            clock
+        )
+        fallbackBase.saveJob(fallbackWorker.config.jobs.single())
+        fallbackBase.saveExecution(JobExecution(jobId = "fallback-replace", scheduledAt = Instant.now(clock), lockKey = "fallback-lock"))
+        fallbackWorker.pollAndExecute()
+        advanceTimeBy(5.milliseconds)
+        runCurrent()
+
+        assertEquals(setOf(missingId, throwingId), fallbackCompleted.map { it.executionId }.toSet())
     }
 }

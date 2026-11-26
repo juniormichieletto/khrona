@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 
 enum class ScheduleReason {
     INITIAL_SEED,
@@ -182,8 +183,6 @@ private val observerLog = LoggerFactory.getLogger(KhronaObserver::class.java)
 internal inline fun safeNotify(action: () -> Unit) {
     try {
         action()
-    } catch (ce: CancellationException) {
-        throw ce
     } catch (e: Exception) {
         observerLog.warn("KhronaObserver callback failed", e)
     }
@@ -194,16 +193,20 @@ internal suspend fun <T> invokeAroundSafely(
     context: ExecutionContext,
     block: suspend () -> T
 ): T {
-    var blockExecuted = false
+    val blockInvoked = AtomicBoolean(false)
+    var blockCompleted = false
     var blockFailed = false
     var blockResult: T? = null
     var blockError: Throwable? = null
 
     val wrappedBlock: suspend () -> T = {
-        blockExecuted = true
+        if (!blockInvoked.compareAndSet(false, true)) {
+            throw IllegalStateException("KhronaObserver.aroundExecution must not invoke handler block more than once")
+        }
         try {
             val value = block()
             blockResult = value
+            blockCompleted = true
             value
         } catch (t: Throwable) {
             blockFailed = true
@@ -212,19 +215,30 @@ internal suspend fun <T> invokeAroundSafely(
         }
     }
 
-    return try {
+    try {
         observer.aroundExecution(context, wrappedBlock)
     } catch (t: Throwable) {
         if (blockFailed) throw blockError!!
         if (t is CancellationException && !currentCoroutineContext().isActive) throw t
-        if (blockExecuted) {
+        if (blockCompleted) {
             observerLog.warn("KhronaObserver.aroundExecution failed after handler completed", t)
             @Suppress("UNCHECKED_CAST")
             return blockResult as T
         }
         observerLog.warn("KhronaObserver.aroundExecution failed before invoking handler", t)
-        block()
+        return block()
     }
+
+    if (blockFailed) {
+        observerLog.warn("KhronaObserver.aroundExecution swallowed handler failure; rethrowing original exception")
+        throw blockError!!
+    }
+    if (blockCompleted) {
+        @Suppress("UNCHECKED_CAST")
+        return blockResult as T
+    }
+    observerLog.warn("KhronaObserver.aroundExecution returned without invoking handler; executing handler directly")
+    return block()
 }
 
 class ObservableJobStore(

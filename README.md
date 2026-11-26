@@ -617,7 +617,21 @@ val config = Khrona {
 
 #### Micrometer and OpenTelemetry (`khrona-observability`)
 
-Add `khrona-observability` alongside the Micrometer or OpenTelemetry API dependencies your application already uses (`khrona-observability` declares both as `compileOnly` so consumers only pull the telemetry stack they configure):
+Add `khrona-observability` alongside the telemetry stack your application uses (`khrona-observability` declares Micrometer and OpenTelemetry as `compileOnly` so consumers only pull the stack they configure). Note that `OpenTelemetryKhronaObserver` requires **`io.opentelemetry:opentelemetry-extension-kotlin`** at runtime for coroutine trace propagation (`asContextElement()`):
+
+```kotlin
+// build.gradle.kts
+dependencies {
+    implementation("io.github.juniormichieletto:khrona-observability:0.7.0")
+
+    // If using MicrometerKhronaObserver:
+    implementation("io.micrometer:micrometer-core:1.14.5")
+
+    // If using OpenTelemetryKhronaObserver (both API and Kotlin extension are required at runtime):
+    implementation("io.opentelemetry:opentelemetry-api:1.47.0")
+    implementation("io.opentelemetry:opentelemetry-extension-kotlin:1.47.0")
+}
+```
 
 ```kotlin
 import io.khrona.core.*

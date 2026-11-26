@@ -133,13 +133,20 @@ class Scheduler(
                         nextCleanupAt = nextCleanupTime(now)
                     }
 
-                    // Periodic DLQ count sampling
-                    if (Duration.between(lastDeadLetterSample, now) >= config.deadLetterSamplingInterval) {
-                        val deadLetterCount = store.countExecutions(
-                            JobExecutionQuery(statuses = setOf(ExecutionStatus.DEAD_LETTERED))
-                        )
-                        safeNotify { config.observer.onDeadLetterCountSampled(deadLetterCount) }
-                        lastDeadLetterSample = now
+                    // Periodic DLQ count sampling (skipped when telemetry is disabled; failures never block polling)
+                    if (isTelemetryEnabled() && Duration.between(lastDeadLetterSample, now) >= config.deadLetterSamplingInterval) {
+                        try {
+                            val deadLetterCount = store.countExecutions(
+                                JobExecutionQuery(statuses = setOf(ExecutionStatus.DEAD_LETTERED))
+                            )
+                            safeNotify { config.observer.onDeadLetterCountSampled(deadLetterCount) }
+                        } catch (ce: CancellationException) {
+                            throw ce
+                        } catch (e: Exception) {
+                            log.warn("Failed to sample dead-letter execution count", e)
+                        } finally {
+                            lastDeadLetterSample = now
+                        }
                     }
 
                     pollAndExecute()
@@ -214,11 +221,17 @@ class Scheduler(
         return Duration.between(lastPoll, now) > stallThreshold
     }
 
+    private fun isTelemetryEnabled(): Boolean {
+        val observer = config.observer
+        return observer !== KhronaObserver.NO_OP &&
+            (observer !is CompositeKhronaObserver || observer.observers.any { it !== KhronaObserver.NO_OP })
+    }
+
     private fun formatError(error: Throwable): String = try {
         config.errorFormatter.format(error)
     } catch (formatterEx: Exception) {
-        log.warn("ErrorDiagnosticFormatter failed; falling back to default formatter", formatterEx)
-        ErrorDiagnosticFormatter.DEFAULT.format(error)
+        log.warn("ErrorDiagnosticFormatter failed; falling back to error type name only", formatterEx)
+        ErrorDiagnosticFormatter.typeName(error)
     }
 
     private fun elapsedSince(startedAtNanos: Long): Duration {
@@ -410,6 +423,8 @@ class Scheduler(
                                         outcome = ExecutionOutcome.SUPERSEDED,
                                         startedAtNanos = supersededClaim.startedAtNanos.get()
                                     )
+                                } else {
+                                    emitRemoteSupersededCompletion(id, execution, store)
                                 }
                                 activeJobs[id]?.cancel("Superseded by a new execution for lock ${jobDef.lockKey}")
                             }
@@ -493,6 +508,46 @@ class Scheduler(
 
     private suspend fun isAnyOtherExecutionHoldingLock(currentExecutionId: UUID, lockKey: String, store: JobStore): Boolean {
         return store.isLockHeld(lockKey, excludeExecutionId = currentExecutionId)
+    }
+
+    private suspend fun emitRemoteSupersededCompletion(
+        supersededId: UUID,
+        replacingExecution: JobExecution,
+        store: JobStore
+    ) {
+        val supersededExecution = try {
+            store.getExecution(supersededId)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            log.warn("Failed to load superseded execution $supersededId from store for observability", e)
+            null
+        }
+        val context = if (supersededExecution != null) {
+            buildExecutionContext(supersededExecution)
+        } else {
+            ExecutionContext(
+                executionId = supersededId,
+                jobId = replacingExecution.jobId,
+                attempt = 0,
+                scheduledAt = replacingExecution.scheduledAt,
+                payload = null,
+                correlationId = supersededId.toString(),
+                isStopping = { stopping }
+            )
+        }
+        val elapsed = supersededExecution?.startedAt?.let { startedAt ->
+            val raw = Duration.between(startedAt, Instant.now(clock))
+            if (raw.isNegative) Duration.ZERO else raw
+        } ?: Duration.ZERO
+        safeNotify {
+            config.observer.onExecutionCompleted(
+                context = context,
+                outcome = ExecutionOutcome.SUPERSEDED,
+                duration = elapsed,
+                errorType = null
+            )
+        }
     }
 
     private suspend fun handleMisfire(execution: JobExecution, jobDef: JobDefinition, now: Instant, claimOwner: String, store: JobStore) {
